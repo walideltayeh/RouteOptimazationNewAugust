@@ -130,6 +130,7 @@ Preferred communication style: Simple, everyday language.
 ✓ **Added Enhanced Boundary Optimization**: Phase 2 redistribution of outlier outlets to closer zones for better geographic clustering
 ✓ **Implemented Multi-Zone Selection**: Users can now select multiple zones on the map for comparison and analysis
 ✓ **Enhanced Territory Dropdown to Multi-Select**: Converted single-select dropdown to multi-select with search functionality for selecting multiple zones simultaneously
+✓ **Optimized Map Display for Large Datasets**: Increased threshold from 1000 to 5000 outlets for map rendering to handle larger Lebanese datasets
 ✓ **Fixed File Upload After Clear**: Resolved issue where file upload wouldn't work after clearing data
 ✓ **Replaced Route Efficiency Graph**: Changed to Territory Balance metric for better territory distribution insights
 ✓ **Updated Default Visit Parameters**: Min/Max visits changed from 15/25 to 25/30 for realistic Lebanese market conditions

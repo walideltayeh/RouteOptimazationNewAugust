@@ -117,8 +117,8 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     console.log(`Rendering ${outlets.length} outlets in ${viewMode} mode`);
     setIsRenderingMarkers(true);
     
-    // For very large datasets, skip map rendering to prevent freezing
-    if (outlets.length > 1000) {
+    // For very large datasets, use optimized rendering
+    if (outlets.length > 5000) {
       console.log('Dataset too large for map rendering, showing territory summary only');
       setMapError(`Dataset has ${outlets.length} outlets. Map display disabled for performance. Use dashboard analytics instead.`);
       setIsRenderingMarkers(false);
@@ -162,7 +162,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
           territory,
           count: outlets.length,
           color: TERRITORY_COLORS[index % TERRITORY_COLORS.length],
-          outlets: outlets.slice(0, 10).map(o => ({ id: o.id, name: o.name })) // Limit to 10 for performance
+          outlets: JSON.stringify(outlets.slice(0, 10).map(o => ({ id: o.id, name: o.name }))) // Limit to 10 for performance
         },
         geometry: {
           type: 'Point' as const,
@@ -281,7 +281,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     // Filter outlets by selected zones if any
     const outletsToShow = selectedZones.length > 0
       ? selectedZones.flatMap(zone => territoryGroups[zone] || [])
-      : outlets.slice(0, 200); // Limit to 200 for performance
+      : outlets.length > 500 ? outlets.slice(0, 500) : outlets; // Limit for very large datasets
 
     const outletFeatures = outletsToShow.map((outlet, index) => ({
       type: 'Feature' as const,
@@ -384,7 +384,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
           <div className="w-full h-[500px] rounded-lg bg-gray-100 flex items-center justify-center">
             <div className="text-center p-4">
               <p className="text-gray-600 mb-2">{mapError}</p>
-              {outlets.length > 1000 && (
+              {outlets.length > 5000 && (
                 <p className="text-sm text-gray-500">Use Dashboard Analytics for data insights</p>
               )}
             </div>
@@ -461,6 +461,11 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                   <p className="mt-2 text-sm text-gray-600">
                     Loading {viewMode === 'cluster' ? 'territory clusters' : 'individual outlets'}...
                   </p>
+                  {outlets.length > 1000 && (
+                    <p className="text-xs text-gray-500 mt-1">
+                      Processing {outlets.length} outlets...
+                    </p>
+                  )}
                 </div>
               </div>
             )}
