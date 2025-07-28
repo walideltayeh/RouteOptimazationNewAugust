@@ -38,6 +38,7 @@ export default function Sidebar() {
                 <Link
                   href={item.href}
                   className={`nav-link ${isActive ? 'active' : ''}`}
+                  onClick={() => console.log(`Navigating to: ${item.href}`)}
                 >
                   <Icon className="mr-3 h-5 w-5" />
                   {item.name}

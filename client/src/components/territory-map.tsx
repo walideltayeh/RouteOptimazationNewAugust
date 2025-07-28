@@ -29,6 +29,8 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
   const [selectedOutlet, setSelectedOutlet] = useState<Outlet | null>(null);
+  const [mapError, setMapError] = useState<string | null>(null);
+  const [isMapLoaded, setIsMapLoaded] = useState(false);
 
   const { data: outlets = [] } = useQuery<Outlet[]>({
     queryKey: ['/api/outlets'],
@@ -43,14 +45,27 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     if (map.current || !mapContainer.current) return;
 
     try {
-      if (MAPBOX_TOKEN && MAPBOX_TOKEN !== 'demo_token' && !MAPBOX_TOKEN.includes('your_') && MAPBOX_TOKEN.length > 10) {
-        map.current = new mapboxgl.Map({
-          container: mapContainer.current,
-          style: 'mapbox://styles/mapbox/light-v11',
-          center: [-74.5, 40.5],
-          zoom: 9
-        });
+      if (!MAPBOX_TOKEN || MAPBOX_TOKEN === 'demo_token' || MAPBOX_TOKEN.includes('your_') || MAPBOX_TOKEN.length <= 10) {
+        setMapError('Mapbox token not configured. Please set VITE_MAPBOX_PUBLIC_KEY environment variable.');
+        return;
       }
+
+      map.current = new mapboxgl.Map({
+        container: mapContainer.current,
+        style: 'mapbox://styles/mapbox/light-v11',
+        center: [-74.5, 40.5],
+        zoom: 9
+      });
+
+      map.current.on('load', () => {
+        setIsMapLoaded(true);
+        console.log('Map loaded successfully');
+      });
+
+      map.current.on('error', (e) => {
+        console.error('Map error:', e);
+        setMapError('Failed to load map. Please check your Mapbox token.');
+      });
 
       return () => {
         if (map.current) {
@@ -59,6 +74,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
       };
     } catch (error) {
       console.error('Failed to initialize map:', error);
+      setMapError('Failed to initialize map. Please check your configuration.');
     }
   }, []);
 
