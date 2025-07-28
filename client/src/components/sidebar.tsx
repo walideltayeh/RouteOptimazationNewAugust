@@ -11,6 +11,7 @@ import {
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: BarChart3 },
+  { name: "Territory Map", href: "/territories", icon: Map },
 ];
 
 export default function Sidebar() {
