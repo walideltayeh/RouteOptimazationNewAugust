@@ -669,6 +669,8 @@ function generateWeeklySchedules(rep: Rep, outlets: Outlet[]): InsertSchedule[] 
   return schedules;
 }
 
+import { generateScheduleExcel } from './export';
+
 export async function registerRoutes(app: Express): Promise<Server> {
   
   // Dashboard metrics
@@ -905,6 +907,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Failed to clear data:", error);
       res.status(500).json({ message: "Failed to clear data" });
+    }
+  });
+
+  // Export schedules to Excel
+  app.get("/api/export/schedules", async (_req, res) => {
+    try {
+      const reps = await storage.getAllReps();
+      const schedules = await storage.getAllSchedules();
+      const outlets = await storage.getAllOutlets();
+      
+      if (reps.length === 0 || schedules.length === 0) {
+        return res.status(400).json({ message: "No schedules available to export" });
+      }
+      
+      const excelBuffer = generateScheduleExcel(reps, schedules, outlets);
+      
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename=schedules_${new Date().toISOString().split('T')[0]}.xlsx`);
+      res.send(excelBuffer);
+    } catch (error) {
+      console.error("Error exporting schedules:", error);
+      res.status(500).json({ message: "Failed to export schedules" });
     }
   });
 

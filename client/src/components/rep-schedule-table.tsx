@@ -1,11 +1,13 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { useState } from "react";
 import React from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Calendar, Download, RefreshCw, Eye, Edit, CheckCircle, Clock, Info } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
 import type { Rep, Outlet, Schedule } from "@shared/schema";
 import ScheduleViewModal from "./schedule-view-modal";
 
@@ -27,6 +29,7 @@ const territoryColors = [
 ];
 
 export default function RepScheduleTable() {
+  const { toast } = useToast();
   const { data: metrics } = useQuery<{ totalOutlets: number; activeReps: number; recommendedReps: number }>({
     queryKey: ["/api/dashboard/metrics"],
   });
@@ -54,6 +57,42 @@ export default function RepScheduleTable() {
     setIsScheduleModalOpen(true);
   };
 
+  // Export mutation
+  const exportMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch('/api/export/schedules', {
+        method: 'GET',
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to export schedules');
+      }
+      
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `schedules_${new Date().toISOString().split('T')[0]}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    },
+    onSuccess: () => {
+      toast({
+        title: "Export successful",
+        description: "Schedules have been exported to Excel",
+      });
+    },
+    onError: () => {
+      toast({
+        title: "Export failed",
+        description: "Failed to export schedules. Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
+
   // Get all schedules
   const { data: schedules = [] } = useQuery<Schedule[]>({
     queryKey: ["/api/schedules"],
@@ -61,24 +100,21 @@ export default function RepScheduleTable() {
 
   // Calculate rep statistics
   const repsWithStats = reps.map((rep, index) => {
-    // Count unique zones for this rep
+    // Count unique zones for this rep based on unique days with schedules
     const repSchedules = schedules.filter(s => s.repId === rep.id);
     const uniqueZones = new Set<string>();
     
+    // Each unique schedule represents a zone (one zone per day)
     repSchedules.forEach(schedule => {
-      if (Array.isArray(schedule.outletIds) && schedule.outletIds.length > 0) {
-        const firstOutletId = schedule.outletIds[0];
-        const outlet = outlets.find(o => o.id === firstOutletId);
-        if (outlet?.territory) {
-          uniqueZones.add(outlet.territory);
-        }
+      if (schedule.week <= 2) { // Only count weeks 1 and 2 (weeks 3 and 4 are repeats)
+        uniqueZones.add(`week${schedule.week}-day${schedule.dayOfWeek}`);
       }
     });
 
     return {
       ...rep,
       totalZones: uniqueZones.size,
-      weeklyZones: Math.min(5, uniqueZones.size), // 5 zones per week max
+      weeklyZones: Math.ceil(uniqueZones.size / 2), // Zones per week
       avatarColor: territoryColors[index % territoryColors.length],
       initials: rep.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2),
       status: uniqueZones.size > 0 ? 'optimized' : 'pending'
@@ -115,9 +151,23 @@ export default function RepScheduleTable() {
                 </span>
               </div>
             )}
-            <Button variant="outline" size="sm">
-              <Download className="mr-2 h-4 w-4" />
-              Export Schedules
+            <Button 
+              variant="outline" 
+              size="sm"
+              onClick={() => exportMutation.mutate()}
+              disabled={exportMutation.isPending || reps.length === 0}
+            >
+              {exportMutation.isPending ? (
+                <>
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-600 mr-2"></div>
+                  Exporting...
+                </>
+              ) : (
+                <>
+                  <Download className="mr-2 h-4 w-4" />
+                  Export Schedules
+                </>
+              )}
             </Button>
             <Button size="sm">
               <RefreshCw className="mr-2 h-4 w-4" />
@@ -176,9 +226,14 @@ export default function RepScheduleTable() {
                       </div>
                     </TableCell>
                     <TableCell>
-                      <Badge variant="outline" className="capitalize">
-                        {rep.territory}
-                      </Badge>
+                      <Select value={rep.territory} disabled>
+                        <SelectTrigger className="w-[180px]">
+                          <SelectValue placeholder="Select territory" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={rep.territory}>{rep.territory}</SelectItem>
+                        </SelectContent>
+                      </Select>
                     </TableCell>
                     <TableCell className="text-center">
                       <span className="text-lg font-semibold text-gray-900">
