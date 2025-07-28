@@ -11,7 +11,9 @@ import { kMeansClustering, findOptimalClusters, enhancedKMeansClustering, worklo
 
 // Set a default token or use environment variable
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || import.meta.env.VITE_MAPBOX_PUBLIC_KEY;
-mapboxgl.accessToken = MAPBOX_TOKEN;
+if (MAPBOX_TOKEN && MAPBOX_TOKEN !== 'demo_token' && !MAPBOX_TOKEN.includes('your_') && MAPBOX_TOKEN.length > 10) {
+  mapboxgl.accessToken = MAPBOX_TOKEN;
+}
 
 interface TerritoryMapProps {
   className?: string;
@@ -41,7 +43,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     if (map.current || !mapContainer.current) return;
 
     try {
-      if (MAPBOX_TOKEN && !MAPBOX_TOKEN.includes('demo_token')) {
+      if (MAPBOX_TOKEN && MAPBOX_TOKEN !== 'demo_token' && !MAPBOX_TOKEN.includes('your_') && MAPBOX_TOKEN.length > 10) {
         map.current = new mapboxgl.Map({
           container: mapContainer.current,
           style: 'mapbox://styles/mapbox/light-v11',
@@ -106,13 +108,13 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
 
     // Calculate optimal number of reps based on workload
     const optimalReps = reps.length > 0 ? reps.length : calculateOptimalReps(outlets);
-    
+
     // Use workload-based clustering for better territory distribution
     const clusters = workloadBasedClustering(points, optimalReps);
-    
+
     // Create territory groups from clusters
     const territoryGroups: Record<string, Outlet[]> = {};
-    
+
     clusters.forEach((cluster, index) => {
       const territoryName = `Zone ${String.fromCharCode(65 + index)}`; // Zone A, B, C, etc.
       territoryGroups[territoryName] = cluster.points.map(point => point.data);
@@ -122,7 +124,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     const assignedOutletIds = new Set(
       Object.values(territoryGroups).flat().map(outlet => outlet.id)
     );
-    
+
     const unassignedOutlets = outlets.filter(outlet => !assignedOutletIds.has(outlet.id));
     if (unassignedOutlets.length > 0) {
       territoryGroups['Unassigned'] = unassignedOutlets;
@@ -161,21 +163,21 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     return (
       <div className="flex flex-col h-full ${className}">
         {/* Map Header */}
-      
+
         <div className="flex flex-1 gap-4">
           {/* Map */}
-          
-              
+
+
                 <div className="w-full h-[500px] rounded-lg bg-gray-100 flex items-center justify-center">
                   <div className="text-center p-4">
                     <p className="text-gray-600 mb-2">Map requires Mapbox API token</p>
                     <p className="text-sm text-gray-500">Set VITE_MAPBOX_TOKEN in your environment</p>
                   </div>
                 </div>
-          
+
 
           {/* Territory Legend and Info */}
-          
+
         </div>
       </div>
     );
