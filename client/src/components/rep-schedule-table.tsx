@@ -51,23 +51,34 @@ export default function RepScheduleTable() {
     setIsScheduleModalOpen(true);
   };
 
+  // Get all schedules
+  const { data: schedules = [] } = useQuery<Schedule[]>({
+    queryKey: ["/api/schedules"],
+  });
+
   // Calculate rep statistics
   const repsWithStats = reps.map((rep, index) => {
-    const repOutlets = outlets.filter(outlet => outlet.repId === rep.id);
-    const vf2Outlets = repOutlets.filter(outlet => outlet.visitFrequency === 2).length;
-    const vf4Outlets = repOutlets.filter(outlet => outlet.visitFrequency === 4).length;
-    const weeklyVisits = (vf2Outlets * 2) + (vf4Outlets * 4);
-    const dailyVisits = Math.round(weeklyVisits / rep.workingDaysPerWeek);
+    // Count unique zones for this rep
+    const repSchedules = schedules.filter(s => s.repId === rep.id);
+    const uniqueZones = new Set<string>();
+    
+    repSchedules.forEach(schedule => {
+      if (Array.isArray(schedule.outletIds) && schedule.outletIds.length > 0) {
+        const firstOutletId = schedule.outletIds[0];
+        const outlet = outlets.find(o => o.id === firstOutletId);
+        if (outlet?.territory) {
+          uniqueZones.add(outlet.territory);
+        }
+      }
+    });
 
     return {
       ...rep,
-      vf2Outlets,
-      vf4Outlets,
-      weeklyVisits,
-      dailyVisits,
+      totalZones: uniqueZones.size,
+      weeklyZones: Math.min(5, uniqueZones.size), // 5 zones per week max
       avatarColor: territoryColors[index % territoryColors.length],
       initials: rep.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2),
-      status: dailyVisits > 0 ? 'optimized' : 'pending'
+      status: uniqueZones.size > 0 ? 'optimized' : 'pending'
     };
   });
 
@@ -90,7 +101,7 @@ export default function RepScheduleTable() {
         <div className="flex justify-between items-center">
           <CardTitle className="flex items-center">
             <Calendar className="mr-2 h-5 w-5 text-primary" />
-            Route Scheduling Overview
+            Rep Scheduling Overview
           </CardTitle>
 
           <div className="flex items-center space-x-3">
@@ -114,7 +125,7 @@ export default function RepScheduleTable() {
             <div>
               <h4 className="text-sm font-semibold text-primary">Schedule Pattern</h4>
               <p className="text-sm text-primary/80">
-                Week 1 = Week 3, Week 2 = Week 4. Each route maintains consistent visit patterns for optimal customer relationship management.
+                Week 1 = Week 3, Week 2 = Week 4. Each rep visits one complete zone per day (approximately 25 outlets), visiting 10 unique zones over 2 weeks.
               </p>
             </div>
           </div>
@@ -130,12 +141,12 @@ export default function RepScheduleTable() {
             <Table>
               <TableHeader>
                 <TableRow className="bg-gray-50">
-                  <TableHead className="font-semibold">Route Name</TableHead>
-                  <TableHead className="font-semibold">Zone</TableHead>
-                  <TableHead className="text-center font-semibold">Daily Visits</TableHead>
-                  <TableHead className="text-center font-semibold">Weekly Visits</TableHead>
-                  <TableHead className="text-center font-semibold">VF2 Outlets</TableHead>
-                  <TableHead className="text-center font-semibold">VF4 Outlets</TableHead>
+                  <TableHead className="font-semibold">Rep Name</TableHead>
+                  <TableHead className="font-semibold">Territory</TableHead>
+                  <TableHead className="text-center font-semibold">Total Zones</TableHead>
+                  <TableHead className="text-center font-semibold">Zones/Week</TableHead>
+                  <TableHead className="text-center font-semibold">Working Days</TableHead>
+                  <TableHead className="text-center font-semibold">Coverage</TableHead>
                   <TableHead className="text-center font-semibold">Status</TableHead>
                   <TableHead className="text-center font-semibold">Actions</TableHead>
                 </TableRow>
@@ -161,19 +172,19 @@ export default function RepScheduleTable() {
                     </TableCell>
                     <TableCell className="text-center">
                       <span className="text-lg font-semibold text-gray-900">
-                        {rep.dailyVisits}
+                        {rep.totalZones}
                       </span>
                     </TableCell>
                     <TableCell className="text-center">
                       <span className="text-lg font-semibold text-gray-900">
-                        {rep.weeklyVisits}
+                        {rep.weeklyZones}
                       </span>
                     </TableCell>
                     <TableCell className="text-center">
-                      <span className="text-sm text-gray-600">{rep.vf2Outlets}</span>
+                      <span className="text-sm text-gray-600">{rep.workingDaysPerWeek} days</span>
                     </TableCell>
                     <TableCell className="text-center">
-                      <span className="text-sm text-gray-600">{rep.vf4Outlets}</span>
+                      <span className="text-sm text-gray-600">{rep.totalZones > 0 ? '100%' : '0%'}</span>
                     </TableCell>
                     <TableCell className="text-center">
                       <Badge 

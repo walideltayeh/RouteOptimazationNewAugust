@@ -503,6 +503,103 @@ function updateTerritoryNames(reps: any[], clusters: GeographicCluster[]): void 
   });
 }
 
+// Helper function to assign zones to reps based on geographic proximity
+function assignZonesToReps(clusters: GeographicCluster[], reps: Rep[], zonesPerRep: number): GeographicCluster[][] {
+  const assignments: GeographicCluster[][] = reps.map(() => []);
+  const assignedZones = new Set<number>();
+  
+  // For each rep, find the closest unassigned zones
+  for (let repIndex = 0; repIndex < reps.length; repIndex++) {
+    const repZones: GeographicCluster[] = [];
+    
+    // Find starting zone (closest unassigned zone to previous rep's last zone or center)
+    let currentCentroid = repIndex > 0 && assignments[repIndex - 1].length > 0
+      ? assignments[repIndex - 1][assignments[repIndex - 1].length - 1].centroid
+      : { lat: clusters[0].centroid.lat, lng: clusters[0].centroid.lng };
+    
+    // Assign up to zonesPerRep zones to this rep
+    while (repZones.length < zonesPerRep && assignedZones.size < clusters.length) {
+      let closestZone: GeographicCluster | null = null;
+      let closestDistance = Infinity;
+      
+      // Find closest unassigned zone
+      for (const cluster of clusters) {
+        if (assignedZones.has(cluster.id)) continue;
+        
+        const distance = calculateHaversineDistance(
+          currentCentroid.lat, currentCentroid.lng,
+          cluster.centroid.lat, cluster.centroid.lng
+        );
+        
+        if (distance < closestDistance) {
+          closestDistance = distance;
+          closestZone = cluster;
+        }
+      }
+      
+      if (closestZone) {
+        repZones.push(closestZone);
+        assignedZones.add(closestZone.id);
+        currentCentroid = closestZone.centroid;
+      } else {
+        break;
+      }
+    }
+    
+    assignments[repIndex] = repZones;
+  }
+  
+  return assignments;
+}
+
+// Helper function to generate zone-based schedules (one zone per day)
+function generateZoneBasedSchedules(rep: Rep, zones: GeographicCluster[], allClusters: GeographicCluster[]): InsertSchedule[] {
+  const schedules: InsertSchedule[] = [];
+  const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+  const workingDays = daysOfWeek.slice(0, rep.workingDaysPerWeek);
+  
+  // Split zones into two groups for alternating weeks
+  const week1Zones = zones.slice(0, 5); // First 5 zones for week 1 (and week 3)
+  const week2Zones = zones.slice(5, 10); // Next 5 zones for week 2 (and week 4)
+  
+  // Generate schedules for Week 1 and Week 2 (pattern repeats for weeks 3 and 4)
+  for (let week = 1; week <= 2; week++) {
+    const currentWeekZones = week === 1 ? week1Zones : week2Zones;
+    
+    for (let dayIndex = 0; dayIndex < workingDays.length && dayIndex < currentWeekZones.length; dayIndex++) {
+      const zone = currentWeekZones[dayIndex];
+      if (!zone) continue;
+      
+      // Get all outlet IDs from this zone
+      const zoneOutletIds = zone.outlets.map(outlet => outlet.id);
+      
+      // Create schedule for this day
+      schedules.push({
+        repId: rep.id,
+        week: week,
+        dayOfWeek: dayIndex,
+        outletIds: zoneOutletIds,
+        routeOrder: zoneOutletIds, // Can be optimized later with TSP
+        totalDistance: calculateClusterRadius(zone) * 2, // Approximate
+        estimatedDuration: zone.outlets.length * 15 // 15 minutes per outlet average
+      });
+      
+      // Also create the repeat week (3 or 4)
+      schedules.push({
+        repId: rep.id,
+        week: week + 2,
+        dayOfWeek: dayIndex,
+        outletIds: zoneOutletIds,
+        routeOrder: zoneOutletIds,
+        totalDistance: calculateClusterRadius(zone) * 2,
+        estimatedDuration: zone.outlets.length * 15
+      });
+    }
+  }
+  
+  return schedules;
+}
+
 // Helper function to generate weekly schedules for a route
 function generateWeeklySchedules(rep: Rep, outlets: Outlet[]): InsertSchedule[] {
   const schedules: InsertSchedule[] = [];
@@ -851,56 +948,67 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       console.log(`Created ${actualZoneCount} geographic zones`);
       
-      // Create representatives for each zone
-      const allReps: Rep[] = [];
+      // First, assign outlets to their zones
       for (let i = 0; i < actualZoneCount; i++) {
         const cluster = clusters[i];
-        if (cluster.outlets.length === 0) continue;
-        
         const clusterRadius = calculateClusterRadius(cluster);
+        console.log(`Zone ${i + 1}: ${cluster.outlets.length} outlets, ${clusterRadius.toFixed(2)}km radius`);
         
+        // Assign outlets to their zone
+        for (const outlet of cluster.outlets) {
+          await storage.updateOutlet(outlet.id, {
+            territory: `Zone ${i + 1}`,
+            cluster: i
+          });
+        }
+      }
+      
+      // Calculate how many reps we need
+      // Each rep visits 10 zones (5 per week * 2 weeks)
+      // So we need zones/10 reps (rounded up)
+      const zonesPerRep = 10; // 5 zones in week 1, 5 zones in week 2
+      const requiredRepCount = Math.ceil(actualZoneCount / zonesPerRep);
+      
+      console.log(`Need ${requiredRepCount} reps to cover ${actualZoneCount} zones (${zonesPerRep} zones per rep)`);
+      
+      // Create the required number of reps
+      const allReps: Rep[] = [];
+      for (let i = 0; i < requiredRepCount; i++) {
         const newRep = await storage.createRep({
-          name: `Route ${i + 1}`,
-          code: `ROUTE${(i + 1).toString().padStart(3, '0')}`,
-          territory: `Zone ${i + 1}`, // Zone 1, Zone 2, Zone 3, etc.
+          name: `Rep ${i + 1}`,
+          code: `REP${(i + 1).toString().padStart(3, '0')}`,
+          territory: `Territory ${i + 1}`,
           maxDailyVisits: maxVisitsPerDay,
           minDailyVisits: minVisitsPerDay,
           workingDaysPerWeek,
           isActive: true
         });
         allReps.push(newRep);
-        
-        console.log(`Zone ${i + 1}: ${cluster.outlets.length} outlets, ${clusterRadius.toFixed(2)}km radius`);
-        
-        // Assign outlets to this rep
-        for (const outlet of cluster.outlets) {
-          await storage.updateOutlet(outlet.id, {
-            repId: newRep.id,
-            territory: newRep.territory,
-            cluster: i
-          });
-        }
       }
       
-      // Update final required reps to match actual zones created
-      finalRequiredReps = allReps.length;
-
-      // Generate schedules for each route
-      console.log('Generating schedules for', allReps.length, 'routes');
-      for (const route of allReps) {
-        // Get updated outlets assigned to this route
-        const updatedOutlets = await storage.getOutlets();
-        const routeOutlets = updatedOutlets.filter(o => o.repId === route.id);
-        console.log(`${route.name} has ${routeOutlets.length} outlets`);
+      // Assign zones to reps based on geographic proximity
+      const zoneAssignments = assignZonesToReps(clusters, allReps, zonesPerRep);
+      
+      // Generate schedules for each rep
+      console.log('Generating schedules for', allReps.length, 'reps');
+      for (let repIndex = 0; repIndex < allReps.length; repIndex++) {
+        const rep = allReps[repIndex];
+        const repZones = zoneAssignments[repIndex] || [];
         
-        if (routeOutlets.length > 0) {
-          const routeSchedules = generateWeeklySchedules(route, routeOutlets);
-          console.log(`Generated ${routeSchedules.length} schedules for ${route.name}`);
-          for (const schedule of routeSchedules) {
+        if (repZones.length > 0) {
+          console.log(`${rep.name} will cover zones: ${repZones.map(z => z.id + 1).join(', ')}`);
+          
+          // Generate schedule where rep visits one complete zone per day
+          const repSchedules = generateZoneBasedSchedules(rep, repZones, clusters);
+          console.log(`Generated ${repSchedules.length} schedules for ${rep.name}`);
+          
+          for (const schedule of repSchedules) {
             await storage.createSchedule(schedule);
           }
         }
       }
+      
+      finalRequiredReps = allReps.length;
 
       // Invalidate cache by refreshing data
       const updatedOutlets = await storage.getOutlets();

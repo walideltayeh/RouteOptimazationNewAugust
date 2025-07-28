@@ -33,7 +33,7 @@ export default function ScheduleViewModal({ repId, isOpen, onClose, isEditMode }
   const { toast } = useToast();
   const [editingSchedule, setEditingSchedule] = useState<Schedule | null>(null);
 
-  const { data: rep } = useQuery<Rep>({
+  const { data: rep } = useQuery<Rep | undefined>({
     queryKey: ["/api/reps", repId],
     queryFn: async () => {
       const reps = await fetch("/api/reps").then(res => res.json()) as Rep[];
@@ -198,7 +198,7 @@ export default function ScheduleViewModal({ repId, isOpen, onClose, isEditMode }
             </CardContent>
           </Card>
 
-          {/* Weekly Schedules */}
+          {/* Weekly Schedules - Show complete zones for each day */}
           {[1, 2].map(weekNum => {
             const weekSchedules = schedulesByWeek[weekNum] || [];
             if (weekSchedules.length === 0) {
@@ -222,7 +222,7 @@ export default function ScheduleViewModal({ repId, isOpen, onClose, isEditMode }
                 <CardHeader>
                   <CardTitle className="flex items-center justify-between">
                     Week {weekNum} {weekNum <= 2 && <span className="text-sm text-gray-500">(repeats as Week {weekNum + 2})</span>}
-                    <Badge variant="outline">{sortedSchedules.length} days scheduled</Badge>
+                    <Badge variant="outline">{sortedSchedules.length} zones scheduled</Badge>
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
@@ -231,56 +231,66 @@ export default function ScheduleViewModal({ repId, isOpen, onClose, isEditMode }
                       <TableHeader>
                         <TableRow>
                           <TableHead>Day</TableHead>
-                          <TableHead>Outlets to Visit</TableHead>
+                          <TableHead>Zone Assignment</TableHead>
                           <TableHead className="text-center">Visit Count</TableHead>
                           <TableHead className="text-center">Estimated Time</TableHead>
                           {isEditMode && <TableHead className="text-center">Actions</TableHead>}
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {sortedSchedules.map((schedule) => (
-                          <TableRow key={schedule.id}>
-                            <TableCell className="font-medium">
-                              {dayNames[schedule.dayOfWeek] || `Day ${schedule.dayOfWeek + 1}`}
-                            </TableCell>
-                            <TableCell>
-                              <div className="space-y-1">
-                                {Array.isArray(schedule.outletIds) && (schedule.outletIds as string[]).map((outletId, index) => (
-                                  <div key={index} className="flex items-center space-x-2">
-                                    <Badge variant="outline" className="text-xs">
-                                      {index + 1}
-                                    </Badge>
-                                    <span className="text-sm">{getOutletName(outletId)}</span>
-                                  </div>
-                                ))}
-                              </div>
-                            </TableCell>
-                            <TableCell className="text-center">
-                              <Badge variant="secondary">
-                                {Array.isArray(schedule.outletIds) ? (schedule.outletIds as string[]).length : 0}
-                              </Badge>
-                            </TableCell>
-                            <TableCell className="text-center">
-                              <div className="flex items-center justify-center">
-                                <Clock className="mr-1 h-4 w-4 text-gray-400" />
-                                <span className="text-sm text-gray-600">
-                                  {schedule.estimatedDuration ? `${schedule.estimatedDuration}min` : "N/A"}
-                                </span>
-                              </div>
-                            </TableCell>
-                            {isEditMode && (
-                              <TableCell className="text-center">
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={() => setEditingSchedule(schedule)}
-                                >
-                                  <Edit3 className="h-4 w-4" />
-                                </Button>
+                        {sortedSchedules.map((schedule) => {
+                          // Get zone info from first outlet in schedule
+                          const firstOutletId = Array.isArray(schedule.outletIds) && (schedule.outletIds as string[])[0];
+                          const firstOutlet = firstOutletId ? outlets.find(o => o.id === firstOutletId) : null;
+                          const zoneName = firstOutlet?.territory || "Unknown Zone";
+                          
+                          return (
+                            <TableRow key={schedule.id}>
+                              <TableCell className="font-medium">
+                                {dayNames[schedule.dayOfWeek] || `Day ${schedule.dayOfWeek + 1}`}
                               </TableCell>
-                            )}
-                          </TableRow>
-                        ))}
+                              <TableCell>
+                                <div className="space-y-2">
+                                  <div className="flex items-center space-x-2">
+                                    <Badge variant="default" className="text-xs">
+                                      {zoneName}
+                                    </Badge>
+                                    <span className="text-sm text-gray-600">
+                                      ({Array.isArray(schedule.outletIds) ? (schedule.outletIds as string[]).length : 0} outlets)
+                                    </span>
+                                  </div>
+                                  <div className="text-xs text-gray-500">
+                                    Complete zone visit - all outlets in this zone
+                                  </div>
+                                </div>
+                              </TableCell>
+                              <TableCell className="text-center">
+                                <Badge variant="secondary">
+                                  {Array.isArray(schedule.outletIds) ? (schedule.outletIds as string[]).length : 0}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="text-center">
+                                <div className="flex items-center justify-center">
+                                  <Clock className="mr-1 h-4 w-4 text-gray-400" />
+                                  <span className="text-sm text-gray-600">
+                                    {schedule.estimatedDuration ? `${Math.round(schedule.estimatedDuration / 60)}h ${schedule.estimatedDuration % 60}m` : "N/A"}
+                                  </span>
+                                </div>
+                              </TableCell>
+                              {isEditMode && (
+                                <TableCell className="text-center">
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => setEditingSchedule(schedule)}
+                                  >
+                                    <Edit3 className="h-4 w-4" />
+                                  </Button>
+                                </TableCell>
+                              )}
+                            </TableRow>
+                          );
+                        })}
                       </TableBody>
                     </Table>
                   </div>
