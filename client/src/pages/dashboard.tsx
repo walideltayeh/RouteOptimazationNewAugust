@@ -25,9 +25,10 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="h-full overflow-auto">
+    <div className="p-6">
+      <div className="max-w-7xl mx-auto space-y-6">
         {/* Header */}
-        <header className="bg-white shadow-sm border-b border-gray-200 px-6 py-4">
+        <header className="bg-white shadow-sm border-b border-gray-200 px-6 py-4 rounded-lg">
           <div className="flex justify-between items-center">
             <div>
               <h2 className="text-2xl font-bold text-gray-900">Route Optimization Dashboard</h2>
@@ -46,7 +47,7 @@ export default function Dashboard() {
           </div>
         </header>
 
-        <div className="p-6">
+        <div className="">
           {/* Key Metrics Cards */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
             <Card className="metric-card">
@@ -146,6 +147,7 @@ export default function Dashboard() {
             <RepScheduleTable />
           </div>
         </div>
+      </div>
     </div>
   );
 }

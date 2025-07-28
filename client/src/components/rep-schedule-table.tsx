@@ -15,80 +15,6 @@ const TERRITORY_COLORS = [
   '#DDA0DD', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E9'
 ];
 
-export default function RepScheduleTable() {
-  const { data: reps = [] } = useQuery<Rep[]>({
-    queryKey: ['/api/reps'],
-  });
-
-  const { data: outlets = [] } = useQuery<Outlet[]>({
-    queryKey: ['/api/outlets'],
-  });
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center">
-          <Calendar className="mr-2 h-5 w-5" />
-          Rep Schedule Overview
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-4">
-          {reps.length === 0 ? (
-            <div className="text-center py-8 text-gray-500">
-              No representatives configured yet.
-            </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Rep</TableHead>
-                  <TableHead>Territory</TableHead>
-                  <TableHead>Outlets</TableHead>
-                  <TableHead>Daily Visits</TableHead>
-                  <TableHead>Status</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {reps.map((rep) => {
-                  const repOutlets = outlets.filter(o => o.territory === rep.territory);
-                  const dailyVisits = Math.round(repOutlets.reduce((sum, o) => sum + (o.visitFrequency || 2), 0) / 5);
-                  
-                  return (
-                    <TableRow key={rep.id}>
-                      <TableCell>
-                        <div className="flex items-center space-x-2">
-                          <div 
-                            className="w-3 h-3 rounded-full"
-                            style={{ backgroundColor: TERRITORY_COLORS[reps.indexOf(rep) % TERRITORY_COLORS.length] }}
-                          />
-                          <div>
-                            <div className="font-medium">{rep.name}</div>
-                            <div className="text-sm text-gray-500">{rep.code}</div>
-                          </div>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant="outline">{rep.territory}</Badge>
-                      </TableCell>
-                      <TableCell>{repOutlets.length}</TableCell>
-                      <TableCell>~{dailyVisits} visits/day</TableCell>
-                      <TableCell>
-                        <Badge variant={dailyVisits > 12 ? "destructive" : dailyVisits < 6 ? "secondary" : "default"}>
-                          {dailyVisits > 12 ? "Overloaded" : dailyVisits < 6 ? "Underutilized" : "Optimal"}
-                        </Badge>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          )}
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
 const territoryColors = [
   "bg-red-500",
   "bg-blue-500", 
@@ -100,7 +26,7 @@ const territoryColors = [
   "bg-cyan-500"
 ];
 
-export function RepScheduleTable() {
+export default function RepScheduleTable() {
   const [selectedRepId, setSelectedRepId] = useState<string | null>(null);
   const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
   const [isEditMode, setIsEditMode] = useState(false);
@@ -330,5 +256,3 @@ export function RepScheduleTable() {
     </Card>
   );
 }
-
-export default RepScheduleTable;
