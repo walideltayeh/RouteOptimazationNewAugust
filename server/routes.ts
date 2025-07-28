@@ -45,14 +45,140 @@ function performGeographicClustering(outlets: Outlet[], targetRepCount: number):
   
   console.log(`Creating ${optimalClusterCount} geographic clusters for ${outlets.length} outlets (target: ~${targetClusterSize} outlets per cluster)`);
   
-  // Step 1: Create compact geographic clusters using density-based approach
-  const clusters = createCompactClusters(outlets, optimalClusterCount, targetClusterSize);
+  // Use improved k-means clustering for better geographic distribution
+  const clusters = performImprovedKMeans(outlets, optimalClusterCount, targetClusterSize);
   
-  // Step 2: Each cluster becomes a separate territory (no combining)
-  const territories = assignClustersToReps(clusters, clusters.length);
+  // Apply zone merger and splitter to ensure proper sizes
+  const finalClusters = performCompactZoneMerger(clusters);
   
-  console.log(`Created ${territories.length} compact territories, each with ~${targetClusterSize} outlets (after merging small clusters)`);
-  return territories;
+  console.log(`Created ${finalClusters.length} compact territories, each with ~${targetClusterSize} outlets`);
+  return finalClusters;
+}
+
+// Improved K-means clustering with size constraints
+function performImprovedKMeans(outlets: Outlet[], k: number, targetSize: number): GeographicCluster[] {
+  if (outlets.length === 0 || k <= 0) return [];
+  
+  // Initialize clusters using k-means++ method
+  const clusters: GeographicCluster[] = [];
+  const remainingOutlets = [...outlets];
+  
+  // Select first centroid randomly
+  const firstIndex = Math.floor(Math.random() * remainingOutlets.length);
+  clusters.push({
+    id: 0,
+    centroid: { 
+      lat: remainingOutlets[firstIndex].latitude, 
+      lng: remainingOutlets[firstIndex].longitude 
+    },
+    outlets: []
+  });
+  
+  // Select remaining centroids using k-means++ (weighted by distance)
+  for (let i = 1; i < k; i++) {
+    const distances = remainingOutlets.map(outlet => {
+      let minDist = Infinity;
+      clusters.forEach(cluster => {
+        const dist = calculateHaversineDistance(
+          outlet.latitude, outlet.longitude,
+          cluster.centroid.lat, cluster.centroid.lng
+        );
+        minDist = Math.min(minDist, dist);
+      });
+      return minDist * minDist; // Square for weighting
+    });
+    
+    const totalDist = distances.reduce((sum, d) => sum + d, 0);
+    let random = Math.random() * totalDist;
+    let cumulative = 0;
+    let selectedIndex = 0;
+    
+    for (let j = 0; j < distances.length; j++) {
+      cumulative += distances[j];
+      if (cumulative >= random) {
+        selectedIndex = j;
+        break;
+      }
+    }
+    
+    clusters.push({
+      id: i,
+      centroid: { 
+        lat: remainingOutlets[selectedIndex].latitude, 
+        lng: remainingOutlets[selectedIndex].longitude 
+      },
+      outlets: []
+    });
+  }
+  
+  // Perform k-means iterations with size constraints
+  const maxIterations = 50;
+  let iteration = 0;
+  let changed = true;
+  
+  while (iteration < maxIterations && changed) {
+    changed = false;
+    
+    // Clear current assignments
+    clusters.forEach(cluster => cluster.outlets = []);
+    
+    // Assign outlets to nearest cluster (with size constraints)
+    const assignmentOrder = [...outlets].sort(() => Math.random() - 0.5); // Randomize to avoid bias
+    
+    assignmentOrder.forEach(outlet => {
+      // Find distances to all clusters
+      const clusterDistances = clusters.map((cluster, idx) => ({
+        index: idx,
+        distance: calculateHaversineDistance(
+          outlet.latitude, outlet.longitude,
+          cluster.centroid.lat, cluster.centroid.lng
+        ),
+        currentSize: cluster.outlets.length
+      }));
+      
+      // Sort by distance
+      clusterDistances.sort((a, b) => a.distance - b.distance);
+      
+      // Assign to nearest cluster that has room
+      let assigned = false;
+      for (const { index, currentSize } of clusterDistances) {
+        if (currentSize < targetSize + 5) { // Allow slight overage for flexibility
+          clusters[index].outlets.push(outlet);
+          assigned = true;
+          changed = true;
+          break;
+        }
+      }
+      
+      // If no cluster has room, assign to nearest anyway (will be handled in merger)
+      if (!assigned) {
+        clusters[clusterDistances[0].index].outlets.push(outlet);
+        changed = true;
+      }
+    });
+    
+    // Update centroids
+    clusters.forEach(cluster => {
+      if (cluster.outlets.length > 0) {
+        cluster.centroid = {
+          lat: cluster.outlets.reduce((sum, o) => sum + o.latitude, 0) / cluster.outlets.length,
+          lng: cluster.outlets.reduce((sum, o) => sum + o.longitude, 0) / cluster.outlets.length
+        };
+      }
+    });
+    
+    iteration++;
+  }
+  
+  // Remove empty clusters
+  const nonEmptyClusters = clusters.filter(c => c.outlets.length > 0);
+  
+  // Reassign IDs
+  nonEmptyClusters.forEach((cluster, idx) => cluster.id = idx);
+  
+  console.log(`K-means completed in ${iteration} iterations, created ${nonEmptyClusters.length} clusters`);
+  
+  return nonEmptyClusters;
 }
 
 function createCompactClusters(outlets: Outlet[], maxClusters: number, targetSize: number): GeographicCluster[] {

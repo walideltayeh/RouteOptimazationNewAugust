@@ -135,6 +135,7 @@ Preferred communication style: Simple, everyday language.
 ✓ **Fixed Dropdown Scrolling**: Implemented proper scrolling constraints for multi-select territory dropdown using Command component's built-in scroll handling
 ✓ **Enforced Strict Zone Size Limits**: Updated clustering algorithm to ensure no zone exceeds 25 outlets by implementing strict size checks during cluster assignment
 ✓ **Enhanced Zone Merger Logic**: Improved 5-phase merging system to ensure all zones with ≤5 outlets are merged with their closest neighbor that has capacity
+✓ **Implemented Improved K-means Clustering**: Replaced basic clustering with advanced k-means++ initialization and size-constrained assignment for better geographic distribution
 ✓ **Fixed File Upload After Clear**: Resolved issue where file upload wouldn't work after clearing data
 ✓ **Replaced Route Efficiency Graph**: Changed to Territory Balance metric for better territory distribution insights
 ✓ **Updated Default Visit Parameters**: Min/Max visits changed from 15/25 to 25/30 for realistic Lebanese market conditions
