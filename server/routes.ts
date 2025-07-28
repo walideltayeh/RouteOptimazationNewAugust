@@ -323,17 +323,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Assign outlets to reps using simple round-robin distribution
-      const outletsPerRep = Math.ceil(outlets.length / allReps.length);
-      
-      for (let i = 0; i < outlets.length; i++) {
-        const repIndex = Math.floor(i / outletsPerRep);
-        const assignedRep = allReps[Math.min(repIndex, allReps.length - 1)];
+      if (allReps.length > 0) {
+        const outletsPerRep = Math.ceil(outlets.length / allReps.length);
         
-        await storage.updateOutlet(outlets[i].id, {
-          repId: assignedRep.id,
-          territory: assignedRep.territory,
-          cluster: repIndex
-        });
+        for (let i = 0; i < outlets.length; i++) {
+          const repIndex = Math.floor(i / outletsPerRep);
+          const assignedRep = allReps[Math.min(repIndex, allReps.length - 1)];
+          
+          if (assignedRep && assignedRep.id) {
+            await storage.updateOutlet(outlets[i].id, {
+              repId: assignedRep.id,
+              territory: assignedRep.territory,
+              cluster: repIndex
+            });
+          }
+        }
       }
 
       // Generate schedules for each rep
