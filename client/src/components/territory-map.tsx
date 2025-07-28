@@ -6,6 +6,10 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import type { Outlet, Rep } from '@shared/schema';
 import mapboxgl from 'mapbox-gl';
+import 'mapbox-gl/dist/mapbox-gl.css';
+
+// Set a default token or use environment variable
+mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN || 'pk.eyJ1IjoiZGVtbyIsImEiOiJjazlkb2E4YTUwMDdxM29wZmRwZDE2YmJ0In0.demo_token';
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_PUBLIC_KEY;
 
@@ -36,6 +40,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   useEffect(() => {
     if (map.current || !mapContainer.current) return;
 
+    try {
     mapboxgl.accessToken = MAPBOX_TOKEN;
     map.current = new mapboxgl.Map({
       container: mapContainer.current,
@@ -49,6 +54,9 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
         map.current.remove();
       }
     };
+    } catch (error) {
+      console.error('Failed to initialize map:', error);
+    }
   }, []);
 
   // Add markers and fit bounds when outlets change
@@ -60,15 +68,15 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     existingMarkers.forEach(marker => marker.remove());
 
     const bounds = new mapboxgl.LngLatBounds();
-    
+
     outlets.forEach((outlet) => {
       bounds.extend([outlet.longitude, outlet.latitude]);
-      
+
       const markerEl = document.createElement('div');
       markerEl.className = 'outlet-marker w-6 h-6 rounded-full border-2 border-white shadow-lg cursor-pointer hover:scale-110 transition-transform flex items-center justify-center';
       markerEl.style.backgroundColor = getColorForTerritory(outlet.territory || 'Unassigned');
       markerEl.innerHTML = '<div class="w-2 h-2 bg-white rounded-full"></div>';
-      
+
       markerEl.addEventListener('click', () => {
         setSelectedOutlet(outlet);
       });
@@ -102,6 +110,30 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   const getRepForTerritory = (territory: string) => {
     return reps.find(rep => rep.territory === territory);
   };
+
+  if (!mapboxgl.accessToken || mapboxgl.accessToken.includes('demo_token')) {
+    return (
+      <div className="flex flex-col h-full ${className}">
+        {/* Map Header */}
+      
+        <div className="flex flex-1 gap-4">
+          {/* Map */}
+          
+              
+                <div className="w-full h-[500px] rounded-lg bg-gray-100 flex items-center justify-center">
+                  <div className="text-center p-4">
+                    <p className="text-gray-600 mb-2">Map requires Mapbox API token</p>
+                    <p className="text-sm text-gray-500">Set VITE_MAPBOX_TOKEN in your environment</p>
+                  </div>
+                </div>
+          
+
+          {/* Territory Legend and Info */}
+          
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={`flex flex-col h-full ${className}`}>
@@ -154,7 +186,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                 const rep = getRepForTerritory(territory);
                 const vf2Count = territoryOutlets.filter(o => o.visitFrequency === 2).length;
                 const vf4Count = territoryOutlets.filter(o => o.visitFrequency === 4).length;
-                
+
                 return (
                   <div key={territory} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
                     <div className="flex items-center space-x-3">
@@ -194,7 +226,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                     <div className="text-sm text-gray-600 mt-1">{selectedOutlet.address}</div>
                   )}
                 </div>
-                
+
                 <div className="grid grid-cols-2 gap-3 text-sm">
                   <div>
                     <span className="text-gray-600">Visit Frequency:</span>

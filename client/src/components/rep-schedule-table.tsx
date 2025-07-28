@@ -3,14 +3,10 @@ import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { 
-  Table, 
-  TableBody, 
-  TableCell, 
-  TableHead, 
-  TableHeader, 
-  TableRow 
-} from "@/components/ui/table";
+import React from "react";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Calendar, Download, RefreshCw, Eye, Edit, CheckCircle, Clock, Info } from "lucide-react";
 import type { Rep, Outlet, Schedule } from "@shared/schema";
 import ScheduleViewModal from "./schedule-view-modal";
@@ -27,7 +23,7 @@ const territoryColors = [
   "bg-cyan-500"
 ];
 
-export default function RepScheduleTable() {
+export function RepScheduleTable() {
   const [selectedRepId, setSelectedRepId] = useState<string | null>(null);
   const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
   const [isEditMode, setIsEditMode] = useState(false);
@@ -59,7 +55,7 @@ export default function RepScheduleTable() {
     const vf4Outlets = repOutlets.filter(outlet => outlet.visitFrequency === 4).length;
     const weeklyVisits = (vf2Outlets * 2) + (vf4Outlets * 4);
     const dailyVisits = Math.round(weeklyVisits / rep.workingDaysPerWeek);
-    
+
     return {
       ...rep,
       vf2Outlets,
@@ -93,7 +89,7 @@ export default function RepScheduleTable() {
             <Calendar className="mr-2 h-5 w-5 text-primary" />
             Rep Scheduling Overview
           </CardTitle>
-          
+
           <div className="flex items-center space-x-3">
             <Button variant="outline" size="sm">
               <Download className="mr-2 h-4 w-4" />
