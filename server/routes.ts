@@ -149,7 +149,7 @@ function createCompactClusters(outlets: Outlet[], maxClusters: number, targetSiz
 // Enhanced Compact Zone Merger for Small Territories
 function performCompactZoneMerger(clusters: GeographicCluster[]): GeographicCluster[] {
   const MIN_CLUSTER_SIZE = 5;
-  const MAX_CLUSTER_SIZE = 35;
+  const MAX_CLUSTER_SIZE = 40; // Increased slightly to allow more flexibility
   const OPTIMAL_CLUSTER_SIZE = 25;
   const MAX_MERGE_DISTANCE = 8; // km - Maximum distance for merging clusters
   
@@ -304,8 +304,8 @@ function performCompactZoneMerger(clusters: GeographicCluster[]): GeographicClus
     const remainingSmallClusters = workingClusters.filter(c => c.outlets.length <= MIN_CLUSTER_SIZE);
     
     for (const smallCluster of remainingSmallClusters) {
-      // Find ANY merge candidate, ignoring distance and size limits
-      const mergeCandidate = findBestMergeCandidate(smallCluster, workingClusters, Infinity, Infinity);
+      // Find ANY merge candidate with relaxed but reasonable limits
+      const mergeCandidate = findBestMergeCandidate(smallCluster, workingClusters, 20, 50); // 20km max distance, 50 outlets max
       
       if (mergeCandidate && workingClusters.length > 1) {
         console.log(`  Phase 3: Final cleanup - merged cluster ${smallCluster.id} (${smallCluster.outlets.length}) → cluster ${mergeCandidate.id} (${mergeCandidate.outlets.length})`);
@@ -319,6 +319,49 @@ function performCompactZoneMerger(clusters: GeographicCluster[]): GeographicClus
       }
     }
   }
+  
+  // Phase 4: Split oversized clusters
+  console.log(`\nPhase 4: Splitting oversized clusters`);
+  let finalClusters: GeographicCluster[] = [];
+  
+  for (const cluster of workingClusters) {
+    if (cluster.outlets.length > 50) {
+      console.log(`  Splitting oversized cluster ${cluster.id} with ${cluster.outlets.length} outlets`);
+      
+      // Calculate how many sub-clusters we need
+      const subClusterCount = Math.ceil(cluster.outlets.length / OPTIMAL_CLUSTER_SIZE);
+      
+      // Perform k-means clustering on the outlets in this cluster
+      const outletPoints = cluster.outlets.map((outlet, idx) => ({
+        id: outlet.id,
+        latitude: outlet.latitude,
+        longitude: outlet.longitude,
+        data: outlet
+      }));
+      
+      // Simple k-means to split the oversized cluster
+      const subClusters = performSimpleKMeans(outletPoints, subClusterCount);
+      
+      // Convert sub-clusters to GeographicClusters
+      subClusters.forEach((subCluster, idx) => {
+        const newCluster: GeographicCluster = {
+          id: finalClusters.length,
+          outlets: subCluster.map(point => point.data),
+          centroid: {
+            lat: subCluster.reduce((sum, p) => sum + p.latitude, 0) / subCluster.length,
+            lng: subCluster.reduce((sum, p) => sum + p.longitude, 0) / subCluster.length
+          }
+        };
+        finalClusters.push(newCluster);
+        console.log(`    Created sub-cluster with ${newCluster.outlets.length} outlets`);
+      });
+    } else {
+      cluster.id = finalClusters.length;
+      finalClusters.push(cluster);
+    }
+  }
+  
+  workingClusters = finalClusters;
   
   // Reassign cluster IDs
   workingClusters.forEach((cluster, index) => {
@@ -415,6 +458,77 @@ function findNearbyOptimizationTarget(
   }
   
   return bestTarget;
+}
+
+// Simple k-means implementation for splitting oversized clusters
+function performSimpleKMeans(points: any[], k: number): any[][] {
+  if (k <= 1 || points.length <= k) return [points];
+  
+  // Initialize centroids using k-means++ method
+  const centroids: any[] = [];
+  centroids.push(points[Math.floor(Math.random() * points.length)]);
+  
+  for (let i = 1; i < k; i++) {
+    const distances = points.map(p => {
+      let minDist = Infinity;
+      centroids.forEach(c => {
+        const dist = calculateHaversineDistance(p.latitude, p.longitude, c.latitude, c.longitude);
+        minDist = Math.min(minDist, dist);
+      });
+      return minDist;
+    });
+    
+    const totalDist = distances.reduce((sum, d) => sum + d, 0);
+    let random = Math.random() * totalDist;
+    let cumulative = 0;
+    
+    for (let j = 0; j < distances.length; j++) {
+      cumulative += distances[j];
+      if (cumulative >= random) {
+        centroids.push(points[j]);
+        break;
+      }
+    }
+  }
+  
+  // Perform k-means iterations
+  const clusters: any[][] = Array(k).fill(null).map(() => []);
+  
+  for (let iter = 0; iter < 20; iter++) {
+    // Clear clusters
+    clusters.forEach(c => c.length = 0);
+    
+    // Assign points to nearest centroid
+    points.forEach(point => {
+      let nearest = 0;
+      let minDist = Infinity;
+      
+      centroids.forEach((centroid, idx) => {
+        const dist = calculateHaversineDistance(
+          point.latitude, point.longitude,
+          centroid.latitude, centroid.longitude
+        );
+        if (dist < minDist) {
+          minDist = dist;
+          nearest = idx;
+        }
+      });
+      
+      clusters[nearest].push(point);
+    });
+    
+    // Update centroids
+    clusters.forEach((cluster, idx) => {
+      if (cluster.length > 0) {
+        centroids[idx] = {
+          latitude: cluster.reduce((sum, p) => sum + p.latitude, 0) / cluster.length,
+          longitude: cluster.reduce((sum, p) => sum + p.longitude, 0) / cluster.length
+        };
+      }
+    });
+  }
+  
+  return clusters.filter(c => c.length > 0);
 }
 
 // Merge two clusters

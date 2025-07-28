@@ -525,10 +525,10 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                   </Button>
                 </PopoverTrigger>
                 <PopoverContent className="w-full p-0">
-                  <Command>
+                  <Command className="h-[300px]">
                     <CommandInput placeholder="Search territories..." />
                     <CommandEmpty>No territory found.</CommandEmpty>
-                    <CommandGroup>
+                    <CommandGroup className="overflow-y-auto max-h-[240px]">
                       <CommandItem
                         onSelect={() => {
                           setSelectedZones([]);
