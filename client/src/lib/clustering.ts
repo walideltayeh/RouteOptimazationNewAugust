@@ -1,0 +1,214 @@
+// K-means clustering algorithm for GPS-based outlet grouping
+export interface Point {
+  id: string;
+  latitude: number;
+  longitude: number;
+  data?: any;
+}
+
+export interface Cluster {
+  id: number;
+  centroid: { latitude: number; longitude: number };
+  points: Point[];
+}
+
+// Calculate distance between two GPS points using Haversine formula
+export function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371; // Earth's radius in kilometers
+  const dLat = toRadians(lat2 - lat1);
+  const dLon = toRadians(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+function toRadians(degrees: number): number {
+  return degrees * (Math.PI / 180);
+}
+
+// K-means clustering implementation
+export function kMeansClustering(points: Point[], k: number, maxIterations: number = 100): Cluster[] {
+  if (points.length === 0 || k <= 0) return [];
+  
+  // Initialize centroids randomly
+  const clusters: Cluster[] = [];
+  for (let i = 0; i < k; i++) {
+    const randomPoint = points[Math.floor(Math.random() * points.length)];
+    clusters.push({
+      id: i,
+      centroid: { latitude: randomPoint.latitude, longitude: randomPoint.longitude },
+      points: []
+    });
+  }
+
+  let iteration = 0;
+  let converged = false;
+
+  while (iteration < maxIterations && !converged) {
+    // Clear previous assignments
+    clusters.forEach(cluster => cluster.points = []);
+
+    // Assign each point to the nearest centroid
+    points.forEach(point => {
+      let minDistance = Infinity;
+      let closestCluster = 0;
+
+      clusters.forEach((cluster, index) => {
+        const distance = calculateDistance(
+          point.latitude,
+          point.longitude,
+          cluster.centroid.latitude,
+          cluster.centroid.longitude
+        );
+
+        if (distance < minDistance) {
+          minDistance = distance;
+          closestCluster = index;
+        }
+      });
+
+      clusters[closestCluster].points.push(point);
+    });
+
+    // Update centroids
+    converged = true;
+    clusters.forEach(cluster => {
+      if (cluster.points.length === 0) return;
+
+      const newCentroid = {
+        latitude: cluster.points.reduce((sum, p) => sum + p.latitude, 0) / cluster.points.length,
+        longitude: cluster.points.reduce((sum, p) => sum + p.longitude, 0) / cluster.points.length
+      };
+
+      // Check if centroid moved significantly
+      const movement = calculateDistance(
+        cluster.centroid.latitude,
+        cluster.centroid.longitude,
+        newCentroid.latitude,
+        newCentroid.longitude
+      );
+
+      if (movement > 0.01) { // 10 meters threshold
+        converged = false;
+      }
+
+      cluster.centroid = newCentroid;
+    });
+
+    iteration++;
+  }
+
+  return clusters.filter(cluster => cluster.points.length > 0);
+}
+
+// DBSCAN clustering alternative for density-based clustering
+export function dbscanClustering(points: Point[], epsilon: number = 0.5, minPoints: number = 3): Cluster[] {
+  const clusters: Cluster[] = [];
+  const visited = new Set<string>();
+  const clustered = new Set<string>();
+  let clusterId = 0;
+
+  points.forEach(point => {
+    if (visited.has(point.id)) return;
+    visited.add(point.id);
+
+    const neighbors = getNeighbors(point, points, epsilon);
+    
+    if (neighbors.length < minPoints) {
+      // Point is noise - could be handled separately
+      return;
+    }
+
+    // Create new cluster
+    const cluster: Cluster = {
+      id: clusterId++,
+      centroid: { latitude: point.latitude, longitude: point.longitude },
+      points: [point]
+    };
+    clustered.add(point.id);
+
+    // Expand cluster
+    const queue = [...neighbors];
+    while (queue.length > 0) {
+      const currentPoint = queue.shift()!;
+      
+      if (!visited.has(currentPoint.id)) {
+        visited.add(currentPoint.id);
+        const currentNeighbors = getNeighbors(currentPoint, points, epsilon);
+        
+        if (currentNeighbors.length >= minPoints) {
+          queue.push(...currentNeighbors);
+        }
+      }
+
+      if (!clustered.has(currentPoint.id)) {
+        cluster.points.push(currentPoint);
+        clustered.add(currentPoint.id);
+      }
+    }
+
+    // Update centroid
+    cluster.centroid = {
+      latitude: cluster.points.reduce((sum, p) => sum + p.latitude, 0) / cluster.points.length,
+      longitude: cluster.points.reduce((sum, p) => sum + p.longitude, 0) / cluster.points.length
+    };
+
+    clusters.push(cluster);
+  });
+
+  return clusters;
+}
+
+function getNeighbors(point: Point, points: Point[], epsilon: number): Point[] {
+  return points.filter(p => {
+    if (p.id === point.id) return false;
+    const distance = calculateDistance(point.latitude, point.longitude, p.latitude, p.longitude);
+    return distance <= epsilon;
+  });
+}
+
+// Utility function to determine optimal number of clusters using elbow method
+export function findOptimalClusters(points: Point[], maxK: number = 10): number {
+  if (points.length <= 1) return 1;
+  
+  const wcss: number[] = []; // Within-cluster sum of squares
+  
+  for (let k = 1; k <= Math.min(maxK, points.length); k++) {
+    const clusters = kMeansClustering(points, k);
+    let totalWCSS = 0;
+    
+    clusters.forEach(cluster => {
+      cluster.points.forEach(point => {
+        const distance = calculateDistance(
+          point.latitude,
+          point.longitude,
+          cluster.centroid.latitude,
+          cluster.centroid.longitude
+        );
+        totalWCSS += distance * distance;
+      });
+    });
+    
+    wcss.push(totalWCSS);
+  }
+  
+  // Find elbow point (simplified)
+  let optimalK = 1;
+  let maxImprovement = 0;
+  
+  for (let i = 1; i < wcss.length - 1; i++) {
+    const improvement = wcss[i - 1] - wcss[i];
+    const nextImprovement = wcss[i] - wcss[i + 1];
+    const elbowStrength = improvement - nextImprovement;
+    
+    if (elbowStrength > maxImprovement) {
+      maxImprovement = elbowStrength;
+      optimalK = i + 1;
+    }
+  }
+  
+  return optimalK;
+}
