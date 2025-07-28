@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -11,7 +12,8 @@ import {
   TableRow 
 } from "@/components/ui/table";
 import { Calendar, Download, RefreshCw, Eye, Edit, CheckCircle, Clock, Info } from "lucide-react";
-import type { Rep, Outlet } from "@shared/schema";
+import type { Rep, Outlet, Schedule } from "@shared/schema";
+import ScheduleViewModal from "./schedule-view-modal";
 
 // Territory colors for rep avatars
 const territoryColors = [
@@ -26,6 +28,10 @@ const territoryColors = [
 ];
 
 export default function RepScheduleTable() {
+  const [selectedRepId, setSelectedRepId] = useState<string | null>(null);
+  const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
+  const [isEditMode, setIsEditMode] = useState(false);
+
   const { data: reps = [], isLoading } = useQuery<Rep[]>({
     queryKey: ["/api/reps"],
   });
@@ -33,6 +39,18 @@ export default function RepScheduleTable() {
   const { data: outlets = [] } = useQuery<Outlet[]>({
     queryKey: ["/api/outlets"],
   });
+
+  const handleViewSchedule = (repId: string) => {
+    setSelectedRepId(repId);
+    setIsEditMode(false);
+    setIsScheduleModalOpen(true);
+  };
+
+  const handleEditSchedule = (repId: string) => {
+    setSelectedRepId(repId);
+    setIsEditMode(true);
+    setIsScheduleModalOpen(true);
+  };
 
   // Calculate rep statistics
   const repsWithStats = reps.map((rep, index) => {
@@ -178,10 +196,18 @@ export default function RepScheduleTable() {
                     </TableCell>
                     <TableCell className="text-center">
                       <div className="flex items-center justify-center space-x-2">
-                        <Button variant="ghost" size="sm">
+                        <Button 
+                          variant="ghost" 
+                          size="sm"
+                          onClick={() => handleViewSchedule(rep.id)}
+                        >
                           <Eye className="h-4 w-4" />
                         </Button>
-                        <Button variant="ghost" size="sm">
+                        <Button 
+                          variant="ghost" 
+                          size="sm"
+                          onClick={() => handleEditSchedule(rep.id)}
+                        >
                           <Edit className="h-4 w-4" />
                         </Button>
                       </div>
@@ -215,6 +241,19 @@ export default function RepScheduleTable() {
           </div>
         )}
       </CardContent>
+
+      {/* Schedule Modal */}
+      {selectedRepId && (
+        <ScheduleViewModal
+          repId={selectedRepId}
+          isOpen={isScheduleModalOpen}
+          onClose={() => {
+            setIsScheduleModalOpen(false);
+            setSelectedRepId(null);
+          }}
+          isEditMode={isEditMode}
+        />
+      )}
     </Card>
   );
 }

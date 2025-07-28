@@ -1,7 +1,7 @@
 import type { Express, Request } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertOptimizationRunSchema, insertOutletSchema, insertRepSchema } from "@shared/schema";
+import { insertOptimizationRunSchema, insertOutletSchema, insertRepSchema, insertScheduleSchema, type InsertSchedule, type Rep, type Outlet } from "@shared/schema";
 import multer from "multer";
 import * as XLSX from "xlsx";
 import Papa from "papaparse";
@@ -11,6 +11,57 @@ interface MulterRequest extends Request {
 }
 
 const upload = multer({ storage: multer.memoryStorage() });
+
+// Helper function to generate weekly schedules for a rep
+function generateWeeklySchedules(rep: Rep, outlets: Outlet[]): InsertSchedule[] {
+  const schedules: InsertSchedule[] = [];
+  const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+  const workingDays = daysOfWeek.slice(0, rep.workingDaysPerWeek);
+  
+  // Separate outlets by visit frequency
+  const vf2Outlets = outlets.filter(o => o.visitFrequency === 2);
+  const vf4Outlets = outlets.filter(o => o.visitFrequency === 4);
+  
+  // Generate schedules for Week 1 and Week 2 (which repeat)
+  for (let week = 1; week <= 2; week++) {
+    for (let dayIndex = 0; dayIndex < workingDays.length; dayIndex++) {
+      const dayName = workingDays[dayIndex];
+      const visitOrder: string[] = [];
+      
+      // Add VF4 outlets (visit every day they work)
+      vf4Outlets.forEach((outlet, index) => {
+        if (visitOrder.length < rep.maxDailyVisits) {
+          visitOrder.push(outlet.id);
+        }
+      });
+      
+      // Add VF2 outlets (distribute across days)
+      // For VF2: Week 1 visit on days 0,2,4... Week 2 visit on days 1,3,5...
+      const vf2StartOffset = week === 1 ? 0 : 1;
+      vf2Outlets.forEach((outlet, index) => {
+        if (visitOrder.length < rep.maxDailyVisits) {
+          // Distribute VF2 visits across working days
+          const shouldVisitToday = (index + vf2StartOffset + (week - 1)) % rep.workingDaysPerWeek === dayIndex;
+          if (shouldVisitToday) {
+            visitOrder.push(outlet.id);
+          }
+        }
+      });
+      
+      if (visitOrder.length > 0) {
+        schedules.push({
+          repId: rep.id,
+          week: week,
+          dayOfWeek: daysOfWeek.indexOf(dayName),
+          outletIds: visitOrder,
+          routeOrder: visitOrder
+        });
+      }
+    }
+  }
+  
+  return schedules;
+}
 
 export async function registerRoutes(app: Express): Promise<Server> {
   
@@ -195,6 +246,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Update schedule
+  app.put("/api/schedules/:scheduleId", async (req, res) => {
+    try {
+      const schedule = await storage.getSchedules();
+      const existing = schedule.find(s => s.id === req.params.scheduleId);
+      if (!existing) {
+        return res.status(404).json({ message: "Schedule not found" });
+      }
+
+      // Update the schedule with new route order
+      const updateData = {
+        routeOrder: req.body.routeOrder || existing.routeOrder,
+        outletIds: req.body.outletIds || existing.outletIds
+      };
+
+      // Since we don't have updateSchedule method, we'll recreate it
+      const updatedScheduleData = { 
+        repId: existing.repId,
+        week: existing.week,
+        dayOfWeek: existing.dayOfWeek,
+        outletIds: updateData.outletIds,
+        routeOrder: updateData.routeOrder,
+        totalDistance: existing.totalDistance,
+        estimatedDuration: existing.estimatedDuration
+      };
+      const newSchedule = await storage.createSchedule(updatedScheduleData);
+      
+      res.json(newSchedule);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update schedule" });
+    }
+  });
+
   // Route optimization
   app.post("/api/optimize", async (req, res) => {
     try {
@@ -239,6 +323,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
           territory: assignedRep.territory,
           cluster: repIndex
         });
+      }
+
+      // Generate schedules for each rep
+      for (const rep of allReps) {
+        // Clear existing schedules for this rep
+        await storage.deleteSchedulesByRepId(rep.id);
+        
+        // Get outlets assigned to this rep
+        const repOutlets = outlets.filter(o => o.repId === rep.id);
+        if (repOutlets.length === 0) continue;
+
+        // Generate weekly schedules for Week 1 and Week 2 (which repeat as Week 3 and Week 4)
+        const repOutletsFiltered = outlets.filter(o => o.repId === rep.id);
+        const weeklySchedules = generateWeeklySchedules(rep, repOutletsFiltered);
+        await storage.createSchedules(weeklySchedules);
       }
 
       // Invalidate cache by refreshing data
