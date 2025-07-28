@@ -140,75 +140,218 @@ function createCompactClusters(outlets: Outlet[], maxClusters: number, targetSiz
     };
   }
   
-  // Merge clusters with less than 5 outlets into nearest clusters
-  const minClusterSize = 5;
-  let mergedSomething = true;
+  // Enhanced Compact Zone Merger for Small Territories
+  const mergedClusters = performCompactZoneMerger(clusters);
+  return mergedClusters;
+}
+
+// Enhanced Compact Zone Merger for Small Territories
+function performCompactZoneMerger(clusters: GeographicCluster[]): GeographicCluster[] {
+  const MIN_CLUSTER_SIZE = 5;
+  const MAX_CLUSTER_SIZE = 35;
+  const OPTIMAL_CLUSTER_SIZE = 25;
+  const MAX_MERGE_DISTANCE = 8; // km - Maximum distance for merging clusters
   
-  console.log(`Starting merge process. Found ${clusters.filter(c => c.outlets.length < minClusterSize).length} clusters with < ${minClusterSize} outlets`);
+  console.log(`\n=== COMPACT ZONE MERGER ===`);
+  console.log(`Starting with ${clusters.length} clusters`);
+  console.log(`Target: ${MIN_CLUSTER_SIZE}-${MAX_CLUSTER_SIZE} outlets per zone (optimal: ${OPTIMAL_CLUSTER_SIZE})`);
   
-  while (mergedSomething) {
-    mergedSomething = false;
-    const smallClusters = clusters.filter(c => c.outlets.length < minClusterSize);
-    
-    console.log(`Merge iteration: ${smallClusters.length} small clusters found`);
+  let workingClusters = [...clusters];
+  let mergeIteration = 0;
+  let totalMerges = 0;
+  
+  // Phase 1: Merge very small clusters (< 5 outlets) with nearest neighbors
+  console.log(`\nPhase 1: Merging clusters with < ${MIN_CLUSTER_SIZE} outlets`);
+  let phase1Merges = 0;
+  let hasSmallClusters = true;
+  
+  while (hasSmallClusters && workingClusters.length > 1) {
+    hasSmallClusters = false;
+    const smallClusters = workingClusters.filter(c => c.outlets.length < MIN_CLUSTER_SIZE);
     
     for (const smallCluster of smallClusters) {
-      if (clusters.length <= 1) break; // Don't merge if only one cluster left
+      // Find the best merge candidate
+      const mergeCandidate = findBestMergeCandidate(smallCluster, workingClusters, MAX_MERGE_DISTANCE, MAX_CLUSTER_SIZE);
       
-      // Find nearest cluster that's not the small cluster itself
-      let nearestCluster = null;
-      let nearestDistance = Infinity;
+      if (mergeCandidate) {
+        console.log(`  Merging small cluster ${smallCluster.id} (${smallCluster.outlets.length} outlets) → cluster ${mergeCandidate.id} (${mergeCandidate.outlets.length} outlets)`);
+        
+        // Perform merge
+        mergeClusters(mergeCandidate, smallCluster);
+        
+        // Remove merged cluster
+        workingClusters = workingClusters.filter(c => c.id !== smallCluster.id);
+        phase1Merges++;
+        totalMerges++;
+        hasSmallClusters = true;
+        break; // Restart iteration after each merge
+      }
+    }
+  }
+  
+  // Phase 2: Optimize cluster sizes by merging medium clusters that are too close
+  console.log(`\nPhase 2: Optimizing cluster distribution`);
+  let phase2Merges = 0;
+  let optimizationPossible = true;
+  
+  while (optimizationPossible && workingClusters.length > 1) {
+    optimizationPossible = false;
+    
+    // Look for clusters that are too close to each other and can be merged efficiently
+    for (let i = 0; i < workingClusters.length - 1; i++) {
+      const cluster1 = workingClusters[i];
       
-      clusters.forEach(cluster => {
-        if (cluster.id === smallCluster.id) return;
-        
-        const distance = calculateHaversineDistance(
-          smallCluster.centroid.lat, smallCluster.centroid.lng,
-          cluster.centroid.lat, cluster.centroid.lng
-        );
-        
-        if (distance < nearestDistance) {
-          nearestDistance = distance;
-          nearestCluster = cluster;
-        }
-      });
+      if (cluster1.outlets.length >= OPTIMAL_CLUSTER_SIZE) continue; // Skip large clusters
       
-      if (nearestCluster) {
-        console.log(`Merging small cluster ${smallCluster.id} (${smallCluster.outlets.length} outlets) into cluster ${nearestCluster.id} (${nearestCluster.outlets.length} outlets)`);
+      const nearbyCluster = findNearbyOptimizationTarget(cluster1, workingClusters, MAX_MERGE_DISTANCE, MAX_CLUSTER_SIZE);
+      
+      if (nearbyCluster) {
+        const combinedSize = cluster1.outlets.length + nearbyCluster.outlets.length;
         
-        // Move outlets from small cluster to nearest cluster
-        nearestCluster.outlets.push(...smallCluster.outlets);
-        
-        // Recalculate centroid
-        nearestCluster.centroid = {
-          lat: nearestCluster.outlets.reduce((sum, o) => sum + o.latitude, 0) / nearestCluster.outlets.length,
-          lng: nearestCluster.outlets.reduce((sum, o) => sum + o.longitude, 0) / nearestCluster.outlets.length
-        };
-        
-        console.log(`After merge: cluster ${nearestCluster.id} now has ${nearestCluster.outlets.length} outlets`);
-        
-        // Remove small cluster
-        const clusterIndex = clusters.findIndex(c => c.id === smallCluster.id);
-        if (clusterIndex >= 0) {
-          clusters.splice(clusterIndex, 1);
-          mergedSomething = true;
-          console.log(`Removed cluster ${smallCluster.id}, remaining clusters: ${clusters.length}`);
+        // Only merge if the result is closer to optimal size
+        if (combinedSize <= MAX_CLUSTER_SIZE && combinedSize <= OPTIMAL_CLUSTER_SIZE + 5) {
+          console.log(`  Optimizing: merging cluster ${cluster1.id} (${cluster1.outlets.length} outlets) → cluster ${nearbyCluster.id} (${nearbyCluster.outlets.length} outlets)`);
+          
+          mergeClusters(nearbyCluster, cluster1);
+          workingClusters = workingClusters.filter(c => c.id !== cluster1.id);
+          phase2Merges++;
+          totalMerges++;
+          optimizationPossible = true;
+          break;
         }
       }
     }
   }
   
-  // Reassign cluster IDs after merging
-  clusters.forEach((cluster, index) => {
+  // Phase 3: Final cleanup - merge any remaining very small clusters even if distance is larger
+  console.log(`\nPhase 3: Final cleanup`);
+  let phase3Merges = 0;
+  const remainingSmallClusters = workingClusters.filter(c => c.outlets.length < MIN_CLUSTER_SIZE);
+  
+  for (const smallCluster of remainingSmallClusters) {
+    // Find any merge candidate, even if distance is larger
+    const mergeCandidate = findBestMergeCandidate(smallCluster, workingClusters, Infinity, MAX_CLUSTER_SIZE + 10);
+    
+    if (mergeCandidate && workingClusters.length > 1) {
+      console.log(`  Final cleanup: merging cluster ${smallCluster.id} (${smallCluster.outlets.length} outlets) → cluster ${mergeCandidate.id} (${mergeCandidate.outlets.length} outlets)`);
+      
+      mergeClusters(mergeCandidate, smallCluster);
+      workingClusters = workingClusters.filter(c => c.id !== smallCluster.id);
+      phase3Merges++;
+      totalMerges++;
+    }
+  }
+  
+  // Reassign cluster IDs
+  workingClusters.forEach((cluster, index) => {
     cluster.id = index;
   });
   
-  console.log(`Final result: ${clusters.length} clusters after merging. Clusters with < ${minClusterSize} outlets: ${clusters.filter(c => c.outlets.length < minClusterSize).length}`);
-  clusters.forEach((cluster, index) => {
-    console.log(`Final cluster ${index}: ${cluster.outlets.length} outlets`);
+  // Final analysis
+  const finalSmallClusters = workingClusters.filter(c => c.outlets.length < MIN_CLUSTER_SIZE);
+  const optimalSizeClusters = workingClusters.filter(c => c.outlets.length >= MIN_CLUSTER_SIZE && c.outlets.length <= OPTIMAL_CLUSTER_SIZE);
+  const largeClusters = workingClusters.filter(c => c.outlets.length > OPTIMAL_CLUSTER_SIZE);
+  
+  console.log(`\n=== MERGER RESULTS ===`);
+  console.log(`Total merges performed: ${totalMerges} (Phase 1: ${phase1Merges}, Phase 2: ${phase2Merges}, Phase 3: ${phase3Merges})`);
+  console.log(`Final clusters: ${workingClusters.length}`);
+  console.log(`Small clusters (< ${MIN_CLUSTER_SIZE}): ${finalSmallClusters.length}`);
+  console.log(`Optimal clusters (${MIN_CLUSTER_SIZE}-${OPTIMAL_CLUSTER_SIZE}): ${optimalSizeClusters.length}`);
+  console.log(`Large clusters (> ${OPTIMAL_CLUSTER_SIZE}): ${largeClusters.length}`);
+  
+  // Log cluster size distribution
+  console.log(`\nCluster size distribution:`);
+  workingClusters.forEach((cluster, index) => {
+    const radius = calculateClusterRadius(cluster);
+    console.log(`  Zone ${index + 1}: ${cluster.outlets.length} outlets, ${radius.toFixed(2)}km radius`);
   });
   
-  return clusters;
+  return workingClusters;
+}
+
+// Find the best merge candidate for a cluster
+function findBestMergeCandidate(
+  sourceCluster: GeographicCluster, 
+  allClusters: GeographicCluster[], 
+  maxDistance: number, 
+  maxTargetSize: number
+): GeographicCluster | null {
+  let bestCandidate = null;
+  let bestScore = -1;
+  
+  for (const targetCluster of allClusters) {
+    if (targetCluster.id === sourceCluster.id) continue;
+    
+    const combinedSize = sourceCluster.outlets.length + targetCluster.outlets.length;
+    if (combinedSize > maxTargetSize) continue;
+    
+    const distance = calculateHaversineDistance(
+      sourceCluster.centroid.lat, sourceCluster.centroid.lng,
+      targetCluster.centroid.lat, targetCluster.centroid.lng
+    );
+    
+    if (distance > maxDistance) continue;
+    
+    // Scoring function: prefer closer clusters and better size balance
+    const distanceScore = Math.max(0, 10 - distance); // Closer is better
+    const sizeScore = Math.max(0, 10 - Math.abs(combinedSize - 25)); // Closer to optimal size is better
+    const currentSizeScore = targetCluster.outlets.length < 5 ? 5 : 0; // Prefer merging with other small clusters
+    
+    const totalScore = distanceScore + sizeScore + currentSizeScore;
+    
+    if (totalScore > bestScore) {
+      bestScore = totalScore;
+      bestCandidate = targetCluster;
+    }
+  }
+  
+  return bestCandidate;
+}
+
+// Find nearby cluster for optimization merging
+function findNearbyOptimizationTarget(
+  sourceCluster: GeographicCluster,
+  allClusters: GeographicCluster[],
+  maxDistance: number,
+  maxTargetSize: number
+): GeographicCluster | null {
+  let bestTarget = null;
+  let bestDistance = Infinity;
+  
+  for (const targetCluster of allClusters) {
+    if (targetCluster.id === sourceCluster.id) continue;
+    if (targetCluster.outlets.length >= 25) continue; // Skip large clusters
+    
+    const combinedSize = sourceCluster.outlets.length + targetCluster.outlets.length;
+    if (combinedSize > maxTargetSize) continue;
+    
+    const distance = calculateHaversineDistance(
+      sourceCluster.centroid.lat, sourceCluster.centroid.lng,
+      targetCluster.centroid.lat, targetCluster.centroid.lng
+    );
+    
+    if (distance < maxDistance && distance < bestDistance) {
+      bestDistance = distance;
+      bestTarget = targetCluster;
+    }
+  }
+  
+  return bestTarget;
+}
+
+// Merge two clusters
+function mergeClusters(targetCluster: GeographicCluster, sourceCluster: GeographicCluster): void {
+  // Move all outlets from source to target
+  targetCluster.outlets.push(...sourceCluster.outlets);
+  
+  // Recalculate centroid
+  targetCluster.centroid = {
+    lat: targetCluster.outlets.reduce((sum, o) => sum + o.latitude, 0) / targetCluster.outlets.length,
+    lng: targetCluster.outlets.reduce((sum, o) => sum + o.longitude, 0) / targetCluster.outlets.length
+  };
+  
+  const newRadius = calculateClusterRadius(targetCluster);
+  console.log(`    Result: ${targetCluster.outlets.length} outlets, ${newRadius.toFixed(2)}km radius`);
 }
 
 function findMostCentralOutlet(outlets: Outlet[]): Outlet {
