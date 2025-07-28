@@ -48,11 +48,11 @@ function performGeographicClustering(outlets: Outlet[], targetRepCount: number):
   // Step 1: Create compact geographic clusters using density-based approach
   const clusters = createCompactClusters(outlets, optimalClusterCount, targetClusterSize);
   
-  // Step 2: Assign clusters to reps (multiple clusters per rep if needed)
-  const repAssignments = assignClustersToReps(clusters, targetRepCount);
+  // Step 2: Each cluster becomes a separate territory (no combining)
+  const territories = assignClustersToReps(clusters, clusters.length);
   
-  console.log(`Created ${clusters.length} compact clusters, assigned to ${targetRepCount} reps`);
-  return repAssignments;
+  console.log(`Created ${territories.length} compact territories, each with ~${targetClusterSize} outlets`);
+  return territories;
 }
 
 function createCompactClusters(outlets: Outlet[], maxClusters: number, targetSize: number): GeographicCluster[] {
@@ -188,84 +188,17 @@ function calculateClusterRadius(cluster: GeographicCluster): number {
 }
 
 function assignClustersToReps(clusters: GeographicCluster[], repCount: number): GeographicCluster[] {
-  // If we have fewer or equal clusters than reps, each rep gets one cluster
-  if (clusters.length <= repCount) {
-    return clusters;
-  }
+  // Keep each cluster as a separate territory (one cluster = one rep)
+  // This ensures each territory has ~25 outlets and is geographically compact
   
-  // If we have more clusters than reps, combine nearby clusters
-  const repClusters: GeographicCluster[] = [];
-  const availableClusters = [...clusters];
+  console.log(`Assigning ${clusters.length} clusters as individual territories`);
   
-  // Calculate target outlets per rep
-  const totalOutlets = clusters.reduce((sum, c) => sum + c.outlets.length, 0);
-  const targetOutletsPerRep = Math.ceil(totalOutlets / repCount);
-  
-  for (let repIndex = 0; repIndex < repCount && availableClusters.length > 0; repIndex++) {
-    // Start with the cluster with most outlets
-    availableClusters.sort((a, b) => b.outlets.length - a.outlets.length);
-    const primaryCluster = availableClusters.shift()!;
-    
-    const repCluster: GeographicCluster = {
-      id: repIndex,
-      centroid: { ...primaryCluster.centroid },
-      outlets: [...primaryCluster.outlets]
-    };
-    
-    // Add nearby clusters until we reach target size
-    while (repCluster.outlets.length < targetOutletsPerRep && availableClusters.length > 0) {
-      // Find nearest remaining cluster
-      let nearestCluster = null;
-      let nearestDistance = Infinity;
-      let nearestIndex = -1;
-      
-      availableClusters.forEach((cluster, index) => {
-        const distance = calculateHaversineDistance(
-          cluster.centroid.lat, cluster.centroid.lng,
-          repCluster.centroid.lat, repCluster.centroid.lng
-        );
-        
-        if (distance < nearestDistance) {
-          nearestDistance = distance;
-          nearestCluster = cluster;
-          nearestIndex = index;
-        }
-      });
-      
-      if (nearestCluster && nearestIndex >= 0) {
-        // Add outlets from nearest cluster
-        repCluster.outlets.push(...nearestCluster.outlets);
-        availableClusters.splice(nearestIndex, 1);
-        
-        // Recalculate centroid
-        repCluster.centroid = {
-          lat: repCluster.outlets.reduce((sum, o) => sum + o.latitude, 0) / repCluster.outlets.length,
-          lng: repCluster.outlets.reduce((sum, o) => sum + o.longitude, 0) / repCluster.outlets.length
-        };
-      }
-    }
-    
-    repClusters.push(repCluster);
-    console.log(`Rep ${repIndex + 1}: ${repCluster.outlets.length} outlets in territory`);
-  }
-  
-  // Assign any remaining clusters to existing reps (smallest first)
-  while (availableClusters.length > 0) {
-    const remainingCluster = availableClusters.shift()!;
-    
-    // Find rep with fewest outlets
-    repClusters.sort((a, b) => a.outlets.length - b.outlets.length);
-    const targetRep = repClusters[0];
-    
-    targetRep.outlets.push(...remainingCluster.outlets);
-    // Recalculate centroid
-    targetRep.centroid = {
-      lat: targetRep.outlets.reduce((sum, o) => sum + o.latitude, 0) / targetRep.outlets.length,
-      lng: targetRep.outlets.reduce((sum, o) => sum + o.longitude, 0) / targetRep.outlets.length
-    };
-  }
-  
-  return repClusters;
+  // Simply return all clusters as separate territories
+  // Each cluster becomes a territory for one rep
+  return clusters.map((cluster, index) => ({
+    ...cluster,
+    id: index
+  }));
 }
 
 // Helper function to update territory names to be more descriptive
@@ -594,46 +527,57 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Ensure we don't go below minimum daily visits requirement
       const minWeeklyCapacityPerRep = workingDaysPerWeek * minVisitsPerDay;
       
-      // Use the calculated required reps
-      const finalRequiredReps = Math.max(1, requiredReps); // At least 1 rep needed
+      // Use the calculated required reps (initial estimate)
+      let finalRequiredReps = Math.max(1, requiredReps); // At least 1 rep needed
 
-      // Create or update reps
+      // Clear existing reps first
       const existingReps = await storage.getReps();
-      const repsToCreate = Math.max(0, finalRequiredReps - existingReps.length);
+      for (const rep of existingReps) {
+        await storage.deleteRep(rep.id);
+      }
 
-      const allReps = [...existingReps];
-      for (let i = 0; i < repsToCreate; i++) {
+      // Create territories based on geographic clusters (each cluster = one zone)
+      console.log(`Creating zones based on geographic clustering for ${outlets.length} outlets`);
+      
+      // Perform geographic clustering first to determine how many zones we need
+      const clusters = performGeographicClustering(outlets, outlets.length);
+      const actualZoneCount = clusters.length;
+      
+      console.log(`Created ${actualZoneCount} geographic zones`);
+      
+      // Create representatives for each zone
+      const allReps: Rep[] = [];
+      for (let i = 0; i < actualZoneCount; i++) {
+        const cluster = clusters[i];
+        if (cluster.outlets.length === 0) continue;
+        
+        const clusterRadius = calculateClusterRadius(cluster);
+        
         const newRep = await storage.createRep({
-          name: `Rep ${existingReps.length + i + 1}`,
-          code: `REP${String(existingReps.length + i + 1).padStart(3, '0')}`,
-          territory: `Zone ${String.fromCharCode(65 + (existingReps.length + i) % 26)}`,
-          minDailyVisits: minVisitsPerDay,
+          name: `Rep ${i + 1}`,
+          code: `REP${(i + 1).toString().padStart(3, '0')}`,
+          territory: `Zone ${i + 1}`, // Zone 1, Zone 2, Zone 3, etc.
           maxDailyVisits: maxVisitsPerDay,
+          minDailyVisits: minVisitsPerDay,
           workingDaysPerWeek,
           isActive: true
         });
         allReps.push(newRep);
-      }
-
-      // Assign outlets to reps using geographic clustering for optimal territories
-      if (allReps.length > 0) {
-        const clusters = performGeographicClustering(outlets, allReps.length);
         
-        for (let clusterIndex = 0; clusterIndex < clusters.length; clusterIndex++) {
-          const cluster = clusters[clusterIndex];
-          const assignedRep = allReps[clusterIndex];
-          
-          if (assignedRep && assignedRep.id) {
-            for (const outlet of cluster.outlets) {
-              await storage.updateOutlet(outlet.id, {
-                repId: assignedRep.id,
-                territory: assignedRep.territory,
-                cluster: clusterIndex
-              });
-            }
-          }
+        console.log(`Zone ${i + 1}: ${cluster.outlets.length} outlets, ${clusterRadius.toFixed(2)}km radius`);
+        
+        // Assign outlets to this rep
+        for (const outlet of cluster.outlets) {
+          await storage.updateOutlet(outlet.id, {
+            repId: newRep.id,
+            territory: newRep.territory,
+            cluster: i
+          });
         }
       }
+      
+      // Update final required reps to match actual zones created
+      finalRequiredReps = allReps.length;
 
       // Generate schedules for each rep
       console.log('Generating schedules for', allReps.length, 'reps');
