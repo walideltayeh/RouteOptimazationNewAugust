@@ -5,8 +5,9 @@ import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { MapPin, Users, Navigation, Layers, Grid3X3 } from 'lucide-react';
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem } from '@/components/ui/command';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { MapPin, Users, Navigation, Layers, Grid3X3, Check, ChevronsUpDown } from 'lucide-react';
 import type { Outlet, Rep } from '@shared/schema';
 
 // Set a default token or use environment variable
@@ -34,6 +35,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   const [isRenderingMarkers, setIsRenderingMarkers] = useState(false);
   const [viewMode, setViewMode] = useState<'cluster' | 'individual'>('cluster');
   const [selectedZones, setSelectedZones] = useState<string[]>([]);
+  const [open, setOpen] = useState(false);
 
   const { data: outlets = [] } = useQuery<Outlet[]>({
     queryKey: ['/api/outlets'],
@@ -503,72 +505,115 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
               <CardTitle className="text-lg">Territories</CardTitle>
             </CardHeader>
             <CardContent>
-              <Select
-                value={selectedZones.length === 1 ? selectedZones[0] : "all"}
-                onValueChange={(value) => {
-                  if (value === "all") {
-                    setSelectedZones([]);
-                    setViewMode('cluster');
-                  } else {
-                    setSelectedZones([value]);
-                    setViewMode('individual');
-                  }
-                }}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Select a territory" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Territories</SelectItem>
-                  {Object.entries(territoryGroups).map(([territory, territoryOutlets]) => {
-                    const rep = getRepForTerritory(territory);
-                    return (
-                      <SelectItem key={territory} value={territory}>
-                        <div className="flex items-center justify-between w-full">
-                          <div className="flex items-center space-x-2">
-                            <div
-                              className="w-3 h-3 rounded-full"
-                              style={{ backgroundColor: getTerritoryColor(territory) }}
+              <Popover open={open} onOpenChange={setOpen}>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    role="combobox"
+                    aria-expanded={open}
+                    className="w-full justify-between"
+                  >
+                    {selectedZones.length === 0
+                      ? "Select territories..."
+                      : `${selectedZones.length} zone${selectedZones.length === 1 ? '' : 's'} selected`}
+                    <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-full p-0">
+                  <Command>
+                    <CommandInput placeholder="Search territories..." />
+                    <CommandEmpty>No territory found.</CommandEmpty>
+                    <CommandGroup>
+                      <CommandItem
+                        onSelect={() => {
+                          setSelectedZones([]);
+                          setViewMode('cluster');
+                          setOpen(false);
+                        }}
+                      >
+                        <Check
+                          className={`mr-2 h-4 w-4 ${
+                            selectedZones.length === 0 ? "opacity-100" : "opacity-0"
+                          }`}
+                        />
+                        All Territories
+                      </CommandItem>
+                      {Object.entries(territoryGroups).map(([territory, territoryOutlets]) => {
+                        return (
+                          <CommandItem
+                            key={territory}
+                            onSelect={() => {
+                              setSelectedZones(current => {
+                                const isSelected = current.includes(territory);
+                                const newSelection = isSelected
+                                  ? current.filter(t => t !== territory)
+                                  : [...current, territory];
+                                
+                                if (newSelection.length > 0) {
+                                  setViewMode('individual');
+                                } else {
+                                  setViewMode('cluster');
+                                }
+                                
+                                return newSelection;
+                              });
+                            }}
+                          >
+                            <Check
+                              className={`mr-2 h-4 w-4 ${
+                                selectedZones.includes(territory) ? "opacity-100" : "opacity-0"
+                              }`}
                             />
-                            <span>{territory} ({territoryOutlets.length} outlets)</span>
-                          </div>
-                        </div>
-                      </SelectItem>
-                    );
-                  })}
-                </SelectContent>
-              </Select>
+                            <div className="flex items-center space-x-2">
+                              <div
+                                className="w-3 h-3 rounded-full"
+                                style={{ backgroundColor: getTerritoryColor(territory) }}
+                              />
+                              <span>{territory} ({territoryOutlets.length} outlets)</span>
+                            </div>
+                          </CommandItem>
+                        );
+                      })}
+                    </CommandGroup>
+                  </Command>
+                </PopoverContent>
+              </Popover>
 
-              {/* Selected Territory Details */}
-              {selectedZones.length === 1 && (
-                <div className="mt-4 p-4 bg-gray-50 rounded-lg">
-                  {(() => {
-                    const territory = selectedZones[0];
+              {/* Selected Territories Details */}
+              {selectedZones.length > 0 && (
+                <div className="mt-4 space-y-3">
+                  {selectedZones.map(territory => {
                     const territoryOutlets = territoryGroups[territory];
                     const rep = getRepForTerritory(territory);
                     const vf2Count = territoryOutlets?.filter(o => o.visitFrequency === 2).length || 0;
                     const vf4Count = territoryOutlets?.filter(o => o.visitFrequency === 4).length || 0;
 
                     return (
-                      <>
+                      <div key={territory} className="p-3 bg-gray-50 rounded-lg">
                         <div className="flex items-center justify-between mb-2">
-                          <h4 className="font-semibold">{territory}</h4>
+                          <h4 className="font-semibold text-sm">{territory}</h4>
                           <div
-                            className="w-4 h-4 rounded-full"
+                            className="w-3 h-3 rounded-full"
                             style={{ backgroundColor: getTerritoryColor(territory) }}
                           />
                         </div>
                         {rep && (
-                          <p className="text-sm text-gray-600 mb-2">{rep.name}</p>
+                          <p className="text-xs text-gray-600 mb-1">{rep.name}</p>
                         )}
-                        <div className="space-y-1 text-sm">
-                          <p>Total Outlets: <span className="font-medium">{territoryOutlets?.length || 0}</span></p>
-                          <p>VF2: <span className="font-medium">{vf2Count}</span></p>
-                          <p>VF4: <span className="font-medium">{vf4Count}</span></p>
+                        <div className="text-xs text-gray-500">
+                          <span className="font-medium">{territoryOutlets?.length || 0}</span> outlets • 
+                          VF2: <span className="font-medium">{vf2Count}</span> • 
+                          VF4: <span className="font-medium">{vf4Count}</span>
                         </div>
-                      </>
+                      </div>
                     );
-                  })()}
+                  })}
+                  <div className="pt-2 border-t text-sm">
+                    <p className="font-medium">Total Selected:</p>
+                    <p className="text-gray-600">
+                      {selectedZones.reduce((sum, zone) => sum + (territoryGroups[zone]?.length || 0), 0)} outlets across {selectedZones.length} zones
+                    </p>
+                  </div>
                 </div>
               )}
             </CardContent>
