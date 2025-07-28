@@ -12,6 +12,158 @@ interface MulterRequest extends Request {
 
 const upload = multer({ storage: multer.memoryStorage() });
 
+// Geographic clustering functions
+function calculateHaversineDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371; // Earth's radius in kilometers
+  const dLat = toRadians(lat2 - lat1);
+  const dLng = toRadians(lng2 - lng1);
+  
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) *
+            Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+function toRadians(degrees: number): number {
+  return degrees * (Math.PI / 180);
+}
+
+interface GeographicCluster {
+  id: number;
+  centroid: { lat: number; lng: number };
+  outlets: Outlet[];
+}
+
+function performGeographicClustering(outlets: Outlet[], k: number): GeographicCluster[] {
+  if (outlets.length === 0 || k <= 0) return [];
+  
+  // Handle edge case where k is larger than outlets
+  if (k >= outlets.length) {
+    return outlets.map((outlet, index) => ({
+      id: index,
+      centroid: { lat: outlet.latitude, lng: outlet.longitude },
+      outlets: [outlet]
+    }));
+  }
+
+  // Initialize centroids using geographic bounds for better distribution
+  const centroids = initializeGeographicCentroids(outlets, k);
+  
+  let clusters: GeographicCluster[] = [];
+  let iterations = 0;
+  const maxIterations = 100;
+  
+  while (iterations < maxIterations) {
+    // Create new clusters
+    const newClusters: GeographicCluster[] = centroids.map((centroid, index) => ({
+      id: index,
+      centroid: { ...centroid },
+      outlets: []
+    }));
+    
+    // Assign each outlet to the nearest cluster centroid
+    outlets.forEach(outlet => {
+      let minDistance = Infinity;
+      let closestClusterIndex = 0;
+      
+      centroids.forEach((centroid, index) => {
+        const distance = calculateHaversineDistance(
+          outlet.latitude, outlet.longitude,
+          centroid.lat, centroid.lng
+        );
+        
+        if (distance < minDistance) {
+          minDistance = distance;
+          closestClusterIndex = index;
+        }
+      });
+      
+      newClusters[closestClusterIndex].outlets.push(outlet);
+    });
+    
+    // Recalculate centroids based on cluster means
+    let convergenceThreshold = 0.0001; // ~10m threshold for convergence
+    let maxCentroidShift = 0;
+    
+    newClusters.forEach((cluster, index) => {
+      if (cluster.outlets.length > 0) {
+        const newCentroid = {
+          lat: cluster.outlets.reduce((sum, outlet) => sum + outlet.latitude, 0) / cluster.outlets.length,
+          lng: cluster.outlets.reduce((sum, outlet) => sum + outlet.longitude, 0) / cluster.outlets.length
+        };
+        
+        const shift = calculateHaversineDistance(
+          centroids[index].lat, centroids[index].lng,
+          newCentroid.lat, newCentroid.lng
+        );
+        
+        maxCentroidShift = Math.max(maxCentroidShift, shift);
+        centroids[index] = newCentroid;
+        cluster.centroid = newCentroid;
+      }
+    });
+    
+    clusters = newClusters;
+    
+    // Check for convergence
+    if (maxCentroidShift < convergenceThreshold) {
+      console.log(`Geographic clustering converged after ${iterations} iterations`);
+      break;
+    }
+    
+    iterations++;
+  }
+  
+  console.log(`Final clustering result: ${iterations} iterations, ${clusters.length} clusters`);
+  return clusters.filter(cluster => cluster.outlets.length > 0);
+}
+
+// Initialize centroids using geographic bounds for better distribution
+function initializeGeographicCentroids(outlets: Outlet[], k: number): { lat: number; lng: number }[] {
+  if (outlets.length === 0) return [];
+  
+  // Find geographic bounds
+  const bounds = {
+    minLat: Math.min(...outlets.map(o => o.latitude)),
+    maxLat: Math.max(...outlets.map(o => o.latitude)),
+    minLng: Math.min(...outlets.map(o => o.longitude)),
+    maxLng: Math.max(...outlets.map(o => o.longitude))
+  };
+  
+  const centroids: { lat: number; lng: number }[] = [];
+  
+  // Create a grid-based initialization for even distribution
+  const gridSize = Math.ceil(Math.sqrt(k));
+  const latStep = (bounds.maxLat - bounds.minLat) / gridSize;
+  const lngStep = (bounds.maxLng - bounds.minLng) / gridSize;
+  
+  for (let i = 0; i < k; i++) {
+    const row = Math.floor(i / gridSize);
+    const col = i % gridSize;
+    
+    const lat = bounds.minLat + (row + 0.5) * latStep;
+    const lng = bounds.minLng + (col + 0.5) * lngStep;
+    
+    // Find the closest actual outlet to this grid position
+    let closestOutlet = outlets[0];
+    let minDistance = calculateHaversineDistance(lat, lng, outlets[0].latitude, outlets[0].longitude);
+    
+    outlets.forEach(outlet => {
+      const distance = calculateHaversineDistance(lat, lng, outlet.latitude, outlet.longitude);
+      if (distance < minDistance) {
+        minDistance = distance;
+        closestOutlet = outlet;
+      }
+    });
+    
+    centroids.push({ lat: closestOutlet.latitude, lng: closestOutlet.longitude });
+  }
+  
+  return centroids;
+}
+
 // Helper function to generate weekly schedules for a rep
 function generateWeeklySchedules(rep: Rep, outlets: Outlet[]): InsertSchedule[] {
   const schedules: InsertSchedule[] = [];
@@ -331,20 +483,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
         allReps.push(newRep);
       }
 
-      // Assign outlets to reps using simple round-robin distribution
+      // Assign outlets to reps using geographic clustering for optimal territories
       if (allReps.length > 0) {
-        const outletsPerRep = Math.ceil(outlets.length / allReps.length);
+        const clusters = performGeographicClustering(outlets, allReps.length);
         
-        for (let i = 0; i < outlets.length; i++) {
-          const repIndex = Math.floor(i / outletsPerRep);
-          const assignedRep = allReps[Math.min(repIndex, allReps.length - 1)];
+        for (let clusterIndex = 0; clusterIndex < clusters.length; clusterIndex++) {
+          const cluster = clusters[clusterIndex];
+          const assignedRep = allReps[clusterIndex];
           
           if (assignedRep && assignedRep.id) {
-            await storage.updateOutlet(outlets[i].id, {
-              repId: assignedRep.id,
-              territory: assignedRep.territory,
-              cluster: repIndex
-            });
+            for (const outlet of cluster.outlets) {
+              await storage.updateOutlet(outlet.id, {
+                repId: assignedRep.id,
+                territory: assignedRep.territory,
+                cluster: clusterIndex
+              });
+            }
           }
         }
       }
