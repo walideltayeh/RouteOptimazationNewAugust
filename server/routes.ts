@@ -98,8 +98,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Parse file based on type
       if (mimetype === "text/csv" || originalname.endsWith(".csv")) {
         const csvText = buffer.toString("utf-8");
-        const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true });
+        console.log('CSV parsing - first 500 chars:', csvText.substring(0, 500));
+        const parsed = Papa.parse(csvText, { 
+          header: true, 
+          skipEmptyLines: true,
+          transformHeader: (header: string) => header.trim().toLowerCase()
+        });
         data = parsed.data as any[];
+        console.log('Parsed data sample:', data.slice(0, 3));
+        console.log('Total parsed rows:', data.length);
       } else if (mimetype === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" || originalname.endsWith(".xlsx")) {
         const workbook = XLSX.read(buffer, { type: "buffer" });
         const sheetName = workbook.SheetNames[0];
@@ -121,12 +128,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       for (const row of data) {
         try {
           const outlet: typeof insertOutletSchema._type = {
-            name: row.name || row.Name || row.outlet_name || row["Outlet Name"] || `Outlet ${outlets.length + 1}`,
-            address: row.address || row.Address || row.location || row.Location || "",
+            name: row.outletname || row.name || row.Name || row.outlet_name || row["Outlet Name"] || `Outlet ${outlets.length + 1}`,
+            address: `${row.District || ''} - ${row.Region || ''} - ${row.Area || ''}`.replace(/^- |- $|^-$/, '').trim() || row.address || row.Address || "",
             latitude: parseFloat(row.latitude || row.Latitude || row.lat || row.Lat || "0"),
             longitude: parseFloat(row.longitude || row.Longitude || row.lng || row.Lng || row.lon || row.Lon || "0"),
             visitFrequency: parseInt(row.vf || row.VF || row.visit_frequency || row["Visit Frequency"] || "2"),
-            territory: row.territory || row.Territory || row.zone || row.Zone || null,
+            territory: row.District || row.territory || row.Territory || row.zone || row.Zone || null,
             repId: null,
             cluster: null
           };

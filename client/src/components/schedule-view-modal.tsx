@@ -89,7 +89,18 @@ export default function ScheduleViewModal({ repId, isOpen, onClose, isEditMode }
 
   const getOutletName = (outletId: string) => {
     const outlet = outlets.find(o => o.id === outletId);
-    return outlet?.name || `Outlet ${outletId.slice(0, 8)}`;
+    return outlet?.name || `Unknown Outlet`;
+  };
+  
+  const getOutletDetails = (outletId: string) => {
+    const outlet = outlets.find(o => o.id === outletId);
+    if (!outlet) return null;
+    return {
+      name: outlet.name,
+      address: outlet.address,
+      territory: outlet.territory,
+      visitFrequency: outlet.visitFrequency
+    };
   };
 
   const handleSaveSchedule = () => {

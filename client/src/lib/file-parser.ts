@@ -161,13 +161,13 @@ function processParseResults(data: any[], parseErrors: any[]): FileParseResult {
 
 // Extract outlet data from various possible column names
 function extractOutletData(row: any): ParsedOutlet {
-  // Common column name variations
-  const nameFields = ['name', 'outlet_name', 'outlet name', 'store_name', 'store name', 'client'];
-  const addressFields = ['address', 'location', 'addr', 'full_address'];
+  // Common column name variations - Lebanese outlet format
+  const nameFields = ['outletname', 'name', 'outlet_name', 'outlet name', 'store_name', 'store name', 'client'];
+  const addressFields = ['address', 'location', 'addr', 'full_address', 'district', 'region', 'area'];
   const latFields = ['latitude', 'lat'];
   const lngFields = ['longitude', 'lng', 'lon', 'long'];
   const vfFields = ['vf', 'visit_frequency', 'visit frequency', 'frequency'];
-  const territoryFields = ['territory', 'zone', 'area', 'region'];
+  const territoryFields = ['district', 'territory', 'zone', 'area', 'region'];
   
   const name = findFieldValue(row, nameFields) || `Outlet ${Date.now()}`;
   const address = findFieldValue(row, addressFields) || '';
