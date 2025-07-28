@@ -32,6 +32,8 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   const [mapError, setMapError] = useState<string | null>(null);
   const [isMapLoaded, setIsMapLoaded] = useState(false);
   const [isRenderingMarkers, setIsRenderingMarkers] = useState(false);
+  const [viewMode, setViewMode] = useState<'cluster' | 'individual'>('cluster');
+  const [selectedZone, setSelectedZone] = useState<string | null>(null);
 
   const { data: outlets = [] } = useQuery<Outlet[]>({
     queryKey: ['/api/outlets'],

@@ -1,4 +1,4 @@
-import TerritoryMap from '@/components/territory-map';
+import TerritoryMap from '@/components/territory-map-new';
 import { useEffect } from 'react';
 
 export default function TerritoriesPage() {

@@ -299,8 +299,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       // Set default values for rep constraints (use body params if provided)
       const workingDaysPerWeek = req.body.workingDaysPerWeek || 5; // Monday to Friday
-      const minVisitsPerDay = req.body.minVisitsPerDay || 15;   // Minimum visits per day per rep
-      const maxVisitsPerDay = req.body.maxVisitsPerDay || 25;   // Maximum visits per day per rep
+      const minVisitsPerDay = req.body.minVisitsPerDay || 25;   // Minimum visits per day per rep
+      const maxVisitsPerDay = req.body.maxVisitsPerDay || 27;   // Maximum visits per day per rep
       
       // Calculate required reps based on daily visit constraints
       // Formula: Weekly visits / (working days * max visits per day)

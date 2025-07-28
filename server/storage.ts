@@ -248,7 +248,7 @@ export class MemStorage implements IStorage {
     const vf4 = outlets.filter(o => o.visitFrequency === 4).length;
     
     const totalWeeklyVisits = (vf2 * 2) + (vf4 * 4);
-    const recommendedReps = Math.ceil(totalWeeklyVisits / (5 * 25)); // 5 days, 25 visits max
+    const recommendedReps = Math.ceil(totalWeeklyVisits / (5 * 27)); // 5 days, 27 visits max
     
     return {
       outlets: outlets.length,
