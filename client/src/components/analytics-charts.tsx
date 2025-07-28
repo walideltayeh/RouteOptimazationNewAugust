@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { TrendingUp, PieChart } from "lucide-react";
+import { PieChart } from "lucide-react";
 import type { Outlet } from "@shared/schema";
 
 // Mock Chart.js for demonstration
@@ -12,7 +12,6 @@ declare global {
 }
 
 export default function AnalyticsCharts() {
-  const efficiencyChartRef = useRef<HTMLCanvasElement>(null);
   const distributionChartRef = useRef<HTMLCanvasElement>(null);
   
   const { data: outlets = [] } = useQuery<Outlet[]>({
@@ -33,44 +32,7 @@ export default function AnalyticsCharts() {
     const initializeCharts = () => {
       if (!window.Chart) return;
 
-      // Route Efficiency Chart
-      if (efficiencyChartRef.current) {
-        const ctx = efficiencyChartRef.current.getContext('2d');
-        new window.Chart(ctx, {
-          type: 'line',
-          data: {
-            labels: ['Week 1', 'Week 2', 'Week 3', 'Week 4', 'Week 5', 'Week 6'],
-            datasets: [{
-              label: 'Territory Balance %',
-              data: [78, 82, 85, 87, 89, 87],
-              borderColor: '#1976D2',
-              backgroundColor: 'rgba(25, 118, 210, 0.1)',
-              tension: 0.4,
-              fill: true
-            }]
-          },
-          options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-              legend: {
-                display: false
-              }
-            },
-            scales: {
-              y: {
-                beginAtZero: true,
-                max: 100,
-                ticks: {
-                  callback: function(value: any) {
-                    return value + '%';
-                  }
-                }
-              }
-            }
-          }
-        });
-      }
+
 
       // Visit Distribution Chart
       if (distributionChartRef.current) {
@@ -110,34 +72,18 @@ export default function AnalyticsCharts() {
   }, [outlets]);
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center">
-            <TrendingUp className="mr-2 h-5 w-5 text-primary" />
-            Territory Balance Trends
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="h-64 relative">
-            <canvas ref={efficiencyChartRef} className="w-full h-full"></canvas>
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center">
-            <PieChart className="mr-2 h-5 w-5 text-primary" />
-            Visit Distribution
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="h-64 relative">
-            <canvas ref={distributionChartRef} className="w-full h-full"></canvas>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center">
+          <PieChart className="mr-2 h-5 w-5 text-primary" />
+          Visit Distribution
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="h-64 relative">
+          <canvas ref={distributionChartRef} className="w-full h-full"></canvas>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
