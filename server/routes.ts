@@ -282,8 +282,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Route optimization
   app.post("/api/optimize", async (req, res) => {
     try {
-      const { minVisitsPerDay, maxVisitsPerDay, workingDaysPerWeek } = req.body;
-
       const outlets = await storage.getOutlets();
       if (outlets.length === 0) {
         return res.status(400).json({ message: "No outlets available for optimization" });
@@ -292,6 +290,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Calculate total weekly visits required based on visit frequency
       const totalWeeklyVisits = outlets.reduce((sum, outlet) => sum + outlet.visitFrequency, 0);
       
+      // Set default values for rep constraints (use body params if provided)
+      const workingDaysPerWeek = req.body.workingDaysPerWeek || 5; // Monday to Friday
+      const minVisitsPerDay = req.body.minVisitsPerDay || 15;   // Minimum visits per day per rep
+      const maxVisitsPerDay = req.body.maxVisitsPerDay || 25;   // Maximum visits per day per rep
+      
       // Calculate required reps based on daily visit constraints
       // Formula: Weekly visits / (working days * max visits per day)
       const maxWeeklyCapacityPerRep = workingDaysPerWeek * maxVisitsPerDay;
@@ -299,10 +302,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       // Ensure we don't go below minimum daily visits requirement
       const minWeeklyCapacityPerRep = workingDaysPerWeek * minVisitsPerDay;
-      const maxRepsWithMinConstraint = Math.floor(totalWeeklyVisits / minWeeklyCapacityPerRep);
       
-      // Use the higher constraint (more reps needed)
-      const finalRequiredReps = Math.max(requiredReps, Math.ceil(totalWeeklyVisits / maxWeeklyCapacityPerRep));
+      // Use the calculated required reps
+      const finalRequiredReps = Math.max(1, requiredReps); // At least 1 rep needed
 
       // Create or update reps
       const existingReps = await storage.getReps();
@@ -341,18 +343,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Generate schedules for each rep
+      console.log('Generating schedules for', allReps.length, 'reps');
       for (const rep of allReps) {
-        // Clear existing schedules for this rep
-        await storage.deleteSchedulesByRepId(rep.id);
+        // Get updated outlets assigned to this rep
+        const updatedOutlets = await storage.getOutlets();
+        const repOutlets = updatedOutlets.filter(o => o.repId === rep.id);
+        console.log(`Rep ${rep.name} has ${repOutlets.length} outlets`);
         
-        // Get outlets assigned to this rep
-        const repOutlets = outlets.filter(o => o.repId === rep.id);
-        if (repOutlets.length === 0) continue;
-
-        // Generate weekly schedules for Week 1 and Week 2 (which repeat as Week 3 and Week 4)
-        const repOutletsFiltered = outlets.filter(o => o.repId === rep.id);
-        const weeklySchedules = generateWeeklySchedules(rep, repOutletsFiltered);
-        await storage.createSchedules(weeklySchedules);
+        if (repOutlets.length > 0) {
+          const repSchedules = generateWeeklySchedules(rep, repOutlets);
+          console.log(`Generated ${repSchedules.length} schedules for ${rep.name}`);
+          for (const schedule of repSchedules) {
+            await storage.createSchedule(schedule);
+          }
+        }
       }
 
       // Invalidate cache by refreshing data
