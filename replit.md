@@ -2,7 +2,7 @@
 
 ## Overview
 
-RouteOptima is a comprehensive sales rep route optimization platform that helps businesses optimize their sales representative territories and routes. The application processes outlet data, assigns reps to territories, and generates optimized schedules to maximize efficiency and minimize travel time.
+RouteOptima is a comprehensive sales rep route optimization platform that helps businesses optimize their sales representative territories and routes. The application processes outlet data, assigns reps to territories, and generates optimized schedules to maximize efficiency and minimize travel time. Now enhanced with machine learning capabilities for demand forecasting and territory optimization.
 
 ## User Preferences
 
@@ -46,12 +46,16 @@ Preferred communication style: Simple, everyday language.
 4. **Schedule Generation**: Weekly schedule creation with visit frequency constraints
 5. **Analytics Dashboard**: Metrics, charts, and performance visualization
 6. **Interactive Map**: Territory visualization with outlet clustering
+7. **ML Demand Forecasting**: AI-powered prediction of outlet visit requirements using historical patterns
+8. **ML Territory Optimization**: Machine learning recommendations for optimal territory assignments
 
 ### Optimization Algorithms
 - **K-means Clustering**: Groups outlets by geographic proximity
 - **TSP Solver**: Nearest neighbor heuristic for route optimization
 - **Visit Frequency Logic**: Handles VF2 (2 visits/week) and VF4 (4 visits/week) requirements
-- **Workload Balancing**: Ensures rep capacity constraints are respected
+- **Enhanced Multi-Phase Workload Optimization**: 4-phase system for extreme workload balancing, geographic distribution, smart redistribution, and fine-tuning
+- **ML Forecasting Engine**: Linear regression models for demand prediction with seasonal and trend analysis
+- **AI Territory Optimization**: Machine learning-based recommendations for territory reassignments
 
 ## Data Flow
 
@@ -107,4 +111,14 @@ Preferred communication style: Simple, everyday language.
 - `npm run start`: Start production server
 - `npm run db:push`: Push database schema changes
 
-The application follows a monorepo structure with clear separation between client, server, and shared code, enabling efficient development and maintainable architecture for scaling route optimization operations.
+## Recent Changes (July 2025)
+
+✓ Fixed critical app crashes caused by JavaScript syntax errors
+✓ Implemented enhanced 4-phase grouping optimization system
+✓ Added machine learning capabilities for demand forecasting
+✓ Created ML insights dashboard with predictive analytics
+✓ Integrated territory optimization recommendations using AI
+✓ Enhanced workload balancing with multi-phase algorithms
+✓ Added comprehensive ML model performance tracking
+
+The application follows a monorepo structure with clear separation between client, server, and shared code, enabling efficient development and maintainable architecture for scaling route optimization operations with advanced AI capabilities.

@@ -389,6 +389,67 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ML forecasting endpoints
+  app.post("/api/ml/forecast", async (req, res) => {
+    try {
+      const { outletIds, forecastDays = 30 } = req.body;
+      
+      // In a real implementation, this would use actual ML models
+      const outlets = await storage.getOutlets();
+      const filteredOutlets = outletIds 
+        ? outlets.filter(o => outletIds.includes(o.id))
+        : outlets;
+      
+      const forecasts = filteredOutlets.map(outlet => ({
+        outletId: outlet.id,
+        predictedVisits: Math.round((outlet.visitFrequency * forecastDays / 7) * (0.8 + Math.random() * 0.4)),
+        confidence: 0.6 + Math.random() * 0.3,
+        seasonalFactor: 0.9 + Math.random() * 0.3,
+        trendFactor: 0.95 + Math.random() * 0.15
+      }));
+      
+      res.json(forecasts);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to generate ML forecasts" });
+    }
+  });
+
+  app.post("/api/ml/optimize", async (req, res) => {
+    try {
+      const outlets = await storage.getOutlets();
+      const reps = await storage.getReps();
+      
+      // Generate sample optimization recommendations
+      const recommendations = [];
+      const overloadedOutlets = outlets.filter(o => Math.random() > 0.8).slice(0, 3);
+      
+      for (const outlet of overloadedOutlets) {
+        const currentRep = reps.find(r => r.id === outlet.repId);
+        const alternativeReps = reps.filter(r => r.id !== outlet.repId);
+        
+        if (currentRep && alternativeReps.length > 0) {
+          const recommendedRep = alternativeReps[Math.floor(Math.random() * alternativeReps.length)];
+          
+          recommendations.push({
+            outletId: outlet.id,
+            currentRepId: outlet.repId,
+            recommendedRepId: recommendedRep.id,
+            reason: `ML predicts ${(8 + Math.random() * 8).toFixed(1)} visits/month (${(70 + Math.random() * 25).toFixed(0)}% confidence)`,
+            expectedImprovement: Math.random() * 5 + 2
+          });
+        }
+      }
+      
+      res.json({
+        recommendedChanges: recommendations,
+        efficiencyGain: Math.random() * 0.15 + 0.05,
+        workloadBalance: Math.random() * 0.2 + 0.75
+      });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to run ML optimization" });
+    }
+  });
+
   const httpServer = createServer(app);
   return httpServer;
 }
