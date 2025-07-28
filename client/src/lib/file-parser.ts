@@ -6,6 +6,10 @@ export interface ParsedOutlet {
   longitude: number;
   visitFrequency: number;
   territory?: string;
+  district?: string;
+  region?: string;
+  area?: string;
+  outletType?: string;
 }
 
 export interface FileParseResult {
