@@ -68,6 +68,13 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
         setMapError('Failed to load map. Please check your Mapbox token.');
       });
 
+      // Add performance monitoring
+      map.current.on('data', (e) => {
+        if (e.dataType === 'source' && e.isSourceLoaded) {
+          console.log('Map data loaded');
+        }
+      });
+
       return () => {
         if (map.current) {
           map.current.remove();
@@ -79,71 +86,118 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     }
   }, []);
 
-  // Add markers and fit bounds when outlets change (with performance optimization)
+  // Cluster-based rendering for massive datasets
   useEffect(() => {
     if (!map.current || !isMapLoaded || outlets.length === 0) return;
 
-    // Performance optimization: limit markers for large datasets
-    const MAX_MARKERS = 500; // Limit markers to prevent browser freeze
-    const shouldLimitMarkers = outlets.length > MAX_MARKERS;
-    const displayOutlets = shouldLimitMarkers ? outlets.slice(0, MAX_MARKERS) : outlets;
-
-    console.log(`Rendering ${displayOutlets.length} of ${outlets.length} outlets on map`);
+    console.log(`Rendering ${outlets.length} outlets using cluster visualization`);
     setIsRenderingMarkers(true);
 
-    // Clear existing markers
-    const existingMarkers = document.querySelectorAll('.outlet-marker');
+    // Clear existing markers and sources
+    const existingMarkers = document.querySelectorAll('.outlet-marker, .cluster-marker');
     existingMarkers.forEach(marker => marker.remove());
 
-    const bounds = new mapboxgl.LngLatBounds();
-
-    // Use requestAnimationFrame to prevent blocking the UI thread
-    const renderMarkersAsync = async () => {
-      const BATCH_SIZE = 50; // Process markers in batches
-      
-      for (let i = 0; i < displayOutlets.length; i += BATCH_SIZE) {
-        const batch = displayOutlets.slice(i, i + BATCH_SIZE);
-        
-        await new Promise(resolve => {
-          requestAnimationFrame(() => {
-            batch.forEach((outlet) => {
-              bounds.extend([outlet.longitude, outlet.latitude]);
-
-              const markerEl = document.createElement('div');
-              markerEl.className = 'outlet-marker w-4 h-4 rounded-full border border-white shadow-md cursor-pointer hover:scale-110 transition-transform flex items-center justify-center';
-              markerEl.style.backgroundColor = getColorForTerritory(outlet.id);
-              markerEl.innerHTML = '<div class="w-1 h-1 bg-white rounded-full"></div>';
-
-              markerEl.addEventListener('click', () => {
-                setSelectedOutlet(outlet);
-              });
-
-              new mapboxgl.Marker(markerEl)
-                .setLngLat([outlet.longitude, outlet.latitude])
-                .addTo(map.current!);
-            });
-            resolve(void 0);
-          });
-        });
-      }
-
-      // Fit map to show all outlets
-      if (displayOutlets.length > 0) {
-        map.current!.fitBounds(bounds, { padding: 50 });
-      }
-
-      // Show warning if markers were limited
-      if (shouldLimitMarkers) {
-        console.warn(`Performance optimization: Showing ${MAX_MARKERS} of ${outlets.length} outlets. Use clustering for better performance with large datasets.`);
-      }
-      
-      setIsRenderingMarkers(false);
-    };
-
-    renderMarkersAsync();
-
+    // For very large datasets, use territory cluster visualization instead of individual markers
+    if (outlets.length > 100) {
+      renderTerritoryVisualization();
+    } else {
+      renderIndividualMarkers();
+    }
 
   }, [outlets, isMapLoaded]);
+
+  // Render territory clusters instead of individual markers for performance
+  const renderTerritoryVisualization = () => {
+    const bounds = new mapboxgl.LngLatBounds();
+    
+    Object.entries(territoryGroups).forEach(([territory, territoryOutlets]) => {
+      if (territoryOutlets.length === 0) return;
+      
+      // Calculate territory center
+      const centerLat = territoryOutlets.reduce((sum, o) => sum + o.latitude, 0) / territoryOutlets.length;
+      const centerLng = territoryOutlets.reduce((sum, o) => sum + o.longitude, 0) / territoryOutlets.length;
+      
+      bounds.extend([centerLng, centerLat]);
+
+      // Create cluster marker for territory
+      const clusterEl = document.createElement('div');
+      clusterEl.className = 'cluster-marker flex items-center justify-center rounded-full border-2 border-white shadow-lg cursor-pointer hover:scale-110 transition-transform font-bold text-white text-xs';
+      
+      // Size based on outlet count
+      const size = Math.min(Math.max(20 + Math.log(territoryOutlets.length) * 8, 24), 60);
+      clusterEl.style.width = `${size}px`;
+      clusterEl.style.height = `${size}px`;
+      clusterEl.style.backgroundColor = getTerritoryColor(territory);
+      clusterEl.textContent = territoryOutlets.length.toString();
+      
+      // Add territory info on hover
+      const popup = new mapboxgl.Popup({ offset: 25 }).setHTML(`
+        <div class="p-2">
+          <h3 class="font-bold text-sm">${territory}</h3>
+          <p class="text-xs text-gray-600">${territoryOutlets.length} outlets</p>
+          <p class="text-xs text-gray-600">VF2: ${territoryOutlets.filter(o => o.visitFrequency === 2).length} | VF4: ${territoryOutlets.filter(o => o.visitFrequency === 4).length}</p>
+        </div>
+      `);
+
+      clusterEl.addEventListener('click', () => {
+        // Zoom to territory bounds on click
+        const territoryBounds = new mapboxgl.LngLatBounds();
+        territoryOutlets.forEach(outlet => {
+          territoryBounds.extend([outlet.longitude, outlet.latitude]);
+        });
+        map.current!.fitBounds(territoryBounds, { padding: 50 });
+      });
+
+      new mapboxgl.Marker(clusterEl)
+        .setLngLat([centerLng, centerLat])
+        .setPopup(popup)
+        .addTo(map.current!);
+    });
+
+    // Fit map to show all territories
+    if (Object.keys(territoryGroups).length > 0) {
+      map.current!.fitBounds(bounds, { padding: 50 });
+    }
+    
+    setIsRenderingMarkers(false);
+  };
+
+  // Render individual markers for small datasets
+  const renderIndividualMarkers = async () => {
+    const bounds = new mapboxgl.LngLatBounds();
+    const BATCH_SIZE = 25;
+    
+    for (let i = 0; i < outlets.length; i += BATCH_SIZE) {
+      const batch = outlets.slice(i, i + BATCH_SIZE);
+      
+      await new Promise(resolve => {
+        requestAnimationFrame(() => {
+          batch.forEach((outlet) => {
+            bounds.extend([outlet.longitude, outlet.latitude]);
+
+            const markerEl = document.createElement('div');
+            markerEl.className = 'outlet-marker w-3 h-3 rounded-full border border-white shadow-sm cursor-pointer hover:scale-125 transition-transform';
+            markerEl.style.backgroundColor = getColorForTerritory(outlet.id);
+
+            markerEl.addEventListener('click', () => {
+              setSelectedOutlet(outlet);
+            });
+
+            new mapboxgl.Marker(markerEl)
+              .setLngLat([outlet.longitude, outlet.latitude])
+              .addTo(map.current!);
+          });
+          resolve(void 0);
+        });
+      });
+    }
+
+    if (outlets.length > 0) {
+      map.current!.fitBounds(bounds, { padding: 50 });
+    }
+    
+    setIsRenderingMarkers(false);
+  };
 
   // Use clustering to create proper territory groups
   const createTerritoryGroups = () => {
@@ -247,7 +301,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
             <div className="flex items-center space-x-4 text-sm text-gray-600">
               <div className="flex items-center">
                 <MapPin className="mr-1 h-4 w-4" />
-                {outlets.length} Outlets
+                {outlets.length.toLocaleString()} Outlets
               </div>
               <div className="flex items-center">
                 <Users className="mr-1 h-4 w-4" />
@@ -257,6 +311,12 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                 <div className="w-3 h-3 rounded-full bg-blue-500 mr-1"></div>
                 {Object.keys(territoryGroups).length} Territories
               </div>
+              {outlets.length > 100 && (
+                <div className="flex items-center text-orange-600">
+                  <div className="w-3 h-3 rounded-full bg-orange-500 mr-1"></div>
+                  Cluster View
+                </div>
+              )}
             </div>
           </div>
         </CardHeader>
@@ -270,12 +330,19 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
               ref={mapContainer}
               className="w-full h-[500px] rounded-lg"
             />
-            {isRenderingMarkers && outlets.length > 100 && (
-              <div className="absolute inset-0 bg-white bg-opacity-80 flex items-center justify-center rounded-lg">
+            {isRenderingMarkers && (
+              <div className="absolute inset-0 bg-white bg-opacity-90 flex items-center justify-center rounded-lg">
                 <div className="text-center">
                   <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
-                  <p className="mt-2 text-sm text-gray-600">Loading map markers...</p>
-                  <p className="text-xs text-gray-500">{outlets.length > 500 ? `Showing first 500 of ${outlets.length} outlets` : `Loading ${outlets.length} outlets`}</p>
+                  <p className="mt-2 text-sm text-gray-600">
+                    {outlets.length > 100 ? 'Loading territory visualization...' : 'Loading map markers...'}
+                  </p>
+                  <p className="text-xs text-gray-500">
+                    {outlets.length > 100 
+                      ? `${outlets.length} outlets grouped into ${Object.keys(territoryGroups).length} territories`
+                      : `Loading ${outlets.length} individual markers`
+                    }
+                  </p>
                 </div>
               </div>
             )}
