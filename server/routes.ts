@@ -289,13 +289,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "No outlets available for optimization" });
       }
 
-      // Calculate total weekly visits required
+      // Calculate total weekly visits required based on visit frequency
       const totalWeeklyVisits = outlets.reduce((sum, outlet) => sum + outlet.visitFrequency, 0);
-      const requiredReps = Math.ceil(totalWeeklyVisits / (workingDaysPerWeek * maxVisitsPerDay));
+      
+      // Calculate required reps based on daily visit constraints
+      // Formula: Weekly visits / (working days * max visits per day)
+      const maxWeeklyCapacityPerRep = workingDaysPerWeek * maxVisitsPerDay;
+      const requiredReps = Math.ceil(totalWeeklyVisits / maxWeeklyCapacityPerRep);
+      
+      // Ensure we don't go below minimum daily visits requirement
+      const minWeeklyCapacityPerRep = workingDaysPerWeek * minVisitsPerDay;
+      const maxRepsWithMinConstraint = Math.floor(totalWeeklyVisits / minWeeklyCapacityPerRep);
+      
+      // Use the higher constraint (more reps needed)
+      const finalRequiredReps = Math.max(requiredReps, Math.ceil(totalWeeklyVisits / maxWeeklyCapacityPerRep));
 
       // Create or update reps
       const existingReps = await storage.getReps();
-      const repsToCreate = Math.max(0, requiredReps - existingReps.length);
+      const repsToCreate = Math.max(0, finalRequiredReps - existingReps.length);
 
       const allReps = [...existingReps];
       for (let i = 0; i < repsToCreate; i++) {
@@ -346,9 +357,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       res.json({
         success: true,
-        requiredReps,
+        requiredReps: finalRequiredReps,
         assignedOutlets: updatedOutlets.filter(o => o.repId !== null).length,
-        message: `Optimization completed. ${requiredReps} reps created and ${outlets.length} outlets assigned.`
+        totalWeeklyVisits,
+        maxWeeklyCapacityPerRep,
+        minWeeklyCapacityPerRep,
+        calculation: {
+          totalOutlets: outlets.length,
+          totalWeeklyVisits,
+          workingDaysPerWeek,
+          minVisitsPerDay,
+          maxVisitsPerDay,
+          estimatedReps: finalRequiredReps
+        },
+        message: `Optimization completed. ${finalRequiredReps} reps needed for ${totalWeeklyVisits} weekly visits (${minVisitsPerDay}-${maxVisitsPerDay} visits/day). ${outlets.length} outlets assigned.`
       });
 
     } catch (error) {
