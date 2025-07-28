@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { MapPin, Users, Navigation, Layers, Grid3X3 } from 'lucide-react';
 import type { Outlet, Rep } from '@shared/schema';
 
@@ -496,57 +497,80 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
 
         {/* Territory Legend and Info */}
         <div className="w-80 space-y-4">
-          {/* Territory Legend */}
+          {/* Territory Selector */}
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-lg">Territories</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-3">
-              {Object.entries(territoryGroups).map(([territory, territoryOutlets]) => {
-                const rep = getRepForTerritory(territory);
-                const vf2Count = territoryOutlets.filter(o => o.visitFrequency === 2).length;
-                const vf4Count = territoryOutlets.filter(o => o.visitFrequency === 4).length;
+            <CardContent>
+              <Select
+                value={selectedZones.length === 1 ? selectedZones[0] : "all"}
+                onValueChange={(value) => {
+                  if (value === "all") {
+                    setSelectedZones([]);
+                    setViewMode('cluster');
+                  } else {
+                    setSelectedZones([value]);
+                    setViewMode('individual');
+                  }
+                }}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Select a territory" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Territories</SelectItem>
+                  {Object.entries(territoryGroups).map(([territory, territoryOutlets]) => {
+                    const rep = getRepForTerritory(territory);
+                    return (
+                      <SelectItem key={territory} value={territory}>
+                        <div className="flex items-center justify-between w-full">
+                          <div className="flex items-center space-x-2">
+                            <div
+                              className="w-3 h-3 rounded-full"
+                              style={{ backgroundColor: getTerritoryColor(territory) }}
+                            />
+                            <span>{territory} ({territoryOutlets.length} outlets)</span>
+                          </div>
+                        </div>
+                      </SelectItem>
+                    );
+                  })}
+                </SelectContent>
+              </Select>
 
-                return (
-                  <div 
-                    key={territory} 
-                    className={`flex items-center justify-between p-3 rounded-lg cursor-pointer hover:bg-gray-100 ${
-                      selectedZones.includes(territory) ? 'bg-blue-50 border border-blue-200' : 'bg-gray-50'
-                    }`}
-                    onClick={() => {
-                      setSelectedZones(prev => {
-                        if (prev.includes(territory)) {
-                          return prev.filter(z => z !== territory);
-                        } else {
-                          return [...prev, territory];
-                        }
-                      });
-                      setViewMode('individual');
-                    }}
-                  >
-                    <div className="flex items-center space-x-3">
-                      <div
-                        className="w-4 h-4 rounded-full border border-gray-300"
-                        style={{ backgroundColor: getTerritoryColor(territory) }}
-                      />
-                      <div>
-                        <div className="font-medium text-sm">{territory}</div>
+              {/* Selected Territory Details */}
+              {selectedZones.length === 1 && (
+                <div className="mt-4 p-4 bg-gray-50 rounded-lg">
+                  {(() => {
+                    const territory = selectedZones[0];
+                    const territoryOutlets = territoryGroups[territory];
+                    const rep = getRepForTerritory(territory);
+                    const vf2Count = territoryOutlets?.filter(o => o.visitFrequency === 2).length || 0;
+                    const vf4Count = territoryOutlets?.filter(o => o.visitFrequency === 4).length || 0;
+
+                    return (
+                      <>
+                        <div className="flex items-center justify-between mb-2">
+                          <h4 className="font-semibold">{territory}</h4>
+                          <div
+                            className="w-4 h-4 rounded-full"
+                            style={{ backgroundColor: getTerritoryColor(territory) }}
+                          />
+                        </div>
                         {rep && (
-                          <div className="text-xs text-gray-500">{rep.name}</div>
+                          <p className="text-sm text-gray-600 mb-2">{rep.name}</p>
                         )}
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <Badge variant="outline" className="text-xs">
-                        {territoryOutlets.length}
-                      </Badge>
-                      <div className="text-xs text-gray-500 mt-1">
-                        VF2: {vf2Count} | VF4: {vf4Count}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
+                        <div className="space-y-1 text-sm">
+                          <p>Total Outlets: <span className="font-medium">{territoryOutlets?.length || 0}</span></p>
+                          <p>VF2: <span className="font-medium">{vf2Count}</span></p>
+                          <p>VF4: <span className="font-medium">{vf4Count}</span></p>
+                        </div>
+                      </>
+                    );
+                  })()}
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>
