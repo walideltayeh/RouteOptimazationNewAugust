@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import type { Outlet, Rep } from '@shared/schema';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
-import { kMeansClustering, findOptimalClusters } from '@/lib/clustering';
+import { kMeansClustering, findOptimalClusters, enhancedKMeansClustering } from '@/lib/clustering';
 
 // Set a default token or use environment variable
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || import.meta.env.VITE_MAPBOX_PUBLIC_KEY;
@@ -107,8 +107,8 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     // Determine optimal number of clusters based on number of reps or use default
     const numClusters = reps.length > 0 ? reps.length : Math.min(findOptimalClusters(points, 8), 6);
     
-    // Perform clustering
-    const clusters = kMeansClustering(points, numClusters);
+    // Perform clustering with enhanced algorithm for better results
+    const clusters = enhancedKMeansClustering(points, numClusters, 10);
     
     // Create territory groups from clusters
     const territoryGroups: Record<string, Outlet[]> = {};

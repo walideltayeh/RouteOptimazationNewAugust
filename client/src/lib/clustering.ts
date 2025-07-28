@@ -33,13 +33,57 @@ function toRadians(degrees: number): number {
 export function kMeansClustering(points: Point[], k: number, maxIterations: number = 100): Cluster[] {
   if (points.length === 0 || k <= 0) return [];
   
-  // Initialize centroids randomly
+  // Use K-means++ initialization for better initial centroids
   const clusters: Cluster[] = [];
-  for (let i = 0; i < k; i++) {
-    const randomPoint = points[Math.floor(Math.random() * points.length)];
+  
+  // Choose first centroid randomly
+  const firstPoint = points[Math.floor(Math.random() * points.length)];
+  clusters.push({
+    id: 0,
+    centroid: { latitude: firstPoint.latitude, longitude: firstPoint.longitude },
+    points: []
+  });
+  
+  // Choose remaining centroids using K-means++ method
+  for (let i = 1; i < k; i++) {
+    const distances: number[] = [];
+    let totalDistance = 0;
+    
+    // Calculate distance to nearest centroid for each point
+    points.forEach(point => {
+      let minDistance = Infinity;
+      clusters.forEach(cluster => {
+        const distance = calculateDistance(
+          point.latitude,
+          point.longitude,
+          cluster.centroid.latitude,
+          cluster.centroid.longitude
+        );
+        minDistance = Math.min(minDistance, distance);
+      });
+      distances.push(minDistance * minDistance); // Square the distance
+      totalDistance += minDistance * minDistance;
+    });
+    
+    // Choose next centroid with probability proportional to squared distance
+    const random = Math.random() * totalDistance;
+    let cumulative = 0;
+    let selectedIndex = 0;
+    
+    for (let j = 0; j < distances.length; j++) {
+      cumulative += distances[j];
+      if (cumulative >= random) {
+        selectedIndex = j;
+        break;
+      }
+    }
+    
     clusters.push({
       id: i,
-      centroid: { latitude: randomPoint.latitude, longitude: randomPoint.longitude },
+      centroid: { 
+        latitude: points[selectedIndex].latitude, 
+        longitude: points[selectedIndex].longitude 
+      },
       points: []
     });
   }
@@ -91,7 +135,7 @@ export function kMeansClustering(points: Point[], k: number, maxIterations: numb
         newCentroid.longitude
       );
 
-      if (movement > 0.01) { // 10 meters threshold
+      if (movement > 0.001) { // 1 meter threshold for better precision
         converged = false;
       }
 
@@ -102,6 +146,46 @@ export function kMeansClustering(points: Point[], k: number, maxIterations: numb
   }
 
   return clusters.filter(cluster => cluster.points.length > 0);
+}
+
+// Enhanced K-means with multiple runs to find best clustering
+export function enhancedKMeansClustering(points: Point[], k: number, runs: number = 5): Cluster[] {
+  if (points.length === 0 || k <= 0) return [];
+  
+  let bestClusters: Cluster[] = [];
+  let bestScore = Infinity;
+  
+  // Run K-means multiple times and pick the best result
+  for (let run = 0; run < runs; run++) {
+    const clusters = kMeansClustering(points, k);
+    const score = calculateClusteringScore(clusters);
+    
+    if (score < bestScore) {
+      bestScore = score;
+      bestClusters = clusters;
+    }
+  }
+  
+  return bestClusters;
+}
+
+// Calculate clustering quality score (lower is better)
+function calculateClusteringScore(clusters: Cluster[]): number {
+  let totalScore = 0;
+  
+  clusters.forEach(cluster => {
+    cluster.points.forEach(point => {
+      const distance = calculateDistance(
+        point.latitude,
+        point.longitude,
+        cluster.centroid.latitude,
+        cluster.centroid.longitude
+      );
+      totalScore += distance * distance;
+    });
+  });
+  
+  return totalScore;
 }
 
 // DBSCAN clustering alternative for density-based clustering
