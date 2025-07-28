@@ -1,4 +1,4 @@
-import { Switch, Route } from "wouter";
+import { Switch, Route, Router } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -8,7 +8,7 @@ import Dashboard from "@/pages/dashboard";
 import TerritoriesPage from "@/pages/territories";
 import NotFound from "@/pages/not-found";
 
-function Router() {
+function AppContent() {
   return (
     <div className="flex h-screen bg-gray-50">
       <Sidebar />
@@ -28,7 +28,9 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <Toaster />
-        <Router />
+        <Router>
+          <AppContent />
+        </Router>
       </TooltipProvider>
     </QueryClientProvider>
   );
