@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import type { Outlet, Rep } from '@shared/schema';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
+import { kMeansClustering, findOptimalClusters } from '@/lib/clustering';
 
 // Set a default token or use environment variable
 mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN || 'pk.eyJ1IjoiZGVtbyIsImEiOiJjazlkb2E4YTUwMDdxM29wZmRwZDE2YmJ0In0.demo_token';
@@ -74,7 +75,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
 
       const markerEl = document.createElement('div');
       markerEl.className = 'outlet-marker w-6 h-6 rounded-full border-2 border-white shadow-lg cursor-pointer hover:scale-110 transition-transform flex items-center justify-center';
-      markerEl.style.backgroundColor = getColorForTerritory(outlet.territory || 'Unassigned');
+      markerEl.style.backgroundColor = getColorForTerritory(outlet.id);
       markerEl.innerHTML = '<div class="w-2 h-2 bg-white rounded-full"></div>';
 
       markerEl.addEventListener('click', () => {
@@ -91,20 +92,58 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     }
   }, [outlets]);
 
-  // Group outlets by territory/rep
-  const territoryGroups = outlets.reduce((acc, outlet) => {
-    const territory = outlet.territory || 'Unassigned';
-    if (!acc[territory]) {
-      acc[territory] = [];
-    }
-    acc[territory].push(outlet);
-    return acc;
-  }, {} as Record<string, Outlet[]>);
+  // Use clustering to create proper territory groups
+  const createTerritoryGroups = () => {
+    if (outlets.length === 0) return {};
 
-  const getColorForTerritory = (territory: string) => {
-    if (territory === 'Unassigned') return '#9CA3AF';
-    const index = Object.keys(territoryGroups).indexOf(territory) % TERRITORY_COLORS.length;
-    return TERRITORY_COLORS[index];
+    // Convert outlets to points for clustering
+    const points = outlets.map(outlet => ({
+      id: outlet.id,
+      latitude: outlet.latitude,
+      longitude: outlet.longitude,
+      data: outlet
+    }));
+
+    // Determine optimal number of clusters based on number of reps or use default
+    const numClusters = reps.length > 0 ? reps.length : Math.min(findOptimalClusters(points, 8), 6);
+    
+    // Perform clustering
+    const clusters = kMeansClustering(points, numClusters);
+    
+    // Create territory groups from clusters
+    const territoryGroups: Record<string, Outlet[]> = {};
+    
+    clusters.forEach((cluster, index) => {
+      const territoryName = `Zone ${String.fromCharCode(65 + index)}`; // Zone A, B, C, etc.
+      territoryGroups[territoryName] = cluster.points.map(point => point.data);
+    });
+
+    // Handle any outlets not assigned to clusters
+    const assignedOutletIds = new Set(
+      Object.values(territoryGroups).flat().map(outlet => outlet.id)
+    );
+    
+    const unassignedOutlets = outlets.filter(outlet => !assignedOutletIds.has(outlet.id));
+    if (unassignedOutlets.length > 0) {
+      territoryGroups['Unassigned'] = unassignedOutlets;
+    }
+
+    return territoryGroups;
+  };
+
+  const territoryGroups = createTerritoryGroups();
+
+  const getColorForTerritory = (outletId: string) => {
+    // Find which territory this outlet belongs to
+    for (const [territory, territoryOutlets] of Object.entries(territoryGroups)) {
+      if (territoryOutlets.some(outlet => outlet.id === outletId)) {
+        if (territory === 'Unassigned') return '#9CA3AF';
+        const territoryNames = Object.keys(territoryGroups).filter(t => t !== 'Unassigned');
+        const index = territoryNames.indexOf(territory) % TERRITORY_COLORS.length;
+        return TERRITORY_COLORS[index];
+      }
+    }
+    return '#9CA3AF'; // Default for unassigned
   };
 
   const getRepForTerritory = (territory: string) => {

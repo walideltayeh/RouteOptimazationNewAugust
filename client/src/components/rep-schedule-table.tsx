@@ -1,12 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
+import React from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import React from "react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Calendar, Download, RefreshCw, Eye, Edit, CheckCircle, Clock, Info } from "lucide-react";
 import type { Rep, Outlet, Schedule } from "@shared/schema";
 import ScheduleViewModal from "./schedule-view-modal";
