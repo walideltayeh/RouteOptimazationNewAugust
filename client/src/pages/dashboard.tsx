@@ -111,7 +111,7 @@ export default function Dashboard() {
                     {metrics?.avgDailyVisits || 0}
                   </p>
                   <p className="text-sm text-gray-500 mt-2">
-                    Range: <span className="font-semibold">15-25</span> per rep
+                    Range: <span className="font-semibold">25-27</span> per rep
                   </p>
                 </div>
                 <div className="w-12 h-12 bg-yellow-100 rounded-xl flex items-center justify-center">

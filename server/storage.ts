@@ -221,8 +221,8 @@ export class MemStorage implements IStorage {
     // Calculate recommended reps based on visit frequency and constraints
     const totalWeeklyVisits = (vf2Count * 2) + (vf4Count * 4);
     const avgWorkingDays = activeReps.reduce((sum, rep) => sum + rep.workingDaysPerWeek, 0) / Math.max(activeReps.length, 1) || 5;
-    const avgMaxDailyVisits = activeReps.reduce((sum, rep) => sum + rep.maxDailyVisits, 0) / Math.max(activeReps.length, 1) || 25;
-    const avgMinDailyVisits = activeReps.reduce((sum, rep) => sum + rep.minDailyVisits, 0) / Math.max(activeReps.length, 1) || 15;
+    const avgMaxDailyVisits = activeReps.reduce((sum, rep) => sum + rep.maxDailyVisits, 0) / Math.max(activeReps.length, 1) || 27;
+    const avgMinDailyVisits = activeReps.reduce((sum, rep) => sum + rep.minDailyVisits, 0) / Math.max(activeReps.length, 1) || 25;
     
     // Calculate based on max capacity per rep
     const maxWeeklyCapacityPerRep = avgWorkingDays * avgMaxDailyVisits;
