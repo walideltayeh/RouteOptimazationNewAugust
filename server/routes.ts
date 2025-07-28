@@ -51,7 +51,7 @@ function performGeographicClustering(outlets: Outlet[], targetRepCount: number):
   // Step 2: Each cluster becomes a separate territory (no combining)
   const territories = assignClustersToReps(clusters, clusters.length);
   
-  console.log(`Created ${territories.length} compact territories, each with ~${targetClusterSize} outlets`);
+  console.log(`Created ${territories.length} compact territories, each with ~${targetClusterSize} outlets (after merging small clusters)`);
   return territories;
 }
 
@@ -139,6 +139,74 @@ function createCompactClusters(outlets: Outlet[], maxClusters: number, targetSiz
       lng: nearestCluster.outlets.reduce((sum, o) => sum + o.longitude, 0) / nearestCluster.outlets.length
     };
   }
+  
+  // Merge clusters with less than 5 outlets into nearest clusters
+  const minClusterSize = 5;
+  let mergedSomething = true;
+  
+  console.log(`Starting merge process. Found ${clusters.filter(c => c.outlets.length < minClusterSize).length} clusters with < ${minClusterSize} outlets`);
+  
+  while (mergedSomething) {
+    mergedSomething = false;
+    const smallClusters = clusters.filter(c => c.outlets.length < minClusterSize);
+    
+    console.log(`Merge iteration: ${smallClusters.length} small clusters found`);
+    
+    for (const smallCluster of smallClusters) {
+      if (clusters.length <= 1) break; // Don't merge if only one cluster left
+      
+      // Find nearest cluster that's not the small cluster itself
+      let nearestCluster = null;
+      let nearestDistance = Infinity;
+      
+      clusters.forEach(cluster => {
+        if (cluster.id === smallCluster.id) return;
+        
+        const distance = calculateHaversineDistance(
+          smallCluster.centroid.lat, smallCluster.centroid.lng,
+          cluster.centroid.lat, cluster.centroid.lng
+        );
+        
+        if (distance < nearestDistance) {
+          nearestDistance = distance;
+          nearestCluster = cluster;
+        }
+      });
+      
+      if (nearestCluster) {
+        console.log(`Merging small cluster ${smallCluster.id} (${smallCluster.outlets.length} outlets) into cluster ${nearestCluster.id} (${nearestCluster.outlets.length} outlets)`);
+        
+        // Move outlets from small cluster to nearest cluster
+        nearestCluster.outlets.push(...smallCluster.outlets);
+        
+        // Recalculate centroid
+        nearestCluster.centroid = {
+          lat: nearestCluster.outlets.reduce((sum, o) => sum + o.latitude, 0) / nearestCluster.outlets.length,
+          lng: nearestCluster.outlets.reduce((sum, o) => sum + o.longitude, 0) / nearestCluster.outlets.length
+        };
+        
+        console.log(`After merge: cluster ${nearestCluster.id} now has ${nearestCluster.outlets.length} outlets`);
+        
+        // Remove small cluster
+        const clusterIndex = clusters.findIndex(c => c.id === smallCluster.id);
+        if (clusterIndex >= 0) {
+          clusters.splice(clusterIndex, 1);
+          mergedSomething = true;
+          console.log(`Removed cluster ${smallCluster.id}, remaining clusters: ${clusters.length}`);
+        }
+      }
+    }
+  }
+  
+  // Reassign cluster IDs after merging
+  clusters.forEach((cluster, index) => {
+    cluster.id = index;
+  });
+  
+  console.log(`Final result: ${clusters.length} clusters after merging. Clusters with < ${minClusterSize} outlets: ${clusters.filter(c => c.outlets.length < minClusterSize).length}`);
+  clusters.forEach((cluster, index) => {
+    console.log(`Final cluster ${index}: ${cluster.outlets.length} outlets`);
+  });
   
   return clusters;
 }

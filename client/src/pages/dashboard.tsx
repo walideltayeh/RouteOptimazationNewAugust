@@ -33,7 +33,7 @@ export default function Dashboard() {
   });
 
   const clearAllMutation = useMutation({
-    mutationFn: () => apiRequest("/api/clear", { method: "DELETE" }),
+    mutationFn: () => fetch("/api/clear", { method: "DELETE" }).then(res => res.json()),
     onSuccess: () => {
       // Invalidate all queries to refresh the data
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard/metrics"] });
