@@ -4,10 +4,11 @@ import RepScheduleTable from "@/components/rep-schedule-table";
 import OptimizationSettings from "@/components/optimization-settings";
 import AnalyticsCharts from "@/components/analytics-charts";
 import MLInsights from "@/components/ml-insights";
-import { Card, CardContent } from "@/components/ui/card";
+import TerritoryMap from "@/components/territory-map-new";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ArrowUp, Store, Users, CalendarCheck, TrendingUp, Download, Plus, Brain, Trash2 } from "lucide-react";
+import { ArrowUp, Store, Users, CalendarCheck, TrendingUp, Download, Plus, Brain, Trash2, Map } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import type { DashboardMetrics, Rep, Outlet, Schedule } from "@shared/schema";
@@ -183,48 +184,59 @@ export default function Dashboard() {
           </Card>
         </div>
 
-        {/* Main Dashboard Tabs */}
-        <Tabs defaultValue="overview" className="space-y-6">
-          <TabsList className="grid w-full grid-cols-4">
-            <TabsTrigger value="overview">Overview</TabsTrigger>
-            <TabsTrigger value="schedules">Schedules</TabsTrigger>
-            <TabsTrigger value="ml-insights" className="flex items-center space-x-2">
-              <Brain className="h-4 w-4" />
-              <span>ML Insights</span>
-            </TabsTrigger>
-            <TabsTrigger value="optimization">Optimization</TabsTrigger>
-          </TabsList>
+        {/* Step-by-step process */}
+        <div className="space-y-6">
+          {/* Step 1 & 2: Settings and Upload in a row */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <OptimizationSettings />
+            <FileUpload />
+          </div>
 
-          <TabsContent value="overview" className="space-y-6">
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* File Upload & Settings */}
-              <div className="space-y-6">
-                <FileUpload />
-                <OptimizationSettings />
-              </div>
+          {/* Main Dashboard Tabs */}
+          <Tabs defaultValue="map" className="space-y-6">
+            <TabsList className="grid w-full grid-cols-4">
+              <TabsTrigger value="map" className="flex items-center space-x-2">
+                <Map className="h-4 w-4" />
+                <span>Territory Map</span>
+              </TabsTrigger>
+              <TabsTrigger value="schedules">Schedules</TabsTrigger>
+              <TabsTrigger value="analytics">Analytics</TabsTrigger>
+              <TabsTrigger value="ml-insights" className="flex items-center space-x-2">
+                <Brain className="h-4 w-4" />
+                <span>ML Insights</span>
+              </TabsTrigger>
+            </TabsList>
 
-              {/* Analytics Charts */}
-              <div>
-                <AnalyticsCharts />
-              </div>
-            </div>
-          </TabsContent>
+            <TabsContent value="map" className="space-y-6">
+              {/* Full-width map */}
+              <Card>
+                <CardHeader>
+                  <CardTitle>Territory Map - Zone Visualization</CardTitle>
+                </CardHeader>
+                <CardContent className="p-0">
+                  <div className="h-[600px] w-full">
+                    <TerritoryMap className="h-full w-full" />
+                  </div>
+                </CardContent>
+              </Card>
 
-          <TabsContent value="schedules">
-            <RepScheduleTable />
-          </TabsContent>
+              {/* Zone details table below map */}
+              <RepScheduleTable />
+            </TabsContent>
 
-          <TabsContent value="ml-insights">
-            <MLInsights outlets={outlets} reps={reps} schedules={schedules} />
-          </TabsContent>
+            <TabsContent value="schedules">
+              <RepScheduleTable />
+            </TabsContent>
 
-          <TabsContent value="optimization">
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <OptimizationSettings />
+            <TabsContent value="analytics">
               <AnalyticsCharts />
-            </div>
-          </TabsContent>
-        </Tabs>
+            </TabsContent>
+
+            <TabsContent value="ml-insights">
+              <MLInsights outlets={outlets} reps={reps} schedules={schedules} />
+            </TabsContent>
+          </Tabs>
+        </div>
       </div>
     </div>
   );

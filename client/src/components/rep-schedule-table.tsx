@@ -27,6 +27,9 @@ const territoryColors = [
 ];
 
 export default function RepScheduleTable() {
+  const { data: metrics } = useQuery<{ totalOutlets: number; activeReps: number; recommendedReps: number }>({
+    queryKey: ["/api/dashboard/metrics"],
+  });
   const [selectedRepId, setSelectedRepId] = useState<string | null>(null);
   const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
   const [isEditMode, setIsEditMode] = useState(false);
@@ -105,6 +108,13 @@ export default function RepScheduleTable() {
           </CardTitle>
 
           <div className="flex items-center space-x-3">
+            {metrics && metrics.activeReps > 0 && (
+              <div className="bg-green-50 border border-green-200 px-3 py-1 rounded-lg">
+                <span className="text-sm font-medium text-green-800">
+                  Final Recommendation: {metrics.activeReps} Reps
+                </span>
+              </div>
+            )}
             <Button variant="outline" size="sm">
               <Download className="mr-2 h-4 w-4" />
               Export Schedules

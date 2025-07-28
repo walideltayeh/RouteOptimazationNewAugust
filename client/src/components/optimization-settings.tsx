@@ -28,16 +28,8 @@ export default function OptimizationSettings() {
     queryKey: ["/api/analysis"],
   });
 
-  // Calculate estimated reps based on current settings
-  const calculateEstimatedReps = () => {
-    if (!analysis || analysis.outlets === 0) return 0;
-
-    const totalWeeklyVisits = (analysis.vf2 * 2) + (analysis.vf4 * 4);
-    const maxWeeklyCapacityPerRep = workingDaysPerWeek * maxVisitsPerDay;
-    return Math.ceil(totalWeeklyVisits / maxWeeklyCapacityPerRep);
-  };
-
-  const estimatedReps = calculateEstimatedReps();
+  // Show initial estimate from file upload analysis
+  const estimatedReps = analysis?.recommendedReps || 0;
 
   const optimizationMutation = useMutation({
     mutationFn: async (settings: { 
@@ -137,13 +129,14 @@ export default function OptimizationSettings() {
 
         {analysis && analysis.outlets > 0 && (
           <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
-            <h4 className="font-semibold text-blue-900 mb-2">Calculation Preview</h4>
+            <h4 className="font-semibold text-blue-900 mb-2">Initial Estimate</h4>
             <div className="text-sm text-blue-800 space-y-1">
-              <div>Total Weekly Visits: <span className="font-medium">{(analysis.vf2 * 2) + (analysis.vf4 * 4)}</span></div>
-              <div>Max Weekly Capacity/Rep: <span className="font-medium">{workingDaysPerWeek * maxVisitsPerDay}</span> visits</div>
-              <div>Daily Visit Range: <span className="font-medium">{minVisitsPerDay} - {maxVisitsPerDay}</span> visits/day</div>
+              <div>Total Outlets: <span className="font-medium">{analysis.outlets}</span></div>
+              <div>VF2 Outlets: <span className="font-medium">{analysis.vf2}</span></div>
+              <div>VF4 Outlets: <span className="font-medium">{analysis.vf4}</span></div>
               <div className="pt-2 border-t border-blue-300">
-                <strong>Estimated Reps Needed: {estimatedReps}</strong>
+                <strong>Initial Estimate: ~{estimatedReps} reps</strong>
+                <p className="text-xs mt-1">Final recommendation after optimization</p>
               </div>
             </div>
           </div>
@@ -161,7 +154,7 @@ export default function OptimizationSettings() {
               Optimizing...
             </>
           ) : (
-            estimatedReps > 0 ? `Create ${estimatedReps} Territories` : "Run Optimization"
+            "Run Optimization"
           )}
         </Button>
       </CardContent>

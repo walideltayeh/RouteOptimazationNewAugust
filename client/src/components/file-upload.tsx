@@ -177,9 +177,9 @@ export default function FileUpload() {
                 </span>
               </div>
               <div className="flex justify-between items-center py-2">
-                <span className="text-sm text-gray-600">Recommended Reps</span>
+                <span className="text-sm text-gray-600">Initial Estimate</span>
                 <span className="text-sm font-semibold text-primary">
-                  {analysis.recommendedReps}
+                  ~{analysis.recommendedReps} reps (will be refined after optimization)
                 </span>
               </div>
             </div>

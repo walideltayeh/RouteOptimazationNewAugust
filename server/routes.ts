@@ -770,8 +770,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Calculate analysis
       const vf2Count = outlets.filter(o => o.visitFrequency === 2).length;
       const vf4Count = outlets.filter(o => o.visitFrequency === 4).length;
-      const totalWeeklyVisits = (vf2Count * 2) + (vf4Count * 4);
-      const recommendedReps = Math.ceil(totalWeeklyVisits / (5 * 25)); // 5 days, 25 visits max
+      
+      // Initial rough estimate - will be refined after optimization
+      // Assuming ~25 outlets per zone and 10 zones per rep
+      const recommendedReps = Math.ceil(outlets.length / 250);
 
       // Create optimization run record
       const optimizationRun = await storage.createOptimizationRun({
