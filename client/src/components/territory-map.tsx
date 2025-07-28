@@ -10,9 +10,8 @@ import 'mapbox-gl/dist/mapbox-gl.css';
 import { kMeansClustering, findOptimalClusters } from '@/lib/clustering';
 
 // Set a default token or use environment variable
-mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN || 'pk.eyJ1IjoiZGVtbyIsImEiOiJjazlkb2E4YTUwMDdxM29wZmRwZDE2YmJ0In0.demo_token';
-
-const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_PUBLIC_KEY;
+const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || import.meta.env.VITE_MAPBOX_PUBLIC_KEY;
+mapboxgl.accessToken = MAPBOX_TOKEN;
 
 interface TerritoryMapProps {
   className?: string;
@@ -42,19 +41,20 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     if (map.current || !mapContainer.current) return;
 
     try {
-    mapboxgl.accessToken = MAPBOX_TOKEN;
-    map.current = new mapboxgl.Map({
-      container: mapContainer.current,
-      style: 'mapbox://styles/mapbox/light-v11',
-      center: [-74.5, 40.5],
-      zoom: 9
-    });
-
-    return () => {
-      if (map.current) {
-        map.current.remove();
+      if (MAPBOX_TOKEN && !MAPBOX_TOKEN.includes('demo_token')) {
+        map.current = new mapboxgl.Map({
+          container: mapContainer.current,
+          style: 'mapbox://styles/mapbox/light-v11',
+          center: [-74.5, 40.5],
+          zoom: 9
+        });
       }
-    };
+
+      return () => {
+        if (map.current) {
+          map.current.remove();
+        }
+      };
     } catch (error) {
       console.error('Failed to initialize map:', error);
     }
@@ -150,7 +150,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     return reps.find(rep => rep.territory === territory);
   };
 
-  if (!mapboxgl.accessToken || mapboxgl.accessToken.includes('demo_token')) {
+  if (!MAPBOX_TOKEN || MAPBOX_TOKEN.includes('demo_token')) {
     return (
       <div className="flex flex-col h-full ${className}">
         {/* Map Header */}

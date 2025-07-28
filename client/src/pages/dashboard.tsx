@@ -7,6 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ArrowUp, Store, Users, CalendarCheck, TrendingUp, Download, Plus } from "lucide-react";
 import type { DashboardMetrics } from "@shared/schema";
+import Sidebar from '@/components/sidebar';
 
 export default function Dashboard() {
   const { data: metrics, isLoading } = useQuery<DashboardMetrics>({

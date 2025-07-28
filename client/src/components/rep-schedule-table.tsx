@@ -251,3 +251,5 @@ export function RepScheduleTable() {
     </Card>
   );
 }
+
+export default RepScheduleTable;
