@@ -7,8 +7,6 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { MapPin, Users, Navigation } from 'lucide-react';
 import type { Outlet, Rep } from '@shared/schema';
-import mapboxgl from 'mapbox-gl';
-import 'mapbox-gl/dist/mapbox-gl.css';
 import { kMeansClustering, findOptimalClusters, enhancedKMeansClustering, workloadBasedClustering, calculateOptimalReps } from '@/lib/clustering';
 
 // Set a default token or use environment variable
