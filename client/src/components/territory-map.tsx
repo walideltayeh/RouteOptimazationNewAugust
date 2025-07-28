@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import type { Outlet, Rep } from '@shared/schema';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
-import { kMeansClustering, findOptimalClusters, enhancedKMeansClustering } from '@/lib/clustering';
+import { kMeansClustering, findOptimalClusters, enhancedKMeansClustering, workloadBasedClustering, calculateOptimalReps } from '@/lib/clustering';
 
 // Set a default token or use environment variable
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || import.meta.env.VITE_MAPBOX_PUBLIC_KEY;
@@ -104,11 +104,11 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
       data: outlet
     }));
 
-    // Determine optimal number of clusters based on number of reps or use default
-    const numClusters = reps.length > 0 ? reps.length : Math.min(findOptimalClusters(points, 8), 6);
+    // Calculate optimal number of reps based on workload
+    const optimalReps = reps.length > 0 ? reps.length : calculateOptimalReps(outlets);
     
-    // Perform clustering with enhanced algorithm for better results
-    const clusters = enhancedKMeansClustering(points, numClusters, 10);
+    // Use workload-based clustering for better territory distribution
+    const clusters = workloadBasedClustering(points, optimalReps);
     
     // Create territory groups from clusters
     const territoryGroups: Record<string, Outlet[]> = {};
@@ -138,12 +138,19 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     for (const [territory, territoryOutlets] of Object.entries(territoryGroups)) {
       if (territoryOutlets.some(outlet => outlet.id === outletId)) {
         if (territory === 'Unassigned') return '#9CA3AF';
-        const territoryNames = Object.keys(territoryGroups).filter(t => t !== 'Unassigned');
+        const territoryNames = Object.keys(territoryGroups).filter(t => t !== 'Unassigned').sort();
         const index = territoryNames.indexOf(territory) % TERRITORY_COLORS.length;
         return TERRITORY_COLORS[index];
       }
     }
     return '#9CA3AF'; // Default for unassigned
+  };
+
+  const getTerritoryColor = (territory: string) => {
+    if (territory === 'Unassigned') return '#9CA3AF';
+    const territoryNames = Object.keys(territoryGroups).filter(t => t !== 'Unassigned').sort();
+    const index = territoryNames.indexOf(territory) % TERRITORY_COLORS.length;
+    return TERRITORY_COLORS[index];
   };
 
   const getRepForTerritory = (territory: string) => {
@@ -231,7 +238,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                     <div className="flex items-center space-x-3">
                       <div
                         className="w-4 h-4 rounded-full border border-gray-300"
-                        style={{ backgroundColor: getColorForTerritory(territory) }}
+                        style={{ backgroundColor: getTerritoryColor(territory) }}
                       ></div>
                       <div>
                         <div className="font-medium text-sm">{territory}</div>
@@ -244,6 +251,9 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                       <div className="text-sm font-medium">{territoryOutlets.length} outlets</div>
                       <div className="text-xs text-gray-600">
                         VF2: {vf2Count} | VF4: {vf4Count}
+                      </div>
+                      <div className="text-xs text-green-600">
+                        ~{Math.round(territoryOutlets.reduce((sum, o) => sum + (o.visitFrequency || 2), 0) / 5)} visits/day
                       </div>
                     </div>
                   </div>

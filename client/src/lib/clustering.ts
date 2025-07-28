@@ -169,6 +169,114 @@ export function enhancedKMeansClustering(points: Point[], k: number, runs: numbe
   return bestClusters;
 }
 
+// Calculate optimal number of reps based on visit frequency requirements
+export function calculateOptimalReps(outlets: any[], minVisitsPerDay: number = 6, maxVisitsPerDay: number = 12): number {
+  if (outlets.length === 0) return 1;
+  
+  // Calculate total visits required per week
+  const totalWeeklyVisits = outlets.reduce((total, outlet) => {
+    return total + (outlet.visitFrequency || 2); // Default to VF2 if not specified
+  }, 0);
+  
+  // Calculate visits per rep per week (assuming 5 working days)
+  const avgVisitsPerDay = (minVisitsPerDay + maxVisitsPerDay) / 2;
+  const visitsPerRepPerWeek = avgVisitsPerDay * 5;
+  
+  // Calculate required reps
+  const requiredReps = Math.ceil(totalWeeklyVisits / visitsPerRepPerWeek);
+  
+  return Math.max(1, requiredReps);
+}
+
+// Workload-aware clustering that considers visit frequency
+export function workloadBasedClustering(points: Point[], targetReps?: number, minVisitsPerDay: number = 6, maxVisitsPerDay: number = 12): Cluster[] {
+  if (points.length === 0) return [];
+  
+  // Calculate optimal number of reps if not provided
+  const optimalReps = targetReps || calculateOptimalReps(points.map(p => p.data));
+  
+  // Start with enhanced K-means clustering
+  let clusters = enhancedKMeansClustering(points, optimalReps, 10);
+  
+  // Balance workload across clusters
+  clusters = balanceClusterWorkload(clusters, minVisitsPerDay, maxVisitsPerDay);
+  
+  return clusters;
+}
+
+// Balance workload across clusters by redistributing outlets
+function balanceClusterWorkload(clusters: Cluster[], minVisitsPerDay: number, maxVisitsPerDay: number): Cluster[] {
+  const maxIterations = 10;
+  let iteration = 0;
+  
+  while (iteration < maxIterations) {
+    let improved = false;
+    
+    // Calculate workload for each cluster
+    const clusterWorkloads = clusters.map(cluster => ({
+      cluster,
+      weeklyVisits: cluster.points.reduce((sum, point) => sum + (point.data?.visitFrequency || 2), 0),
+      dailyVisits: cluster.points.reduce((sum, point) => sum + (point.data?.visitFrequency || 2), 0) / 5
+    }));
+    
+    // Find overloaded and underloaded clusters
+    const overloaded = clusterWorkloads.filter(c => c.dailyVisits > maxVisitsPerDay);
+    const underloaded = clusterWorkloads.filter(c => c.dailyVisits < minVisitsPerDay);
+    
+    // Try to redistribute outlets from overloaded to underloaded clusters
+    for (const overloadedCluster of overloaded) {
+      for (const underloadedCluster of underloaded) {
+        if (overloadedCluster.dailyVisits <= maxVisitsPerDay) break;
+        
+        // Find outlet in overloaded cluster that's closest to underloaded cluster
+        let bestOutlet: Point | null = null;
+        let bestDistance = Infinity;
+        
+        overloadedCluster.cluster.points.forEach(point => {
+          const distance = calculateDistance(
+            point.latitude,
+            point.longitude,
+            underloadedCluster.cluster.centroid.latitude,
+            underloadedCluster.cluster.centroid.longitude
+          );
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            bestOutlet = point;
+          }
+        });
+        
+        if (bestOutlet && underloadedCluster.dailyVisits + (bestOutlet.data?.visitFrequency || 2) / 5 <= maxVisitsPerDay) {
+          // Move outlet
+          overloadedCluster.cluster.points = overloadedCluster.cluster.points.filter(p => p.id !== bestOutlet!.id);
+          underloadedCluster.cluster.points.push(bestOutlet);
+          
+          // Update workloads
+          const outletVisits = (bestOutlet.data?.visitFrequency || 2) / 5;
+          overloadedCluster.dailyVisits -= outletVisits;
+          underloadedCluster.dailyVisits += outletVisits;
+          
+          improved = true;
+        }
+      }
+    }
+    
+    if (!improved) break;
+    iteration++;
+  }
+  
+  // Recalculate centroids
+  clusters.forEach(cluster => {
+    if (cluster.points.length > 0) {
+      cluster.centroid = {
+        latitude: cluster.points.reduce((sum, p) => sum + p.latitude, 0) / cluster.points.length,
+        longitude: cluster.points.reduce((sum, p) => sum + p.longitude, 0) / cluster.points.length
+      };
+    }
+  });
+  
+  return clusters.filter(cluster => cluster.points.length > 0);
+}
+
 // Calculate clustering quality score (lower is better)
 function calculateClusteringScore(clusters: Cluster[]): number {
   let totalScore = 0;
