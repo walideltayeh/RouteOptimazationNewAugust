@@ -1,5 +1,5 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import React from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -94,9 +94,16 @@ export default function RepScheduleTable() {
   });
 
   // Get all schedules
-  const { data: schedules = [] } = useQuery<Schedule[]>({
+  const { data: schedules = [], refetch: refetchSchedules } = useQuery<Schedule[]>({
     queryKey: ["/api/schedules"],
   });
+
+  // Force refetch when reps change
+  useEffect(() => {
+    if (reps.length > 0) {
+      refetchSchedules();
+    }
+  }, [reps.length, refetchSchedules]);
 
   // Calculate rep statistics
   const repsWithStats = reps.map((rep, index) => {
@@ -107,6 +114,8 @@ export default function RepScheduleTable() {
     const week1Schedules = repSchedules.filter(s => s.week === 1).length;
     const week2Schedules = repSchedules.filter(s => s.week === 2).length;
     const totalZones = week1Schedules + week2Schedules;
+
+
 
     return {
       ...rep,
@@ -166,9 +175,14 @@ export default function RepScheduleTable() {
                 </>
               )}
             </Button>
-            <Button size="sm">
+            <Button 
+              size="sm"
+              onClick={() => {
+                window.location.reload();
+              }}
+            >
               <RefreshCw className="mr-2 h-4 w-4" />
-              Regenerate
+              Refresh Page
             </Button>
           </div>
         </div>
