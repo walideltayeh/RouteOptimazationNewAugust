@@ -94,6 +94,7 @@ export interface DashboardMetrics {
   recommendedReps: number;
   avgDailyVisits: number;
   routeEfficiency: number;
+  territoryBalance: number;
   totalDistance: number;
   avgTravelTime: number;
   visitEfficiency: number;

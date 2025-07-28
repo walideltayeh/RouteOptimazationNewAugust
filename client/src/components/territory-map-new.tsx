@@ -32,7 +32,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   const [isMapLoaded, setIsMapLoaded] = useState(false);
   const [isRenderingMarkers, setIsRenderingMarkers] = useState(false);
   const [viewMode, setViewMode] = useState<'cluster' | 'individual'>('cluster');
-  const [selectedZone, setSelectedZone] = useState<string | null>(null);
+  const [selectedZones, setSelectedZones] = useState<string[]>([]);
 
   const { data: outlets = [] } = useQuery<Outlet[]>({
     queryKey: ['/api/outlets'],
@@ -144,7 +144,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     }
 
     setIsRenderingMarkers(false);
-  }, [outlets, reps, isMapLoaded, viewMode, selectedZone]);
+  }, [outlets, reps, isMapLoaded, viewMode, selectedZones]);
 
   const renderClusterView = () => {
     // Create territory cluster data
@@ -222,9 +222,16 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
       map.current!.on('click', 'territory-clusters', (e) => {
         if (e.features && e.features[0]) {
           const feature = e.features[0];
-          const { territory, count, outlets } = feature.properties;
+          const properties = feature.properties as any;
+          const { territory, count, outlets } = properties;
           
-          setSelectedZone(territory);
+          setSelectedZones(prev => {
+            if (prev.includes(territory)) {
+              return prev.filter(z => z !== territory);
+            } else {
+              return [...prev, territory];
+            }
+          });
           
           // Show popup with territory info and button to view individual outlets
           new mapboxgl.Popup()
@@ -268,9 +275,9 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   };
 
   const renderIndividualView = () => {
-    // Filter outlets by selected zone if any
-    const outletsToShow = selectedZone 
-      ? territoryGroups[selectedZone] || []
+    // Filter outlets by selected zones if any
+    const outletsToShow = selectedZones.length > 0
+      ? selectedZones.flatMap(zone => territoryGroups[zone] || [])
       : outlets.slice(0, 200); // Limit to 200 for performance
 
     const outletFeatures = outletsToShow.map((outlet, index) => ({
@@ -316,7 +323,8 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
       map.current!.on('click', 'individual-markers', (e) => {
         if (e.features && e.features[0]) {
           const feature = e.features[0];
-          const { name, territory, visitFrequency } = feature.properties;
+          const properties = feature.properties as any;
+          const { name, territory, visitFrequency } = properties;
           
           new mapboxgl.Popup()
             .setLngLat(e.lngLat)
@@ -352,7 +360,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   // Global function to switch to individual view for a specific zone
   useEffect(() => {
     (window as any).showIndividualOutlets = (territory: string) => {
-      setSelectedZone(territory);
+      setSelectedZones([territory]);
       setViewMode('individual');
     };
   }, []);
@@ -402,7 +410,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                   className="h-8 px-3"
                   onClick={() => {
                     setViewMode('cluster');
-                    setSelectedZone(null);
+                    setSelectedZones([]);
                   }}
                 >
                   <Layers className="mr-1 h-4 w-4" />
@@ -454,27 +462,33 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
               </div>
             )}
             
-            {/* Selected Zone Info */}
-            {selectedZone && viewMode === 'individual' && (
+            {/* Selected Zones Info */}
+            {selectedZones.length > 0 && viewMode === 'individual' && (
               <div className="absolute top-4 left-4 bg-white rounded-lg shadow-lg p-3 max-w-xs">
                 <div className="flex items-center justify-between mb-2">
-                  <h4 className="font-semibold text-sm">Viewing Zone</h4>
+                  <h4 className="font-semibold text-sm">Viewing Zones</h4>
                   <Button
                     variant="ghost"
                     size="sm"
                     className="h-6 w-6 p-0"
                     onClick={() => {
-                      setSelectedZone(null);
+                      setSelectedZones([]);
                       setViewMode('cluster');
                     }}
                   >
                     ×
                   </Button>
                 </div>
-                <p className="text-sm text-gray-600">{selectedZone}</p>
-                <p className="text-xs text-gray-500">
-                  {territoryGroups[selectedZone]?.length || 0} outlets
-                </p>
+                <div className="space-y-1">
+                  {selectedZones.map(zone => (
+                    <div key={zone}>
+                      <p className="text-sm text-gray-600">{zone}</p>
+                      <p className="text-xs text-gray-500">
+                        {territoryGroups[zone]?.length || 0} outlets
+                      </p>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
           </CardContent>
@@ -497,10 +511,16 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                   <div 
                     key={territory} 
                     className={`flex items-center justify-between p-3 rounded-lg cursor-pointer hover:bg-gray-100 ${
-                      selectedZone === territory ? 'bg-blue-50 border border-blue-200' : 'bg-gray-50'
+                      selectedZones.includes(territory) ? 'bg-blue-50 border border-blue-200' : 'bg-gray-50'
                     }`}
                     onClick={() => {
-                      setSelectedZone(territory);
+                      setSelectedZones(prev => {
+                        if (prev.includes(territory)) {
+                          return prev.filter(z => z !== territory);
+                        } else {
+                          return [...prev, territory];
+                        }
+                      });
                       setViewMode('individual');
                     }}
                   >

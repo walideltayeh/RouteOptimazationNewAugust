@@ -17,8 +17,8 @@ interface FileAnalysis {
 }
 
 export default function OptimizationSettings() {
-  const [minVisitsPerDay, setMinVisitsPerDay] = useState(15);
-  const [maxVisitsPerDay, setMaxVisitsPerDay] = useState(25);
+  const [minVisitsPerDay, setMinVisitsPerDay] = useState(25);
+  const [maxVisitsPerDay, setMaxVisitsPerDay] = useState(30);
   const [workingDaysPerWeek, setWorkingDaysPerWeek] = useState(5);
 
   const { toast } = useToast();

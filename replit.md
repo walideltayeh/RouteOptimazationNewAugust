@@ -121,11 +121,16 @@ Preferred communication style: Simple, everyday language.
 ✓ Enhanced workload balancing with multi-phase algorithms
 ✓ Added comprehensive ML model performance tracking
 ✓ **Fixed Territory Overlap Issue**: Replaced round-robin assignment with proper geographic K-means clustering
-✓ **Updated Visit Parameters**: Changed from 15-25 to 25-27 visits per day across all components
+✓ **Updated Visit Parameters**: Changed from 15-25 to 25-30 visits per day across all components
 ✓ **Enhanced Map Toggle**: Added cluster/individual view switching with zone-specific filtering
 ✓ **Improved Clustering Algorithm**: Grid-based initialization, Haversine distance, convergence detection
 ✓ **Implemented Compact Clustering**: New 2-phase algorithm creates 25-outlet clusters within 5km radius for geographic proximity
 ✓ **Added New Optimization Button**: Clear all data functionality to reset for fresh optimization runs
-✓ **Implemented Compact Zone Merger**: Enhanced 3-phase merging system for optimal territory distribution
+✓ **Implemented Enhanced Compact Zone Merger**: 3-phase merging system ensuring zones with ≤5 outlets automatically merge with closest zones
+✓ **Added Enhanced Boundary Optimization**: Phase 2 redistribution of outlier outlets to closer zones for better geographic clustering
+✓ **Implemented Multi-Zone Selection**: Users can now select multiple zones on the map for comparison and analysis
+✓ **Fixed File Upload After Clear**: Resolved issue where file upload wouldn't work after clearing data
+✓ **Replaced Route Efficiency Graph**: Changed to Territory Balance metric for better territory distribution insights
+✓ **Updated Default Visit Parameters**: Min/Max visits changed from 15/25 to 25/30 for realistic Lebanese market conditions
 
 The application follows a monorepo structure with clear separation between client, server, and shared code, enabling efficient development and maintainable architecture for scaling route optimization operations with advanced AI capabilities.

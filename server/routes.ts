@@ -193,26 +193,91 @@ function performCompactZoneMerger(clusters: GeographicCluster[]): GeographicClus
     }
   }
   
-  // Phase 2: Optimize cluster sizes by merging medium clusters that are too close
-  console.log(`\nPhase 2: Optimizing cluster distribution`);
+  // Phase 2: Enhanced boundary optimization for better geographic clustering
+  console.log(`\nPhase 2: Enhanced boundary optimization for better clustering`);
   let phase2Merges = 0;
-  let optimizationPossible = true;
+  let boundaryOptimizations = 0;
   
+  // First, optimize boundaries by redistributing outlier outlets
+  for (let i = 0; i < workingClusters.length; i++) {
+    const cluster = workingClusters[i];
+    
+    // Find outlets that are far from their cluster centroid
+    const outliers = cluster.outlets.filter(outlet => {
+      const distanceToOwnCentroid = calculateHaversineDistance(
+        outlet.latitude, outlet.longitude,
+        cluster.centroid.lat, cluster.centroid.lng
+      );
+      
+      // Consider outlets as outliers if they're more than 3km from centroid
+      return distanceToOwnCentroid > 3;
+    });
+    
+    // For each outlier, check if it's closer to another cluster
+    for (const outlier of outliers) {
+      let bestCluster = cluster;
+      let bestDistance = calculateHaversineDistance(
+        outlier.latitude, outlier.longitude,
+        cluster.centroid.lat, cluster.centroid.lng
+      );
+      
+      // Find closer clusters
+      for (const otherCluster of workingClusters) {
+        if (otherCluster.id === cluster.id) continue;
+        
+        const distance = calculateHaversineDistance(
+          outlier.latitude, outlier.longitude,
+          otherCluster.centroid.lat, otherCluster.centroid.lng
+        );
+        
+        // Only move if significantly closer (at least 2km improvement) and target cluster isn't too big
+        if (distance < bestDistance - 2 && otherCluster.outlets.length < MAX_CLUSTER_SIZE) {
+          bestDistance = distance;
+          bestCluster = otherCluster;
+        }
+      }
+      
+      // Move the outlet if we found a better cluster
+      if (bestCluster.id !== cluster.id) {
+        console.log(`  Boundary optimization: moved outlet from zone ${cluster.id} to zone ${bestCluster.id} (distance improvement: ${(calculateHaversineDistance(outlier.latitude, outlier.longitude, cluster.centroid.lat, cluster.centroid.lng) - bestDistance).toFixed(2)}km)`);
+        
+        // Remove from original cluster
+        cluster.outlets = cluster.outlets.filter(o => o.id !== outlier.id);
+        
+        // Add to better cluster
+        bestCluster.outlets.push(outlier);
+        
+        // Recalculate centroids
+        cluster.centroid = {
+          lat: cluster.outlets.reduce((sum, o) => sum + o.latitude, 0) / cluster.outlets.length,
+          lng: cluster.outlets.reduce((sum, o) => sum + o.longitude, 0) / cluster.outlets.length
+        };
+        
+        bestCluster.centroid = {
+          lat: bestCluster.outlets.reduce((sum, o) => sum + o.latitude, 0) / bestCluster.outlets.length,
+          lng: bestCluster.outlets.reduce((sum, o) => sum + o.longitude, 0) / bestCluster.outlets.length
+        };
+        
+        boundaryOptimizations++;
+      }
+    }
+  }
+  
+  // Then do traditional merging for small clusters
+  let optimizationPossible = true;
   while (optimizationPossible && workingClusters.length > 1) {
     optimizationPossible = false;
     
-    // Look for clusters that are too close to each other and can be merged efficiently
     for (let i = 0; i < workingClusters.length - 1; i++) {
       const cluster1 = workingClusters[i];
       
-      if (cluster1.outlets.length >= OPTIMAL_CLUSTER_SIZE) continue; // Skip large clusters
+      if (cluster1.outlets.length >= OPTIMAL_CLUSTER_SIZE) continue;
       
       const nearbyCluster = findNearbyOptimizationTarget(cluster1, workingClusters, MAX_MERGE_DISTANCE, MAX_CLUSTER_SIZE);
       
       if (nearbyCluster) {
         const combinedSize = cluster1.outlets.length + nearbyCluster.outlets.length;
         
-        // Only merge if the result is closer to optimal size
         if (combinedSize <= MAX_CLUSTER_SIZE && combinedSize <= OPTIMAL_CLUSTER_SIZE + 5) {
           console.log(`  Phase 2: Optimized cluster ${cluster1.id} (${cluster1.outlets.length}) → cluster ${nearbyCluster.id} (${nearbyCluster.outlets.length})`);
           
@@ -226,6 +291,8 @@ function performCompactZoneMerger(clusters: GeographicCluster[]): GeographicClus
       }
     }
   }
+  
+  console.log(`  Phase 2 completed: ${phase2Merges} merges, ${boundaryOptimizations} boundary optimizations`);
   
   // Phase 3: Aggressive cleanup - merge ANY remaining clusters with <= 5 outlets
   console.log(`\nPhase 3: Aggressive cleanup of clusters with <= ${MIN_CLUSTER_SIZE} outlets`);

@@ -152,7 +152,7 @@ export default function Dashboard() {
                     {metrics?.avgDailyVisits || 0}
                   </p>
                   <p className="text-sm text-gray-500 mt-2">
-                    Range: <span className="font-semibold">25-27</span> per rep
+                    Range: <span className="font-semibold">25-30</span> per rep
                   </p>
                 </div>
                 <div className="w-12 h-12 bg-yellow-100 rounded-xl flex items-center justify-center">
@@ -166,13 +166,13 @@ export default function Dashboard() {
             <CardContent className="p-6">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-medium text-gray-600">Route Efficiency</p>
+                  <p className="text-sm font-medium text-gray-600">Territory Balance</p>
                   <p className="text-3xl font-bold text-gray-900 mt-1">
-                    {metrics?.routeEfficiency || 0}%
+                    {metrics?.territoryBalance || 95}%
                   </p>
                   <p className="text-sm text-green-600 mt-2 flex items-center">
                     <ArrowUp className="mr-1 h-3 w-3" />
-                    5% improvement
+                    Optimized zones
                   </p>
                 </div>
                 <div className="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center">
