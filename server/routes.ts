@@ -556,6 +556,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Clear all data (New Optimization)
+  app.delete("/api/clear", async (_req, res) => {
+    try {
+      await storage.clearAll();
+      res.json({ 
+        success: true, 
+        message: "All data cleared successfully. Ready for new optimization." 
+      });
+    } catch (error) {
+      console.error("Failed to clear data:", error);
+      res.status(500).json({ message: "Failed to clear data" });
+    }
+  });
+
   // Route optimization
   app.post("/api/optimize", async (req, res) => {
     try {

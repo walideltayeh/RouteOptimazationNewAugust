@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import FileUpload from "@/components/file-upload";
 import RepScheduleTable from "@/components/rep-schedule-table";
 import OptimizationSettings from "@/components/optimization-settings";
@@ -7,10 +7,15 @@ import MLInsights from "@/components/ml-insights";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ArrowUp, Store, Users, CalendarCheck, TrendingUp, Download, Plus, Brain } from "lucide-react";
+import { ArrowUp, Store, Users, CalendarCheck, TrendingUp, Download, Plus, Brain, Trash2 } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
+import { apiRequest } from "@/lib/queryClient";
 import type { DashboardMetrics, Rep, Outlet, Schedule } from "@shared/schema";
 
 export default function Dashboard() {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+
   const { data: metrics, isLoading } = useQuery<DashboardMetrics>({
     queryKey: ["/api/dashboard/metrics"],
   });
@@ -26,6 +31,34 @@ export default function Dashboard() {
   const { data: schedules = [] } = useQuery<Schedule[]>({
     queryKey: ["/api/schedules"],
   });
+
+  const clearAllMutation = useMutation({
+    mutationFn: () => apiRequest("/api/clear", { method: "DELETE" }),
+    onSuccess: () => {
+      // Invalidate all queries to refresh the data
+      queryClient.invalidateQueries({ queryKey: ["/api/dashboard/metrics"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/reps"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/outlets"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/schedules"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/analysis"] });
+      
+      toast({
+        title: "Success!",
+        description: "All data cleared successfully. Ready for new optimization.",
+      });
+    },
+    onError: () => {
+      toast({
+        title: "Error",
+        description: "Failed to clear data. Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleNewOptimization = () => {
+    clearAllMutation.mutate();
+  };
 
   if (isLoading) {
     return (
@@ -49,8 +82,16 @@ export default function Dashboard() {
               <p className="text-sm text-gray-600 mt-1">Manage your sales rep territories and optimize routes</p>
             </div>
             <div className="flex items-center space-x-4">
-              <Button className="bg-primary hover:bg-primary/90">
-                <Plus className="mr-2 h-4 w-4" />
+              <Button 
+                className="bg-primary hover:bg-primary/90"
+                onClick={handleNewOptimization}
+                disabled={clearAllMutation.isPending}
+              >
+                {clearAllMutation.isPending ? (
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                ) : (
+                  <Plus className="mr-2 h-4 w-4" />
+                )}
                 New Optimization
               </Button>
               <Button variant="outline">

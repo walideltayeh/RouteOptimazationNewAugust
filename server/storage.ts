@@ -44,6 +44,9 @@ export interface IStorage {
   // Analytics
   getDashboardMetrics(): Promise<DashboardMetrics>;
   getFileAnalysis(): Promise<FileAnalysis>;
+  
+  // Clear all data
+  clearAll(): Promise<void>;
 }
 
 export class MemStorage implements IStorage {
@@ -256,6 +259,13 @@ export class MemStorage implements IStorage {
       vf4,
       recommendedReps
     };
+  }
+
+  async clearAll(): Promise<void> {
+    this.outlets.clear();
+    this.reps.clear();
+    this.schedules.clear();
+    this.optimizationRuns.clear();
   }
 }
 
