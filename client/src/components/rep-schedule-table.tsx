@@ -90,7 +90,7 @@ export default function RepScheduleTable() {
         <div className="flex justify-between items-center">
           <CardTitle className="flex items-center">
             <Calendar className="mr-2 h-5 w-5 text-primary" />
-            Rep Scheduling Overview
+            Route Scheduling Overview
           </CardTitle>
 
           <div className="flex items-center space-x-3">
@@ -114,7 +114,7 @@ export default function RepScheduleTable() {
             <div>
               <h4 className="text-sm font-semibold text-primary">Schedule Pattern</h4>
               <p className="text-sm text-primary/80">
-                Week 1 = Week 3, Week 2 = Week 4. Each rep maintains consistent visit patterns for optimal customer relationship management.
+                Week 1 = Week 3, Week 2 = Week 4. Each route maintains consistent visit patterns for optimal customer relationship management.
               </p>
             </div>
           </div>
@@ -123,15 +123,15 @@ export default function RepScheduleTable() {
         {/* Rep Schedule Table */}
         {repsWithStats.length === 0 ? (
           <div className="text-center py-8">
-            <p className="text-gray-500">No reps available. Upload outlet data and run optimization to generate rep schedules.</p>
+            <p className="text-gray-500">No routes available. Upload outlet data and run optimization to generate route schedules.</p>
           </div>
         ) : (
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow className="bg-gray-50">
-                  <TableHead className="font-semibold">Rep Name</TableHead>
-                  <TableHead className="font-semibold">Territory</TableHead>
+                  <TableHead className="font-semibold">Route Name</TableHead>
+                  <TableHead className="font-semibold">Zone</TableHead>
                   <TableHead className="text-center font-semibold">Daily Visits</TableHead>
                   <TableHead className="text-center font-semibold">Weekly Visits</TableHead>
                   <TableHead className="text-center font-semibold">VF2 Outlets</TableHead>

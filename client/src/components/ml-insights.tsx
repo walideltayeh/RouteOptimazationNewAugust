@@ -205,7 +205,7 @@ export default function MLInsights({ outlets, reps, schedules }: MLInsightsProps
           </TabsTrigger>
           <TabsTrigger value="optimization" className="flex items-center space-x-2">
             <Target className="h-4 w-4" />
-            <span>Territory Optimization</span>
+            <span>Route Optimization</span>
           </TabsTrigger>
           <TabsTrigger value="insights" className="flex items-center space-x-2">
             <TrendingUp className="h-4 w-4" />
@@ -345,9 +345,9 @@ export default function MLInsights({ outlets, reps, schedules }: MLInsightsProps
             <CardHeader>
               <div className="flex items-center justify-between">
                 <div>
-                  <CardTitle>ML Territory Optimization</CardTitle>
+                  <CardTitle>ML Route Optimization</CardTitle>
                   <p className="text-sm text-gray-600">
-                    AI-recommended territory reassignments for better efficiency
+                    AI-recommended route reassignments for better efficiency
                   </p>
                 </div>
                 {optimizationResults?.recommendedChanges?.length > 0 && (
@@ -403,8 +403,8 @@ export default function MLInsights({ outlets, reps, schedules }: MLInsightsProps
                           <TableHeader>
                             <TableRow>
                               <TableHead>Outlet</TableHead>
-                              <TableHead>Current Rep</TableHead>
-                              <TableHead>Recommended Rep</TableHead>
+                              <TableHead>Current Route</TableHead>
+                              <TableHead>Recommended Route</TableHead>
                               <TableHead>Reason</TableHead>
                               <TableHead className="text-center">Expected Impact</TableHead>
                             </TableRow>
@@ -450,8 +450,8 @@ export default function MLInsights({ outlets, reps, schedules }: MLInsightsProps
                   ) : (
                     <div className="text-center py-8">
                       <CheckCircle className="mx-auto h-12 w-12 text-green-400 mb-4" />
-                      <h3 className="text-lg font-medium text-gray-900 mb-2">Territories Optimized</h3>
-                      <p className="text-gray-500">Current territory assignments are already optimal.</p>
+                      <h3 className="text-lg font-medium text-gray-900 mb-2">Routes Optimized</h3>
+                      <p className="text-gray-500">Current route assignments are already optimal.</p>
                     </div>
                   )}
                 </div>

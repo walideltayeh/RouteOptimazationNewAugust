@@ -166,18 +166,18 @@ export default function ScheduleViewModal({ repId, isOpen, onClose, isEditMode }
         </DialogHeader>
 
         <div className="space-y-6">
-          {/* Rep Info */}
+          {/* Route Info */}
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-lg flex items-center">
                 <MapPin className="mr-2 h-5 w-5 text-primary" />
-                Territory: {rep?.territory}
+                Zone: {rep?.territory}
               </CardTitle>
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div>
-                  <span className="text-sm text-gray-600">Rep Code:</span>
+                  <span className="text-sm text-gray-600">Route Code:</span>
                   <div className="font-medium">{rep?.code}</div>
                 </div>
                 <div>
@@ -221,7 +221,7 @@ export default function ScheduleViewModal({ repId, isOpen, onClose, isEditMode }
               <Card key={weekNum}>
                 <CardHeader>
                   <CardTitle className="flex items-center justify-between">
-                    Week {weekNum}
+                    Week {weekNum} {weekNum <= 2 && <span className="text-sm text-gray-500">(repeats as Week {weekNum + 2})</span>}
                     <Badge variant="outline">{sortedSchedules.length} days scheduled</Badge>
                   </CardTitle>
                 </CardHeader>

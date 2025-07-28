@@ -503,7 +503,7 @@ function updateTerritoryNames(reps: any[], clusters: GeographicCluster[]): void 
   });
 }
 
-// Helper function to generate weekly schedules for a rep
+// Helper function to generate weekly schedules for a route
 function generateWeeklySchedules(rep: Rep, outlets: Outlet[]): InsertSchedule[] {
   const schedules: InsertSchedule[] = [];
   const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
@@ -513,36 +513,54 @@ function generateWeeklySchedules(rep: Rep, outlets: Outlet[]): InsertSchedule[] 
   const vf2Outlets = outlets.filter(o => o.visitFrequency === 2);
   const vf4Outlets = outlets.filter(o => o.visitFrequency === 4);
   
-  // Generate schedules for Week 1 and Week 2 (which repeat)
+  // For VF2 outlets: Split them into two groups for alternating weeks
+  const vf2Group1 = vf2Outlets.filter((_, i) => i % 2 === 0); // Visit in week 1 (and week 3)
+  const vf2Group2 = vf2Outlets.filter((_, i) => i % 2 === 1); // Visit in week 2 (and week 4)
+  
+  // Generate schedules for Week 1 and Week 2 (pattern repeats for weeks 3 and 4)
   for (let week = 1; week <= 2; week++) {
+    // Determine which VF2 group to visit this week
+    const currentVf2Group = week === 1 ? vf2Group1 : vf2Group2;
+    
+    // Calculate visits needed per day
+    const totalVisitsNeeded = vf4Outlets.length + currentVf2Group.length;
+    const visitsPerDay = Math.ceil(totalVisitsNeeded / workingDays.length);
+    
+    // Create a pool of all outlets to visit this week
+    const weeklyOutletPool = [...vf4Outlets, ...currentVf2Group];
+    let outletIndex = 0;
+    
     for (let dayIndex = 0; dayIndex < workingDays.length; dayIndex++) {
       const dayName = workingDays[dayIndex];
       const visitOrder: string[] = [];
       
-      // Add VF4 outlets (visit every day they work)
-      vf4Outlets.forEach((outlet, index) => {
-        if (visitOrder.length < rep.maxDailyVisits) {
-          visitOrder.push(outlet.id);
-        }
-      });
+      // Distribute outlets evenly across days
+      let dailyVisitCount = 0;
+      while (dailyVisitCount < Math.min(visitsPerDay, rep.maxDailyVisits) && outletIndex < weeklyOutletPool.length) {
+        visitOrder.push(weeklyOutletPool[outletIndex].id);
+        outletIndex++;
+        dailyVisitCount++;
+      }
       
-      // Add VF2 outlets (distribute across days)
-      // For VF2: Week 1 visit on days 0,2,4... Week 2 visit on days 1,3,5...
-      const vf2StartOffset = week === 1 ? 0 : 1;
-      vf2Outlets.forEach((outlet, index) => {
-        if (visitOrder.length < rep.maxDailyVisits) {
-          // Distribute VF2 visits across working days
-          const shouldVisitToday = (index + vf2StartOffset + (week - 1)) % rep.workingDaysPerWeek === dayIndex;
-          if (shouldVisitToday) {
-            visitOrder.push(outlet.id);
-          }
-        }
-      });
+      // If we've gone through all outlets but still have days left, restart from beginning
+      if (outletIndex >= weeklyOutletPool.length && dayIndex < workingDays.length - 1) {
+        outletIndex = 0;
+      }
       
       if (visitOrder.length > 0) {
+        // Store schedules for both the current week and its repeat (week 1 repeats as week 3, week 2 as week 4)
         schedules.push({
           repId: rep.id,
           week: week,
+          dayOfWeek: daysOfWeek.indexOf(dayName),
+          outletIds: visitOrder,
+          routeOrder: visitOrder
+        });
+        
+        // Also create the repeat week (3 or 4)
+        schedules.push({
+          repId: rep.id,
+          week: week + 2,
           dayOfWeek: daysOfWeek.indexOf(dayName),
           outletIds: visitOrder,
           routeOrder: visitOrder
@@ -842,8 +860,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const clusterRadius = calculateClusterRadius(cluster);
         
         const newRep = await storage.createRep({
-          name: `Rep ${i + 1}`,
-          code: `REP${(i + 1).toString().padStart(3, '0')}`,
+          name: `Route ${i + 1}`,
+          code: `ROUTE${(i + 1).toString().padStart(3, '0')}`,
           territory: `Zone ${i + 1}`, // Zone 1, Zone 2, Zone 3, etc.
           maxDailyVisits: maxVisitsPerDay,
           minDailyVisits: minVisitsPerDay,
@@ -867,18 +885,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Update final required reps to match actual zones created
       finalRequiredReps = allReps.length;
 
-      // Generate schedules for each rep
-      console.log('Generating schedules for', allReps.length, 'reps');
-      for (const rep of allReps) {
-        // Get updated outlets assigned to this rep
+      // Generate schedules for each route
+      console.log('Generating schedules for', allReps.length, 'routes');
+      for (const route of allReps) {
+        // Get updated outlets assigned to this route
         const updatedOutlets = await storage.getOutlets();
-        const repOutlets = updatedOutlets.filter(o => o.repId === rep.id);
-        console.log(`Rep ${rep.name} has ${repOutlets.length} outlets`);
+        const routeOutlets = updatedOutlets.filter(o => o.repId === route.id);
+        console.log(`${route.name} has ${routeOutlets.length} outlets`);
         
-        if (repOutlets.length > 0) {
-          const repSchedules = generateWeeklySchedules(rep, repOutlets);
-          console.log(`Generated ${repSchedules.length} schedules for ${rep.name}`);
-          for (const schedule of repSchedules) {
+        if (routeOutlets.length > 0) {
+          const routeSchedules = generateWeeklySchedules(route, routeOutlets);
+          console.log(`Generated ${routeSchedules.length} schedules for ${route.name}`);
+          for (const schedule of routeSchedules) {
             await storage.createSchedule(schedule);
           }
         }
@@ -903,7 +921,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           maxVisitsPerDay,
           estimatedReps: finalRequiredReps
         },
-        message: `Optimization completed. ${finalRequiredReps} reps needed for ${totalWeeklyVisits} weekly visits (${minVisitsPerDay}-${maxVisitsPerDay} visits/day). ${outlets.length} outlets assigned.`
+        message: `Optimization completed. ${finalRequiredReps} routes created for ${totalWeeklyVisits} weekly visits (${minVisitsPerDay}-${maxVisitsPerDay} visits/day). ${outlets.length} outlets assigned.`
       });
 
     } catch (error) {
