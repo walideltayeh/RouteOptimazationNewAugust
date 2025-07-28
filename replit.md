@@ -131,8 +131,10 @@ Preferred communication style: Simple, everyday language.
 ✓ **Implemented Multi-Zone Selection**: Users can now select multiple zones on the map for comparison and analysis
 ✓ **Enhanced Territory Dropdown to Multi-Select**: Converted single-select dropdown to multi-select with search functionality for selecting multiple zones simultaneously
 ✓ **Optimized Map Display for Large Datasets**: Increased threshold from 1000 to 5000 outlets for map rendering to handle larger Lebanese datasets
-✓ **Fixed Oversized Zone Issue**: Added Phase 4 cluster splitting logic to break down zones with >50 outlets into optimal 25-outlet sub-zones
+✓ **Fixed Oversized Zone Issue**: Added Phase 4 cluster splitting logic to break down zones with >25 outlets into optimal 25-outlet sub-zones
 ✓ **Fixed Dropdown Scrolling**: Implemented proper scrolling constraints for multi-select territory dropdown using Command component's built-in scroll handling
+✓ **Enforced Strict Zone Size Limits**: Updated clustering algorithm to ensure no zone exceeds 25 outlets by implementing strict size checks during cluster assignment
+✓ **Enhanced Zone Merger Logic**: Improved 5-phase merging system to ensure all zones with ≤5 outlets are merged with their closest neighbor that has capacity
 ✓ **Fixed File Upload After Clear**: Resolved issue where file upload wouldn't work after clearing data
 ✓ **Replaced Route Efficiency Graph**: Changed to Territory Balance metric for better territory distribution insights
 ✓ **Updated Default Visit Parameters**: Min/Max visits changed from 15/25 to 25/30 for realistic Lebanese market conditions

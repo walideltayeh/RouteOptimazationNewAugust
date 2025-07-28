@@ -120,10 +120,13 @@ function createCompactClusters(outlets: Outlet[], maxClusters: number, targetSiz
   // Assign any remaining outlets to nearest existing clusters (after merging)
   while (unassigned.length > 0) {
     const outlet = unassigned.pop()!;
-    let nearestCluster = premergedClusters[0];
+    let nearestCluster = null;
     let nearestDistance = Infinity;
     
+    // Find nearest cluster that has room (< 25 outlets)
     premergedClusters.forEach(cluster => {
+      if (cluster.outlets.length >= 25) return; // Skip full clusters
+      
       const distance = calculateHaversineDistance(
         outlet.latitude, outlet.longitude,
         cluster.centroid.lat, cluster.centroid.lng
@@ -135,12 +138,22 @@ function createCompactClusters(outlets: Outlet[], maxClusters: number, targetSiz
       }
     });
     
-    nearestCluster.outlets.push(outlet);
-    // Recalculate centroid
-    nearestCluster.centroid = {
-      lat: nearestCluster.outlets.reduce((sum, o) => sum + o.latitude, 0) / nearestCluster.outlets.length,
-      lng: nearestCluster.outlets.reduce((sum, o) => sum + o.longitude, 0) / nearestCluster.outlets.length
-    };
+    // If no cluster has room, create a new one
+    if (!nearestCluster) {
+      const newCluster: GeographicCluster = {
+        id: premergedClusters.length,
+        outlets: [outlet],
+        centroid: { lat: outlet.latitude, lng: outlet.longitude }
+      };
+      premergedClusters.push(newCluster);
+    } else {
+      nearestCluster.outlets.push(outlet);
+      // Recalculate centroid
+      nearestCluster.centroid = {
+        lat: nearestCluster.outlets.reduce((sum, o) => sum + o.latitude, 0) / nearestCluster.outlets.length,
+        lng: nearestCluster.outlets.reduce((sum, o) => sum + o.longitude, 0) / nearestCluster.outlets.length
+      };
+    }
   }
   
   return premergedClusters;
@@ -149,7 +162,7 @@ function createCompactClusters(outlets: Outlet[], maxClusters: number, targetSiz
 // Enhanced Compact Zone Merger for Small Territories
 function performCompactZoneMerger(clusters: GeographicCluster[]): GeographicCluster[] {
   const MIN_CLUSTER_SIZE = 5;
-  const MAX_CLUSTER_SIZE = 40; // Increased slightly to allow more flexibility
+  const MAX_CLUSTER_SIZE = 25; // Strict limit of 25 outlets per zone
   const OPTIMAL_CLUSTER_SIZE = 25;
   const MAX_MERGE_DISTANCE = 8; // km - Maximum distance for merging clusters
   
@@ -175,7 +188,7 @@ function performCompactZoneMerger(clusters: GeographicCluster[]): GeographicClus
     const smallClusters = workingClusters.filter(c => c.outlets.length <= MIN_CLUSTER_SIZE);
     for (const smallCluster of smallClusters) {
       // Find the best merge candidate (allow larger distances for small clusters)
-      const mergeCandidate = findBestMergeCandidate(smallCluster, workingClusters, MAX_MERGE_DISTANCE * 2, MAX_CLUSTER_SIZE + 10);
+      const mergeCandidate = findBestMergeCandidate(smallCluster, workingClusters, MAX_MERGE_DISTANCE * 2, MAX_CLUSTER_SIZE);
       
       if (mergeCandidate) {
         console.log(`  Phase 1: Merged cluster ${smallCluster.id} (${smallCluster.outlets.length} outlets) → cluster ${mergeCandidate.id} (${mergeCandidate.outlets.length} outlets)`);
@@ -304,8 +317,8 @@ function performCompactZoneMerger(clusters: GeographicCluster[]): GeographicClus
     const remainingSmallClusters = workingClusters.filter(c => c.outlets.length <= MIN_CLUSTER_SIZE);
     
     for (const smallCluster of remainingSmallClusters) {
-      // Find ANY merge candidate with relaxed but reasonable limits
-      const mergeCandidate = findBestMergeCandidate(smallCluster, workingClusters, 20, 50); // 20km max distance, 50 outlets max
+      // Find ANY merge candidate with strict size limit
+      const mergeCandidate = findBestMergeCandidate(smallCluster, workingClusters, 30, MAX_CLUSTER_SIZE); // 30km max distance, 25 outlets max
       
       if (mergeCandidate && workingClusters.length > 1) {
         console.log(`  Phase 3: Final cleanup - merged cluster ${smallCluster.id} (${smallCluster.outlets.length}) → cluster ${mergeCandidate.id} (${mergeCandidate.outlets.length})`);
@@ -325,11 +338,11 @@ function performCompactZoneMerger(clusters: GeographicCluster[]): GeographicClus
   let finalClusters: GeographicCluster[] = [];
   
   for (const cluster of workingClusters) {
-    if (cluster.outlets.length > 50) {
+    if (cluster.outlets.length > MAX_CLUSTER_SIZE) {
       console.log(`  Splitting oversized cluster ${cluster.id} with ${cluster.outlets.length} outlets`);
       
-      // Calculate how many sub-clusters we need
-      const subClusterCount = Math.ceil(cluster.outlets.length / OPTIMAL_CLUSTER_SIZE);
+      // Calculate how many sub-clusters we need (aim for exactly 25 outlets each)
+      const subClusterCount = Math.ceil(cluster.outlets.length / MAX_CLUSTER_SIZE);
       
       // Perform k-means clustering on the outlets in this cluster
       const outletPoints = cluster.outlets.map((outlet, idx) => ({
@@ -367,6 +380,45 @@ function performCompactZoneMerger(clusters: GeographicCluster[]): GeographicClus
   workingClusters.forEach((cluster, index) => {
     cluster.id = index;
   });
+  
+  // Phase 5: Final verification - merge any remaining small clusters
+  console.log(`\nPhase 5: Final verification and cleanup`);
+  let finalMergeNeeded = true;
+  
+  while (finalMergeNeeded && workingClusters.length > 1) {
+    finalMergeNeeded = false;
+    
+    // Find any cluster with <= 5 outlets
+    const tinyCluster = workingClusters.find(c => c.outlets.length <= MIN_CLUSTER_SIZE);
+    
+    if (tinyCluster) {
+      // Find the closest cluster that can accept it (regardless of distance)
+      let closestCluster = null;
+      let closestDistance = Infinity;
+      
+      for (const targetCluster of workingClusters) {
+        if (targetCluster.id === tinyCluster.id) continue;
+        if (targetCluster.outlets.length + tinyCluster.outlets.length > MAX_CLUSTER_SIZE) continue;
+        
+        const distance = calculateHaversineDistance(
+          tinyCluster.centroid.lat, tinyCluster.centroid.lng,
+          targetCluster.centroid.lat, targetCluster.centroid.lng
+        );
+        
+        if (distance < closestDistance) {
+          closestDistance = distance;
+          closestCluster = targetCluster;
+        }
+      }
+      
+      if (closestCluster) {
+        console.log(`  Phase 5: Final merge - cluster ${tinyCluster.id} (${tinyCluster.outlets.length}) → cluster ${closestCluster.id} (${closestCluster.outlets.length})`);
+        mergeClusters(closestCluster, tinyCluster);
+        workingClusters = workingClusters.filter(c => c.id !== tinyCluster.id);
+        finalMergeNeeded = true;
+      }
+    }
+  }
   
   // Final analysis
   const finalSmallClusters = workingClusters.filter(c => c.outlets.length <= MIN_CLUSTER_SIZE);
@@ -1027,9 +1079,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Export schedules to Excel
   app.get("/api/export/schedules", async (_req, res) => {
     try {
-      const reps = await storage.getAllReps();
-      const schedules = await storage.getAllSchedules();
-      const outlets = await storage.getAllOutlets();
+      const reps = await storage.getReps();
+      const schedules = await storage.getSchedules();
+      const outlets = await storage.getOutlets();
       
       if (reps.length === 0 || schedules.length === 0) {
         return res.status(400).json({ message: "No schedules available to export" });
