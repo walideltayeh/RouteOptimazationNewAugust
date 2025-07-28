@@ -688,11 +688,11 @@ function balanceClusterWorkload(clusters: Cluster[], minVisitsPerDay: number, ma
       // Find nearby points from other clusters
       const nearbyPoints: Array<{point: Point, sourceCluster: Cluster, distance: number, workload: number}> = [];
       
-      clusters.forEach(sourceCluster => {
+      for (const sourceCluster of clusters) {
         if (sourceCluster.id === underloadedCluster.id) continue;
-        if (sourceCluster.workload / 5 <= minVisitsPerDay * 1.1) return; // Don't take from balanced clusters
+        if (sourceCluster.workload / 5 <= minVisitsPerDay * 1.1) continue; // Don't take from balanced clusters
         
-        sourceCluster.points.forEach(point => {
+        for (const point of sourceCluster.points) {
           const distance = calculateDistance(
             point.latitude, point.longitude,
             underloadedCluster.centroid.latitude, underloadedCluster.centroid.longitude
@@ -706,8 +706,8 @@ function balanceClusterWorkload(clusters: Cluster[], minVisitsPerDay: number, ma
               workload: point.data?.visitFrequency || 2
             });
           }
-        });
-      });
+        }
+      }
       
       // Sort by distance and try to move points
       nearbyPoints.sort((a, b) => a.distance - b.distance);
@@ -791,6 +791,348 @@ function ensureMinimumViability(clusters: Cluster[], minVisitsPerDay: number): C
   });
   
   return viable;
+}
+
+// Enhanced workload optimization with multi-phase approach
+async function enhancedWorkloadOptimization(
+  clusters: Cluster[],
+  minVisitsPerDay: number,
+  maxVisitsPerDay: number
+): Promise<Cluster[]> {
+  const workingClusters = [...clusters];
+  
+  // Calculate optimization targets
+  const totalWorkload = workingClusters.reduce((sum, c) => sum + c.workload, 0);
+  const avgWorkload = totalWorkload / (workingClusters.length * 5);
+  const targetMinWorkload = Math.max(minVisitsPerDay, avgWorkload * 0.85);
+  const targetMaxWorkload = Math.min(maxVisitsPerDay, avgWorkload * 1.15);
+  
+  console.log(`Enhanced Optimization: Target ${targetMinWorkload.toFixed(1)}-${targetMaxWorkload.toFixed(1)} visits/day, Average: ${avgWorkload.toFixed(1)}`);
+  
+  // Phase 1: Handle extreme workload imbalances
+  await optimizeExtremeWorkloads(workingClusters, minVisitsPerDay, maxVisitsPerDay);
+  
+  // Phase 2: Geographic optimization - move outliers to closer clusters
+  await optimizeGeographicDistribution(workingClusters);
+  
+  // Phase 3: Smart workload redistribution with distance consideration
+  await smartWorkloadRedistribution(workingClusters, targetMinWorkload, targetMaxWorkload);
+  
+  // Phase 4: Fine-tune balance through strategic swaps
+  await fineTuneBalance(workingClusters, avgWorkload);
+  
+  // Final validation
+  const finalStats = workingClusters.map(c => ({ 
+    id: c.id, 
+    dailyWorkload: (c.workload / 5).toFixed(1), 
+    outlets: c.points.length,
+    avgDistance: c.points.length > 0 ? (c.points.reduce((sum, p) => 
+      sum + calculateDistance(p.latitude, p.longitude, c.centroid.latitude, c.centroid.longitude), 0) / c.points.length).toFixed(1) : 0
+  }));
+  console.log('Optimized clusters:', finalStats);
+  
+  return workingClusters;
+}
+
+async function optimizeExtremeWorkloads(
+  clusters: Cluster[],
+  minVisitsPerDay: number,
+  maxVisitsPerDay: number
+): Promise<void> {
+  // Handle severely overloaded clusters (>150% of max)
+  const severelyOverloaded = clusters.filter(c => c.workload / 5 > maxVisitsPerDay * 1.5);
+  
+  for (const cluster of severelyOverloaded) {
+    const excessWorkload = cluster.workload / 5 - maxVisitsPerDay;
+    
+    // Find outlier points (farthest from centroid) for redistribution
+    const candidates = cluster.points
+      .map(point => ({
+        point,
+        distance: calculateDistance(
+          point.latitude, point.longitude,
+          cluster.centroid.latitude, cluster.centroid.longitude
+        ),
+        workload: point.data?.visitFrequency || 2
+      }))
+      .sort((a, b) => b.distance - a.distance)
+      .slice(0, Math.ceil(excessWorkload / 2));
+    
+    // Find available target clusters
+    const availableTargets = clusters
+      .filter(c => c.id !== cluster.id && c.workload / 5 < maxVisitsPerDay * 0.9)
+      .sort((a, b) => a.workload - b.workload);
+    
+    for (const candidate of candidates) {
+      const bestTarget = availableTargets.find(target => 
+        (target.workload + candidate.workload) / 5 <= maxVisitsPerDay
+      );
+      
+      if (bestTarget) {
+        // Move the point
+        cluster.points = cluster.points.filter(p => p.id !== candidate.point.id);
+        cluster.workload -= candidate.workload;
+        bestTarget.points.push(candidate.point);
+        bestTarget.workload += candidate.workload;
+        
+        // Update target availability
+        availableTargets.sort((a, b) => a.workload - b.workload);
+      }
+    }
+  }
+  
+  // Handle severely underloaded clusters (<50% of min)
+  const severelyUnderloaded = clusters.filter(c => c.workload / 5 < minVisitsPerDay * 0.5);
+  
+  for (const cluster of severelyUnderloaded) {
+    const neededWorkload = minVisitsPerDay - cluster.workload / 5;
+    
+    // Find nearby points from other clusters
+    const nearbyOptions: Array<{point: Point, source: Cluster, distance: number, workload: number}> = [];
+    
+    clusters.forEach(source => {
+      if (source.id === cluster.id || source.workload / 5 <= minVisitsPerDay * 1.1) return;
+      
+      source.points.forEach(point => {
+        const distance = calculateDistance(
+          point.latitude, point.longitude,
+          cluster.centroid.latitude, cluster.centroid.longitude
+        );
+        
+        if (distance < 12) { // Within 12km
+          nearbyOptions.push({
+            point,
+            source,
+            distance,
+            workload: point.data?.visitFrequency || 2
+          });
+        }
+      });
+    });
+    
+    // Move closest suitable points
+    nearbyOptions
+      .sort((a, b) => a.distance - b.distance)
+      .slice(0, Math.ceil(neededWorkload / 2))
+      .forEach(option => {
+        if ((cluster.workload + option.workload) / 5 <= maxVisitsPerDay) {
+          option.source.points = option.source.points.filter(p => p.id !== option.point.id);
+          option.source.workload -= option.workload;
+          cluster.points.push(option.point);
+          cluster.workload += option.workload;
+        }
+      });
+  }
+}
+
+async function optimizeGeographicDistribution(clusters: Cluster[]): Promise<void> {
+  let improved = true;
+  let iterations = 0;
+  
+  while (improved && iterations < 3) {
+    improved = false;
+    iterations++;
+    
+    for (const cluster of clusters) {
+      // Find geographic outliers (points far from centroid)
+      const avgDistance = cluster.points.reduce((sum, p) => 
+        sum + calculateDistance(p.latitude, p.longitude, cluster.centroid.latitude, cluster.centroid.longitude), 0) / cluster.points.length;
+      
+      const outliers = cluster.points.filter(point => {
+        const distance = calculateDistance(
+          point.latitude, point.longitude,
+          cluster.centroid.latitude, cluster.centroid.longitude
+        );
+        return distance > avgDistance * 1.8; // 80% more than average
+      });
+      
+      for (const outlier of outliers.slice(0, 2)) {
+        // Find better cluster for this outlier
+        let bestCluster = cluster;
+        let bestDistance = calculateDistance(
+          outlier.latitude, outlier.longitude,
+          cluster.centroid.latitude, cluster.centroid.longitude
+        );
+        
+        for (const otherCluster of clusters) {
+          if (otherCluster.id === cluster.id) continue;
+          
+          const distance = calculateDistance(
+            outlier.latitude, outlier.longitude,
+            otherCluster.centroid.latitude, otherCluster.centroid.longitude
+          );
+          
+          // Move if significantly closer (>30% improvement)
+          if (distance < bestDistance * 0.7) {
+            bestCluster = otherCluster;
+            bestDistance = distance;
+          }
+        }
+        
+        if (bestCluster.id !== cluster.id) {
+          const workload = outlier.data?.visitFrequency || 2;
+          
+          cluster.points = cluster.points.filter(p => p.id !== outlier.id);
+          cluster.workload -= workload;
+          bestCluster.points.push(outlier);
+          bestCluster.workload += workload;
+          
+          improved = true;
+        }
+      }
+    }
+    
+    // Recalculate centroids
+    if (improved) {
+      clusters.forEach(cluster => {
+        if (cluster.points.length > 0) {
+          cluster.centroid = calculateGeometricMedian(cluster.points);
+        }
+      });
+    }
+  }
+}
+
+async function smartWorkloadRedistribution(
+  clusters: Cluster[],
+  targetMin: number,
+  targetMax: number
+): Promise<void> {
+  // Create workload priority matrix
+  const clusterMetrics = clusters.map(cluster => ({
+    cluster,
+    dailyWorkload: cluster.workload / 5,
+    imbalance: Math.abs((cluster.workload / 5) - ((targetMin + targetMax) / 2)),
+    isOverloaded: cluster.workload / 5 > targetMax,
+    isUnderloaded: cluster.workload / 5 < targetMin
+  })).sort((a, b) => b.imbalance - a.imbalance);
+  
+  for (const source of clusterMetrics.filter(c => c.isOverloaded)) {
+    const targets = clusterMetrics.filter(c => c.isUnderloaded);
+    
+    // Find best redistribution candidates
+    const redistributionCandidates = source.cluster.points
+      .map(point => ({
+        point,
+        workload: point.data?.visitFrequency || 2,
+        distanceFromCentroid: calculateDistance(
+          point.latitude, point.longitude,
+          source.cluster.centroid.latitude, source.cluster.centroid.longitude
+        )
+      }))
+      .sort((a, b) => b.distanceFromCentroid - a.distanceFromCentroid)
+      .slice(0, 4);
+    
+    for (const candidate of redistributionCandidates) {
+      if (source.dailyWorkload <= targetMax) break;
+      
+      // Find optimal target based on distance and workload need
+      let bestTarget = null;
+      let bestScore = Infinity;
+      
+      for (const target of targets) {
+        const newTargetWorkload = (target.cluster.workload + candidate.workload) / 5;
+        if (newTargetWorkload > targetMax) continue;
+        
+        const distance = calculateDistance(
+          candidate.point.latitude, candidate.point.longitude,
+          target.cluster.centroid.latitude, target.cluster.centroid.longitude
+        );
+        
+        const workloadBenefit = (targetMin - target.dailyWorkload) * 3; // Prioritize workload balance
+        const score = distance - workloadBenefit;
+        
+        if (score < bestScore) {
+          bestScore = score;
+          bestTarget = target;
+        }
+      }
+      
+      if (bestTarget && bestScore < 25) { // Within reasonable distance threshold
+        // Execute redistribution
+        source.cluster.points = source.cluster.points.filter(p => p.id !== candidate.point.id);
+        source.cluster.workload -= candidate.workload;
+        bestTarget.cluster.points.push(candidate.point);
+        bestTarget.cluster.workload += candidate.workload;
+        
+        // Update metrics
+        source.dailyWorkload = source.cluster.workload / 5;
+        bestTarget.dailyWorkload = bestTarget.cluster.workload / 5;
+        bestTarget.isUnderloaded = bestTarget.dailyWorkload < targetMin;
+      }
+    }
+  }
+}
+
+async function fineTuneBalance(clusters: Cluster[], avgWorkload: number): Promise<void> {
+  // Strategic point swapping for fine-tuning
+  for (let i = 0; i < clusters.length; i++) {
+    for (let j = i + 1; j < clusters.length; j++) {
+      const cluster1 = clusters[i];
+      const cluster2 = clusters[j];
+      
+      const workload1 = cluster1.workload / 5;
+      const workload2 = cluster2.workload / 5;
+      
+      // Skip if both clusters are well-balanced
+      const imbalance1 = Math.abs(workload1 - avgWorkload);
+      const imbalance2 = Math.abs(workload2 - avgWorkload);
+      if (imbalance1 < 2 && imbalance2 < 2) continue;
+      
+      // Find swappable points (similar workload)
+      for (const point1 of cluster1.points.slice(0, 3)) {
+        for (const point2 of cluster2.points.slice(0, 3)) {
+          const workload1Point = point1.data?.visitFrequency || 2;
+          const workload2Point = point2.data?.visitFrequency || 2;
+          
+          // Only swap points with similar workload
+          if (Math.abs(workload1Point - workload2Point) > 1) continue;
+          
+          const newWorkload1 = (cluster1.workload - workload1Point + workload2Point) / 5;
+          const newWorkload2 = (cluster2.workload - workload2Point + workload1Point) / 5;
+          
+          const newImbalance1 = Math.abs(newWorkload1 - avgWorkload);
+          const newImbalance2 = Math.abs(newWorkload2 - avgWorkload);
+          const totalNewImbalance = newImbalance1 + newImbalance2;
+          const totalCurrentImbalance = imbalance1 + imbalance2;
+          
+          // Check if swap improves balance and geographic distribution
+          const dist1to2 = calculateDistance(
+            point1.latitude, point1.longitude,
+            cluster2.centroid.latitude, cluster2.centroid.longitude
+          );
+          const dist2to1 = calculateDistance(
+            point2.latitude, point2.longitude,
+            cluster1.centroid.latitude, cluster1.centroid.longitude
+          );
+          const currentDist1 = calculateDistance(
+            point1.latitude, point1.longitude,
+            cluster1.centroid.latitude, cluster1.centroid.longitude
+          );
+          const currentDist2 = calculateDistance(
+            point2.latitude, point2.longitude,
+            cluster2.centroid.latitude, cluster2.centroid.longitude
+          );
+          
+          const improvedBalance = totalNewImbalance < totalCurrentImbalance * 0.95;
+          const improvedGeography = (dist1to2 + dist2to1) < (currentDist1 + currentDist2) * 0.9;
+          
+          if (improvedBalance && improvedGeography) {
+            // Execute swap
+            cluster1.points = cluster1.points.filter(p => p.id !== point1.id);
+            cluster1.points.push(point2);
+            cluster1.workload = cluster1.workload - workload1Point + workload2Point;
+            
+            cluster2.points = cluster2.points.filter(p => p.id !== point2.id);
+            cluster2.points.push(point1);
+            cluster2.workload = cluster2.workload - workload2Point + workload1Point;
+            
+            break;
+          }
+        }
+      }
+    }
+  }
 }
 
 // DBSCAN clustering for density-based grouping (kept for compatibility)
