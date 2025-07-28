@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import FileUpload from "@/components/file-upload";
 import RepScheduleTable from "@/components/rep-schedule-table";
@@ -5,10 +6,11 @@ import OptimizationSettings from "@/components/optimization-settings";
 import AnalyticsCharts from "@/components/analytics-charts";
 import MLInsights from "@/components/ml-insights";
 import TerritoryMap from "@/components/territory-map-new";
+import TerritoryCustomization from "@/components/territory-customization";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ArrowUp, Store, Users, CalendarCheck, TrendingUp, Download, Plus, Brain, Trash2, Map } from "lucide-react";
+import { ArrowUp, Store, Users, CalendarCheck, TrendingUp, Download, Plus, Brain, Trash2, Map, Edit3 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import type { DashboardMetrics, Rep, Outlet, Schedule } from "@shared/schema";
@@ -16,6 +18,7 @@ import type { DashboardMetrics, Rep, Outlet, Schedule } from "@shared/schema";
 export default function Dashboard() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const [showTerritoryCustomization, setShowTerritoryCustomization] = useState(false);
 
   const { data: metrics, isLoading } = useQuery<DashboardMetrics>({
     queryKey: ["/api/dashboard/metrics"],
@@ -210,13 +213,27 @@ export default function Dashboard() {
             <TabsContent value="map" className="space-y-6">
               {/* Full-width map */}
               <Card>
-                <CardHeader>
+                <CardHeader className="flex flex-row items-center justify-between">
                   <CardTitle>Territory Map - Zone Visualization</CardTitle>
+                  {outlets.length > 0 && (
+                    <Button
+                      onClick={() => setShowTerritoryCustomization(!showTerritoryCustomization)}
+                      variant={showTerritoryCustomization ? "secondary" : "outline"}
+                      size="sm"
+                    >
+                      <Edit3 className="h-4 w-4 mr-2" />
+                      {showTerritoryCustomization ? "Close Customization" : "Customize Territories"}
+                    </Button>
+                  )}
                 </CardHeader>
                 <CardContent className="p-0">
-                  <div className="h-[600px] w-full">
-                    <TerritoryMap className="h-full w-full" />
-                  </div>
+                  {showTerritoryCustomization ? (
+                    <TerritoryCustomization onClose={() => setShowTerritoryCustomization(false)} />
+                  ) : (
+                    <div className="h-[600px] w-full">
+                      <TerritoryMap className="h-full w-full" />
+                    </div>
+                  )}
                 </CardContent>
               </Card>
 

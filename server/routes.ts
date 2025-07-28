@@ -1116,6 +1116,67 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Bulk update outlet territories
+  app.patch("/api/outlets/bulk-update-territory", async (req, res) => {
+    try {
+      const { updates } = req.body;
+      
+      if (!Array.isArray(updates)) {
+        return res.status(400).json({ message: "Updates must be an array" });
+      }
+      
+      const updatedOutlets = [];
+      
+      for (const update of updates) {
+        const { outletId, territory } = update;
+        
+        if (!outletId || !territory) {
+          continue;
+        }
+        
+        const updatedOutlet = await storage.updateOutlet(outletId, { territory });
+        if (updatedOutlet) {
+          updatedOutlets.push(updatedOutlet);
+        }
+      }
+      
+      // Regenerate schedules for affected reps
+      const affectedTerritories = new Set(updates.map(u => u.territory));
+      const reps = await storage.getReps();
+      
+      for (const rep of reps) {
+        const repTerritories = rep.assignedZones?.map(z => `Zone ${z}`) || [];
+        const hasAffectedTerritory = repTerritories.some(t => affectedTerritories.has(t));
+        
+        if (hasAffectedTerritory) {
+          // Delete existing schedules
+          await storage.deleteSchedulesByRepId(rep.id);
+          
+          // Get outlets for this rep's territories
+          const repOutlets = await storage.getOutlets();
+          const territoryOutlets = repOutlets.filter(outlet => 
+            repTerritories.includes(outlet.territory || '')
+          );
+          
+          // Generate new schedules
+          if (territoryOutlets.length > 0) {
+            const schedules = generateSchedulesForRep(rep, territoryOutlets, rep.assignedZones || []);
+            await storage.createSchedules(schedules);
+          }
+        }
+      }
+      
+      res.json({ 
+        success: true, 
+        updatedCount: updatedOutlets.length,
+        message: `Updated ${updatedOutlets.length} outlets and regenerated schedules` 
+      });
+    } catch (error) {
+      console.error("Failed to update outlet territories:", error);
+      res.status(500).json({ message: "Failed to update outlet territories" });
+    }
+  });
+
   // Reps
   app.get("/api/reps", async (_req, res) => {
     try {

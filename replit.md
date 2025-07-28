@@ -144,5 +144,6 @@ Preferred communication style: Simple, everyday language.
 ✓ **Removed Territory Balance Trends Chart**: Simplified analytics to show only essential Visit Distribution metrics
 ✓ **Fixed Recommendation Sequence**: Initial estimate shows during upload (~X reps), final recommendation shows after optimization
 ✓ **Updated Dashboard Layout**: Map now takes full width with zones displayed below for better visualization
+✓ **Implemented Drag-and-Drop Territory Customization**: Users can manually reassign outlets between zones by dragging them in a visual interface, with automatic schedule regeneration after saving changes
 
 The application follows a monorepo structure with clear separation between client, server, and shared code, enabling efficient development and maintainable architecture for scaling route optimization operations with advanced AI capabilities.
