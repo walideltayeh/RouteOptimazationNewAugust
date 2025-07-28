@@ -102,22 +102,19 @@ export default function RepScheduleTable() {
   const repsWithStats = reps.map((rep, index) => {
     // Count unique zones for this rep based on unique days with schedules
     const repSchedules = schedules.filter(s => s.repId === rep.id);
-    const uniqueZones = new Set<string>();
     
-    // Each unique schedule represents a zone (one zone per day)
-    repSchedules.forEach(schedule => {
-      if (schedule.week <= 2) { // Only count weeks 1 and 2 (weeks 3 and 4 are repeats)
-        uniqueZones.add(`week${schedule.week}-day${schedule.dayOfWeek}`);
-      }
-    });
+    // Count schedules in week 1 and week 2 (since week 3=week 1, week 4=week 2)
+    const week1Schedules = repSchedules.filter(s => s.week === 1).length;
+    const week2Schedules = repSchedules.filter(s => s.week === 2).length;
+    const totalZones = week1Schedules + week2Schedules;
 
     return {
       ...rep,
-      totalZones: uniqueZones.size,
-      weeklyZones: Math.ceil(uniqueZones.size / 2), // Zones per week
+      totalZones: totalZones,
+      weeklyZones: Math.max(week1Schedules, week2Schedules), // Max zones in a single week
       avatarColor: territoryColors[index % territoryColors.length],
       initials: rep.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2),
-      status: uniqueZones.size > 0 ? 'optimized' : 'pending'
+      status: totalZones > 0 ? 'optimized' : 'pending'
     };
   });
 
@@ -227,7 +224,7 @@ export default function RepScheduleTable() {
                     </TableCell>
                     <TableCell>
                       <Select value={rep.territory} disabled>
-                        <SelectTrigger className="w-[180px]">
+                        <SelectTrigger className="w-[200px] h-8 text-sm">
                           <SelectValue placeholder="Select territory" />
                         </SelectTrigger>
                         <SelectContent>
