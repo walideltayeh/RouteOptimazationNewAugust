@@ -1,7 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import Sidebar from "@/components/sidebar";
 import FileUpload from "@/components/file-upload";
-import TerritoryMap from "@/components/territory-map";
 import RepScheduleTable from "@/components/rep-schedule-table";
 import OptimizationSettings from "@/components/optimization-settings";
 import AnalyticsCharts from "@/components/analytics-charts";
@@ -17,23 +15,17 @@ export default function Dashboard() {
 
   if (isLoading) {
     return (
-      <div className="flex h-screen">
-        <Sidebar />
-        <main className="flex-1 flex items-center justify-center">
-          <div className="text-center">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto"></div>
-            <p className="mt-2 text-sm text-gray-600">Loading dashboard...</p>
-          </div>
-        </main>
+      <div className="flex items-center justify-center h-full">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto"></div>
+          <p className="mt-2 text-sm text-gray-600">Loading dashboard...</p>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="flex h-screen bg-gray-50">
-      <Sidebar />
-      
-      <main className="flex-1 overflow-auto">
+    <div className="h-full overflow-auto">
         {/* Header */}
         <header className="bg-white shadow-sm border-b border-gray-200 px-6 py-4">
           <div className="flex justify-between items-center">
@@ -136,16 +128,16 @@ export default function Dashboard() {
             </Card>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* File Upload & Settings */}
-            <div className="lg:col-span-1 space-y-6">
+            <div className="space-y-6">
               <FileUpload />
               <OptimizationSettings />
             </div>
 
-            {/* Territory Map */}
-            <div className="lg:col-span-2">
-              <TerritoryMap />
+            {/* Analytics Charts */}
+            <div>
+              <AnalyticsCharts />
             </div>
           </div>
 
@@ -153,13 +145,7 @@ export default function Dashboard() {
           <div className="mt-6">
             <RepScheduleTable />
           </div>
-
-          {/* Analytics Charts */}
-          <div className="mt-6">
-            <AnalyticsCharts />
-          </div>
         </div>
-      </main>
     </div>
   );
 }
