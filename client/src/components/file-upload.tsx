@@ -101,6 +101,8 @@ export default function FileUpload() {
     const file = e.target.files?.[0];
     if (file) {
       handleFileUpload(file);
+      // Reset the input value to allow re-uploading the same file
+      e.target.value = '';
     }
   };
 

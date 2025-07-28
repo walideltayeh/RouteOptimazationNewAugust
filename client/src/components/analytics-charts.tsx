@@ -41,7 +41,7 @@ export default function AnalyticsCharts() {
           data: {
             labels: ['Week 1', 'Week 2', 'Week 3', 'Week 4', 'Week 5', 'Week 6'],
             datasets: [{
-              label: 'Route Efficiency %',
+              label: 'Territory Balance %',
               data: [78, 82, 85, 87, 89, 87],
               borderColor: '#1976D2',
               backgroundColor: 'rgba(25, 118, 210, 0.1)',
@@ -115,7 +115,7 @@ export default function AnalyticsCharts() {
         <CardHeader>
           <CardTitle className="flex items-center">
             <TrendingUp className="mr-2 h-5 w-5 text-primary" />
-            Route Efficiency Trends
+            Territory Balance Trends
           </CardTitle>
         </CardHeader>
         <CardContent>
