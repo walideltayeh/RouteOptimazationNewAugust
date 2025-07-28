@@ -205,7 +205,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "No outlets available for optimization" });
       }
 
-      // This is a simplified optimization - in production you'd use more sophisticated algorithms
+      // Calculate total weekly visits required
       const totalWeeklyVisits = outlets.reduce((sum, outlet) => sum + outlet.visitFrequency, 0);
       const requiredReps = Math.ceil(totalWeeklyVisits / (workingDaysPerWeek * maxVisitsPerDay));
 
@@ -213,8 +213,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const existingReps = await storage.getReps();
       const repsToCreate = Math.max(0, requiredReps - existingReps.length);
 
+      const allReps = [...existingReps];
       for (let i = 0; i < repsToCreate; i++) {
-        await storage.createRep({
+        const newRep = await storage.createRep({
           name: `Rep ${existingReps.length + i + 1}`,
           code: `REP${String(existingReps.length + i + 1).padStart(3, '0')}`,
           territory: `Zone ${String.fromCharCode(65 + (existingReps.length + i) % 26)}`,
@@ -223,12 +224,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
           workingDaysPerWeek,
           isActive: true
         });
+        allReps.push(newRep);
       }
+
+      // Assign outlets to reps using simple round-robin distribution
+      const outletsPerRep = Math.ceil(outlets.length / allReps.length);
+      
+      for (let i = 0; i < outlets.length; i++) {
+        const repIndex = Math.floor(i / outletsPerRep);
+        const assignedRep = allReps[Math.min(repIndex, allReps.length - 1)];
+        
+        await storage.updateOutlet(outlets[i].id, {
+          repId: assignedRep.id,
+          territory: assignedRep.territory,
+          cluster: repIndex
+        });
+      }
+
+      // Invalidate cache by refreshing data
+      const updatedOutlets = await storage.getOutlets();
+      const updatedReps = await storage.getReps();
 
       res.json({
         success: true,
         requiredReps,
-        message: `Optimization completed. ${requiredReps} reps required for optimal coverage.`
+        assignedOutlets: updatedOutlets.filter(o => o.repId !== null).length,
+        message: `Optimization completed. ${requiredReps} reps created and ${outlets.length} outlets assigned.`
       });
 
     } catch (error) {

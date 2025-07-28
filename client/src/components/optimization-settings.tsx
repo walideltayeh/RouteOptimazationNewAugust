@@ -29,9 +29,10 @@ export default function OptimizationSettings() {
     onSuccess: (data) => {
       toast({
         title: "Optimization completed",
-        description: data.message,
+        description: `${data.message} (${data.assignedOutlets || 0} outlets assigned)`,
       });
       queryClient.invalidateQueries({ queryKey: ["/api/reps"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/outlets"] });
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard/metrics"] });
     },
     onError: (error: Error) => {

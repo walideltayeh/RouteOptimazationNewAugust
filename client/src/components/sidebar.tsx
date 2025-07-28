@@ -11,11 +11,6 @@ import {
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: BarChart3 },
-  { name: "File Upload", href: "/upload", icon: Upload },
-  { name: "Route Optimization", href: "/optimization", icon: Settings },
-  { name: "Rep Scheduling", href: "/scheduling", icon: Calendar },
-  { name: "Territory Map", href: "/territories", icon: Map },
-  { name: "Reports", href: "/reports", icon: FileText },
 ];
 
 export default function Sidebar() {
