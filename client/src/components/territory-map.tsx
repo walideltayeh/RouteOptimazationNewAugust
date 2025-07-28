@@ -31,6 +31,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   const [selectedOutlet, setSelectedOutlet] = useState<Outlet | null>(null);
   const [mapError, setMapError] = useState<string | null>(null);
   const [isMapLoaded, setIsMapLoaded] = useState(false);
+  const [isRenderingMarkers, setIsRenderingMarkers] = useState(false);
 
   const { data: outlets = [] } = useQuery<Outlet[]>({
     queryKey: ['/api/outlets'],
@@ -78,9 +79,17 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     }
   }, []);
 
-  // Add markers and fit bounds when outlets change
+  // Add markers and fit bounds when outlets change (with performance optimization)
   useEffect(() => {
-    if (!map.current || outlets.length === 0) return;
+    if (!map.current || !isMapLoaded || outlets.length === 0) return;
+
+    // Performance optimization: limit markers for large datasets
+    const MAX_MARKERS = 500; // Limit markers to prevent browser freeze
+    const shouldLimitMarkers = outlets.length > MAX_MARKERS;
+    const displayOutlets = shouldLimitMarkers ? outlets.slice(0, MAX_MARKERS) : outlets;
+
+    console.log(`Rendering ${displayOutlets.length} of ${outlets.length} outlets on map`);
+    setIsRenderingMarkers(true);
 
     // Clear existing markers
     const existingMarkers = document.querySelectorAll('.outlet-marker');
@@ -88,27 +97,53 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
 
     const bounds = new mapboxgl.LngLatBounds();
 
-    outlets.forEach((outlet) => {
-      bounds.extend([outlet.longitude, outlet.latitude]);
+    // Use requestAnimationFrame to prevent blocking the UI thread
+    const renderMarkersAsync = async () => {
+      const BATCH_SIZE = 50; // Process markers in batches
+      
+      for (let i = 0; i < displayOutlets.length; i += BATCH_SIZE) {
+        const batch = displayOutlets.slice(i, i + BATCH_SIZE);
+        
+        await new Promise(resolve => {
+          requestAnimationFrame(() => {
+            batch.forEach((outlet) => {
+              bounds.extend([outlet.longitude, outlet.latitude]);
 
-      const markerEl = document.createElement('div');
-      markerEl.className = 'outlet-marker w-6 h-6 rounded-full border-2 border-white shadow-lg cursor-pointer hover:scale-110 transition-transform flex items-center justify-center';
-      markerEl.style.backgroundColor = getColorForTerritory(outlet.id);
-      markerEl.innerHTML = '<div class="w-2 h-2 bg-white rounded-full"></div>';
+              const markerEl = document.createElement('div');
+              markerEl.className = 'outlet-marker w-4 h-4 rounded-full border border-white shadow-md cursor-pointer hover:scale-110 transition-transform flex items-center justify-center';
+              markerEl.style.backgroundColor = getColorForTerritory(outlet.id);
+              markerEl.innerHTML = '<div class="w-1 h-1 bg-white rounded-full"></div>';
 
-      markerEl.addEventListener('click', () => {
-        setSelectedOutlet(outlet);
-      });
+              markerEl.addEventListener('click', () => {
+                setSelectedOutlet(outlet);
+              });
 
-      new mapboxgl.Marker(markerEl)
-        .setLngLat([outlet.longitude, outlet.latitude])
-        .addTo(map.current!);
-    });
+              new mapboxgl.Marker(markerEl)
+                .setLngLat([outlet.longitude, outlet.latitude])
+                .addTo(map.current!);
+            });
+            resolve(void 0);
+          });
+        });
+      }
 
-    if (outlets.length > 0) {
-      map.current.fitBounds(bounds, { padding: 40 });
-    }
-  }, [outlets]);
+      // Fit map to show all outlets
+      if (displayOutlets.length > 0) {
+        map.current!.fitBounds(bounds, { padding: 50 });
+      }
+
+      // Show warning if markers were limited
+      if (shouldLimitMarkers) {
+        console.warn(`Performance optimization: Showing ${MAX_MARKERS} of ${outlets.length} outlets. Use clustering for better performance with large datasets.`);
+      }
+      
+      setIsRenderingMarkers(false);
+    };
+
+    renderMarkersAsync();
+
+
+  }, [outlets, isMapLoaded]);
 
   // Use clustering to create proper territory groups
   const createTerritoryGroups = () => {
@@ -230,11 +265,20 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
       <div className="flex flex-1 gap-4">
         {/* Map */}
         <Card className="flex-1">
-          <CardContent className="p-0 h-full">
+          <CardContent className="p-0 h-full relative">
             <div 
               ref={mapContainer}
               className="w-full h-[500px] rounded-lg"
             />
+            {isRenderingMarkers && outlets.length > 100 && (
+              <div className="absolute inset-0 bg-white bg-opacity-80 flex items-center justify-center rounded-lg">
+                <div className="text-center">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
+                  <p className="mt-2 text-sm text-gray-600">Loading map markers...</p>
+                  <p className="text-xs text-gray-500">{outlets.length > 500 ? `Showing first 500 of ${outlets.length} outlets` : `Loading ${outlets.length} outlets`}</p>
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
 
