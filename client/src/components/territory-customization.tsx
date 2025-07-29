@@ -5,10 +5,18 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
-import { ArrowLeftRight, Save, X, MapPin, Users } from 'lucide-react';
+import { ArrowLeftRight, Save, X, MapPin, Users, ChevronDown } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { apiRequest } from '@/lib/queryClient';
 import type { Outlet, Rep } from '@shared/schema';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 
 interface TerritoryCustomizationProps {
   onClose?: () => void;
@@ -129,6 +137,23 @@ export default function TerritoryCustomization({ onClose }: TerritoryCustomizati
     setDraggedOutlet(null);
   };
 
+  const handleMoveToZone = (outlet: Outlet, newTerritory: string) => {
+    const currentTerritory = modifiedOutlets.get(outlet.id) || outlet.territory || 'Unassigned';
+    
+    if (currentTerritory !== newTerritory) {
+      const newModified = new Map(modifiedOutlets);
+      
+      // If moving back to original territory, remove from modified
+      if (newTerritory === outlet.territory) {
+        newModified.delete(outlet.id);
+      } else {
+        newModified.set(outlet.id, newTerritory);
+      }
+      
+      setModifiedOutlets(newModified);
+    }
+  };
+
   const handleReset = () => {
     setModifiedOutlets(new Map());
   };
@@ -179,8 +204,7 @@ export default function TerritoryCustomization({ onClose }: TerritoryCustomizati
               const zoneOutlets = territoryGroups[territory] || [];
               const isDropTarget = dragOverZone === territory;
               const rep = reps.find(r => 
-                r.territories?.includes(territory) || 
-                r.assignedZones?.includes(parseInt(territory.replace('Zone ', '')))
+                r.territory === territory
               );
               
               return (
@@ -225,6 +249,7 @@ export default function TerritoryCustomization({ onClose }: TerritoryCustomizati
                       zoneOutlets.map((outlet) => {
                         const isModified = modifiedOutlets.has(outlet.id);
                         const originalTerritory = outlet.territory || 'Unassigned';
+                        const currentZone = modifiedOutlets.get(outlet.id) || territory;
                         
                         return (
                           <div
@@ -233,29 +258,66 @@ export default function TerritoryCustomization({ onClose }: TerritoryCustomizati
                             onDragStart={(e) => handleDragStart(e, outlet)}
                             className={`
                               p-2 bg-background border rounded cursor-move
-                              hover:shadow-sm transition-shadow
-                              ${isModified ? 'border-orange-500 bg-orange-50' : ''}
+                              hover:shadow-sm transition-shadow group
+                              ${isModified ? 'border-orange-500 bg-orange-50 dark:bg-orange-950' : ''}
                             `}
                           >
-                            <div className="flex items-start gap-2">
-                              <MapPin className="h-4 w-4 mt-0.5 text-muted-foreground flex-shrink-0" />
+                            <div className="flex items-center gap-2">
+                              <MapPin className="h-3 w-3 text-muted-foreground flex-shrink-0" />
                               <div className="flex-1 min-w-0">
-                                <div className="font-medium text-sm truncate">
+                                <div className="font-medium text-xs truncate">
                                   {outlet.name}
                                 </div>
-                                <div className="text-xs text-muted-foreground truncate">
-                                  {outlet.address}
-                                </div>
                                 {isModified && (
-                                  <div className="text-xs text-orange-600 mt-1">
+                                  <div className="text-xs text-orange-600 dark:text-orange-400">
                                     <ArrowLeftRight className="h-3 w-3 inline mr-1" />
                                     From {originalTerritory}
                                   </div>
                                 )}
                               </div>
-                              <Badge variant="outline" className="text-xs flex-shrink-0">
-                                VF{outlet.visitFrequency}
-                              </Badge>
+                              <div className="flex items-center gap-1 flex-shrink-0">
+                                <Badge variant="outline" className="text-xs">
+                                  VF{outlet.visitFrequency}
+                                </Badge>
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      className="h-6 px-2 text-xs opacity-60 group-hover:opacity-100 transition-opacity"
+                                      onClick={(e) => e.stopPropagation()}
+                                    >
+                                      Move <ChevronDown className="h-3 w-3 ml-0.5" />
+                                    </Button>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent align="end" className="w-48 max-h-[300px] overflow-y-auto">
+                                    <DropdownMenuLabel>Move to Zone</DropdownMenuLabel>
+                                    <DropdownMenuSeparator />
+                                    {sortedTerritories
+                                      .filter(t => t !== currentZone)
+                                      .map((targetTerritory) => (
+                                        <DropdownMenuItem
+                                          key={targetTerritory}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleMoveToZone(outlet, targetTerritory);
+                                          }}
+                                        >
+                                          <div className="flex items-center gap-2">
+                                            <div
+                                              className="w-3 h-3 rounded-full"
+                                              style={{ backgroundColor: getTerritoryColor(targetTerritory) }}
+                                            />
+                                            {targetTerritory}
+                                            <span className="text-xs text-muted-foreground ml-auto">
+                                              ({territoryGroups[targetTerritory]?.length || 0} outlets)
+                                            </span>
+                                          </div>
+                                        </DropdownMenuItem>
+                                      ))}
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
+                              </div>
                             </div>
                           </div>
                         );
