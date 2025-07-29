@@ -5,6 +5,10 @@ import { insertOptimizationRunSchema, insertOutletSchema, insertRepSchema, inser
 import multer from "multer";
 import * as XLSX from "xlsx";
 import Papa from "papaparse";
+import { exec } from "child_process";
+import { promisify } from "util";
+
+const execAsync = promisify(exec);
 
 interface MulterRequest extends Request {
   file?: Express.Multer.File;
@@ -34,6 +38,79 @@ interface GeographicCluster {
   id: number;
   centroid: { lat: number; lng: number };
   outlets: Outlet[];
+}
+
+async function performAdvancedClustering(outlets: Outlet[], targetZones: number): Promise<GeographicCluster[]> {
+  console.log(`Using advanced clustering algorithm (HDBSCAN + OR-Tools + Capacitated K-Means)`);
+  
+  try {
+    const input = {
+      outlets: outlets.map(o => ({
+        id: o.id,
+        name: o.name,
+        latitude: o.latitude,
+        longitude: o.longitude,
+        visitFrequency: o.visitFrequency
+      })),
+      targetZones
+    };
+    
+    // Call Python clustering algorithm
+    const pythonProcess = exec('python3 server/clustering_algorithm.py');
+    
+    return new Promise((resolve, reject) => {
+      let output = '';
+      let errorOutput = '';
+      
+      // Send input data to Python script via stdin
+      pythonProcess.stdin?.write(JSON.stringify(input));
+      pythonProcess.stdin?.end();
+      
+      pythonProcess.stdout?.on('data', (data) => {
+        output += data;
+      });
+      
+      pythonProcess.stderr?.on('data', (data) => {
+        errorOutput += data;
+        console.log(`Python: ${data}`);
+      });
+      
+      pythonProcess.on('close', (code) => {
+        if (code !== 0) {
+          console.error(`Python script failed with code ${code}`);
+          console.error(errorOutput);
+          // Fallback to original algorithm
+          resolve(performGeographicClustering(outlets, targetZones));
+          return;
+        }
+        
+        try {
+          const clusters = JSON.parse(output);
+          const geographicClusters: GeographicCluster[] = clusters.map((cluster: any) => ({
+            id: cluster.id,
+            centroid: cluster.centroid,
+            outlets: cluster.outlets.map((o: any) => outlets.find(outlet => outlet.id === o.id) || o)
+          }));
+          
+          console.log(`Advanced clustering created ${geographicClusters.length} zones`);
+          geographicClusters.forEach((cluster, idx) => {
+            console.log(`Zone ${idx + 1}: ${cluster.outlets.length} outlets, ${cluster.radius?.toFixed(2) || 'N/A'}km radius`);
+          });
+          
+          resolve(geographicClusters);
+        } catch (error) {
+          console.error('Failed to parse Python output:', error);
+          console.error('Python stderr:', errorOutput);
+          // Fallback to original algorithm
+          resolve(performGeographicClustering(outlets, targetZones));
+        }
+      });
+    });
+  } catch (error) {
+    console.error('Failed to run advanced clustering:', error);
+    // Fallback to original algorithm
+    return performGeographicClustering(outlets, targetZones);
+  }
 }
 
 function performGeographicClustering(outlets: Outlet[], targetRepCount: number): GeographicCluster[] {
@@ -1453,8 +1530,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Create territories based on geographic clusters (each cluster = one zone)
       console.log(`Creating zones based on geographic clustering for ${outlets.length} outlets`);
       
-      // Perform geographic clustering first to determine how many zones we need
-      const clusters = performGeographicClustering(outlets, outlets.length);
+      // Calculate target zones based on the required rep count
+      const zonesPerRep = 10; // 5 zones in week 1, 5 zones in week 2
+      const targetZones = Math.max(
+        Math.ceil(outlets.length / 25), // At least one zone per 25 outlets
+        finalRequiredReps * zonesPerRep // Or enough zones for all reps
+      );
+      
+      // Perform advanced geographic clustering using HDBSCAN + OR-Tools + Capacitated K-Means
+      const clusters = await performAdvancedClustering(outlets, targetZones);
       const actualZoneCount = clusters.length;
       
       console.log(`Created ${actualZoneCount} geographic zones`);
@@ -1474,13 +1558,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
       
-      // Calculate how many reps we need
+      // Calculate how many reps we need based on actual zones created
       // Each rep visits 10 zones (5 per week * 2 weeks)
       // So we need zones/10 reps (rounded up)
-      const zonesPerRep = 10; // 5 zones in week 1, 5 zones in week 2
-      const requiredRepCount = Math.ceil(actualZoneCount / zonesPerRep);
+      const requiredRepCount = Math.ceil(actualZoneCount / 10);
       
-      console.log(`Need ${requiredRepCount} reps to cover ${actualZoneCount} zones (${zonesPerRep} zones per rep)`);
+      console.log(`Need ${requiredRepCount} reps to cover ${actualZoneCount} zones (10 zones per rep)`);
       
       // Create the required number of reps
       const allReps: Rep[] = [];
