@@ -7,6 +7,7 @@ import * as XLSX from "xlsx";
 import Papa from "papaparse";
 import { exec } from "child_process";
 import { promisify } from "util";
+import { performAdvancedClustering as performAdvancedClusteringJS } from "./clustering-algorithms";
 
 const execAsync = promisify(exec);
 
@@ -1537,8 +1538,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         finalRequiredReps * zonesPerRep // Or enough zones for all reps
       );
       
-      // Perform geographic clustering with improved algorithm
-      const clusters = performGeographicClustering(outlets, targetZones);
+      // Perform advanced clustering using JavaScript implementation (HDBSCAN + VRP + Capacitated K-Means)
+      const advancedClusters = performAdvancedClusteringJS(outlets, targetZones);
+      const clusters = advancedClusters.map(cluster => ({
+        id: cluster.id,
+        centroid: cluster.centroid,
+        outlets: cluster.outlets
+      }));
       const actualZoneCount = clusters.length;
       
       console.log(`Created ${actualZoneCount} geographic zones`);
