@@ -53,48 +53,130 @@ function performGeographicClustering(outlets: Outlet[], targetRepCount: number):
   return finalClusters;
 }
 
-// Create clusters of exactly 25 outlets each
+// Create clusters of exactly 25 outlets each with geographic proximity
 function createExact25OutletClusters(outlets: Outlet[]): GeographicCluster[] {
+  const TARGET_SIZE = 25;
+  const MAX_CLUSTER_RADIUS = 5; // Maximum 5km radius for a cluster
   const clusters: GeographicCluster[] = [];
-  const unassigned = [...outlets];
+  const unassigned = new Set(outlets.map(o => o.id));
+  const outletMap = new Map(outlets.map(o => [o.id, o]));
   let clusterId = 0;
   
-  // Sort outlets by geographic location to create contiguous zones
-  unassigned.sort((a, b) => {
-    // Sort by latitude first, then longitude
-    if (Math.abs(a.latitude - b.latitude) > 0.01) {
-      return a.latitude - b.latitude;
+  // Continue until all outlets are assigned
+  while (unassigned.size > 0) {
+    // Find the outlet with the most nearby unassigned outlets
+    let bestSeed: Outlet | null = null;
+    let maxNearbyCount = 0;
+    
+    for (const outletId of unassigned) {
+      const outlet = outletMap.get(outletId)!;
+      let nearbyCount = 0;
+      
+      // Count unassigned outlets within MAX_CLUSTER_RADIUS
+      for (const otherId of unassigned) {
+        if (otherId === outletId) continue;
+        const other = outletMap.get(otherId)!;
+        const distance = calculateHaversineDistance(
+          outlet.latitude, outlet.longitude,
+          other.latitude, other.longitude
+        );
+        if (distance <= MAX_CLUSTER_RADIUS) {
+          nearbyCount++;
+        }
+      }
+      
+      if (nearbyCount > maxNearbyCount) {
+        maxNearbyCount = nearbyCount;
+        bestSeed = outlet;
+      }
     }
-    return a.longitude - b.longitude;
-  });
-  
-  while (unassigned.length > 0) {
+    
+    if (!bestSeed) {
+      // No good seed found, pick the first unassigned outlet
+      const firstId = unassigned.values().next().value;
+      bestSeed = outletMap.get(firstId)!;
+    }
+    
+    // Create a new cluster starting with the seed
     const cluster: GeographicCluster = {
       id: clusterId++,
-      outlets: [],
-      centroid: { lat: 0, lng: 0 }
+      outlets: [bestSeed],
+      centroid: { lat: bestSeed.latitude, lng: bestSeed.longitude }
     };
+    unassigned.delete(bestSeed.id);
     
-    // If less than 25 outlets remain, add them all to this cluster
-    if (unassigned.length <= 25) {
-      cluster.outlets = unassigned.splice(0, unassigned.length);
-    } else {
-      // Take exactly 25 outlets
-      cluster.outlets = unassigned.splice(0, 25);
+    // Build a list of nearby unassigned outlets
+    const candidates: { outlet: Outlet; distance: number }[] = [];
+    for (const outletId of unassigned) {
+      const outlet = outletMap.get(outletId)!;
+      const distance = calculateHaversineDistance(
+        bestSeed.latitude, bestSeed.longitude,
+        outlet.latitude, outlet.longitude
+      );
+      if (distance <= MAX_CLUSTER_RADIUS) {
+        candidates.push({ outlet, distance });
+      }
     }
     
-    // Calculate centroid
-    cluster.centroid = {
-      lat: cluster.outlets.reduce((sum, o) => sum + o.latitude, 0) / cluster.outlets.length,
-      lng: cluster.outlets.reduce((sum, o) => sum + o.longitude, 0) / cluster.outlets.length
-    };
+    // Sort candidates by distance
+    candidates.sort((a, b) => a.distance - b.distance);
+    
+    // Add outlets to cluster until we reach TARGET_SIZE or run out of nearby outlets
+    for (const candidate of candidates) {
+      if (cluster.outlets.length >= TARGET_SIZE) break;
+      
+      // Check if outlet is still within reasonable distance of cluster centroid
+      const distToCluster = calculateHaversineDistance(
+        candidate.outlet.latitude, candidate.outlet.longitude,
+        cluster.centroid.lat, cluster.centroid.lng
+      );
+      
+      if (distToCluster <= MAX_CLUSTER_RADIUS) {
+        cluster.outlets.push(candidate.outlet);
+        unassigned.delete(candidate.outlet.id);
+        
+        // Update centroid
+        cluster.centroid = {
+          lat: cluster.outlets.reduce((sum, o) => sum + o.latitude, 0) / cluster.outlets.length,
+          lng: cluster.outlets.reduce((sum, o) => sum + o.longitude, 0) / cluster.outlets.length
+        };
+      }
+    }
+    
+    // If we couldn't get 25 outlets and there are still many unassigned, this is a sparse area
+    // Fill up to 25 with next nearest outlets
+    if (cluster.outlets.length < TARGET_SIZE && unassigned.size > TARGET_SIZE) {
+      const remainingCandidates: { outlet: Outlet; distance: number }[] = [];
+      
+      for (const outletId of unassigned) {
+        const outlet = outletMap.get(outletId)!;
+        const distance = calculateHaversineDistance(
+          outlet.latitude, outlet.longitude,
+          cluster.centroid.lat, cluster.centroid.lng
+        );
+        remainingCandidates.push({ outlet, distance });
+      }
+      
+      remainingCandidates.sort((a, b) => a.distance - b.distance);
+      
+      for (const candidate of remainingCandidates) {
+        if (cluster.outlets.length >= TARGET_SIZE) break;
+        cluster.outlets.push(candidate.outlet);
+        unassigned.delete(candidate.outlet.id);
+        
+        // Update centroid
+        cluster.centroid = {
+          lat: cluster.outlets.reduce((sum, o) => sum + o.latitude, 0) / cluster.outlets.length,
+          lng: cluster.outlets.reduce((sum, o) => sum + o.longitude, 0) / cluster.outlets.length
+        };
+      }
+    }
     
     clusters.push(cluster);
     console.log(`Created Zone ${cluster.id + 1} with ${cluster.outlets.length} outlets`);
   }
   
-  // Now reorganize clusters to be geographically coherent
-  return optimizeClusterGeography(clusters, outlets);
+  return clusters;
 }
 
 // Optimize clusters to be geographically coherent
