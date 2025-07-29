@@ -1537,8 +1537,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         finalRequiredReps * zonesPerRep // Or enough zones for all reps
       );
       
-      // Perform advanced geographic clustering using HDBSCAN + OR-Tools + Capacitated K-Means
-      const clusters = await performAdvancedClustering(outlets, targetZones);
+      // Perform geographic clustering with improved algorithm
+      const clusters = performGeographicClustering(outlets, targetZones);
       const actualZoneCount = clusters.length;
       
       console.log(`Created ${actualZoneCount} geographic zones`);
