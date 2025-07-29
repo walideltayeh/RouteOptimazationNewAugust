@@ -1,0 +1,11 @@
+[project]
+name = "repl-nix-workspace"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.11"
+dependencies = [
+    "hdbscan>=0.8.40",
+    "numpy>=2.3.2",
+    "ortools>=9.14.6206",
+    "scikit-learn>=1.7.1",
+]

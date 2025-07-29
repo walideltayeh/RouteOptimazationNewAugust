@@ -1,10 +1,10 @@
-modules = ["nodejs-20", "web", "postgresql-16"]
+modules = ["nodejs-20", "web", "postgresql-16", "python-3.11"]
 run = "npm run dev"
 hidden = [".config", ".git", "generated-icon.png", "node_modules", "dist"]
 
 [nix]
 channel = "stable-24_05"
-packages = ["python311", "python311Packages.pip", "python311Packages.numpy", "python311Packages.scikit-learn", "python311Packages.hdbscan", "python311Packages.ortools"]
+packages = ["glibcLocales", "python311", "python311Packages.hdbscan", "python311Packages.numpy", "python311Packages.ortools", "python311Packages.pip", "python311Packages.scikit-learn"]
 
 [deployment]
 deploymentTarget = "autoscale"
