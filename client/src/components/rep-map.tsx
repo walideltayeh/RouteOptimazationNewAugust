@@ -37,7 +37,7 @@ export function RepMap() {
   const map = useRef<mapboxgl.Map | null>(null);
   const [selectedReps, setSelectedReps] = useState<string[]>([]);
   const [open, setOpen] = useState(false);
-  const [selectedDay, setSelectedDay] = useState<string>("Monday");
+  const [selectedDay, setSelectedDay] = useState<number>(0); // 0 = Monday
   const [isMapLoaded, setIsMapLoaded] = useState(false);
   const markersRef = useRef<mapboxgl.Marker[]>([]);
 
@@ -122,17 +122,26 @@ export function RepMap() {
   useEffect(() => {
     if (!map.current || !isMapLoaded) return;
 
+    console.log('RepMap update - Selected reps:', selectedReps);
+    console.log('RepMap update - Filtered schedules:', filteredSchedules);
+    console.log('RepMap update - Rep outlets:', repOutlets);
+
     // Clear existing markers
     markersRef.current.forEach(marker => marker.remove());
     markersRef.current = [];
 
-    // Clear existing layers
-    if (map.current.getLayer('route-layer')) {
-      map.current.removeLayer('route-layer');
-    }
-    if (map.current.getSource('route')) {
-      map.current.removeSource('route');
-    }
+    // Clear existing layers and sources for all reps
+    reps.forEach((rep) => {
+      const sourceId = `route-${rep.id}`;
+      const layerId = `route-layer-${rep.id}`;
+      
+      if (map.current!.getLayer(layerId)) {
+        map.current!.removeLayer(layerId);
+      }
+      if (map.current!.getSource(sourceId)) {
+        map.current!.removeSource(sourceId);
+      }
+    });
 
     // Add markers and routes for each selected rep
     Object.entries(repOutlets).forEach(([repId, data]) => {
@@ -221,7 +230,7 @@ export function RepMap() {
         map.current.fitBounds(bounds, { padding: 50 });
       }
     }
-  }, [repOutlets, isMapLoaded]);
+  }, [repOutlets, isMapLoaded, reps]);
 
   const toggleRep = (repId: string) => {
     setSelectedReps(prev => 
@@ -235,7 +244,7 @@ export function RepMap() {
 
   if (!MAPBOX_TOKEN) {
     return (
-      <Card>
+      <Card className="h-full">
         <CardHeader>
           <CardTitle>Rep Map</CardTitle>
         </CardHeader>
@@ -249,17 +258,17 @@ export function RepMap() {
   }
 
   return (
-    <Card>
-      <CardHeader>
+    <Card className="h-full flex flex-col">
+      <CardHeader className="pb-4">
         <CardTitle>Rep Map</CardTitle>
-        <div className="flex gap-4 mt-4">
+        <div className="flex flex-col gap-4 mt-4">
           <Popover open={open} onOpenChange={setOpen}>
             <PopoverTrigger asChild>
               <Button
                 variant="outline"
                 role="combobox"
                 aria-expanded={open}
-                className="w-[300px] justify-between"
+                className="w-full justify-between"
               >
                 {selectedReps.length === 0
                   ? "Select reps..."
@@ -304,32 +313,32 @@ export function RepMap() {
 
           <select
             value={selectedDay}
-            onChange={(e) => setSelectedDay(e.target.value)}
-            className="px-3 py-2 border rounded-md"
+            onChange={(e) => setSelectedDay(Number(e.target.value))}
+            className="px-3 py-2 border rounded-md w-full"
           >
-            {daysOfWeek.map(day => (
-              <option key={day} value={day}>{day}</option>
+            {daysOfWeek.map((day, index) => (
+              <option key={day} value={index}>{day}</option>
             ))}
           </select>
         </div>
       </CardHeader>
-      <CardContent>
-        <div ref={mapContainer} className="h-[600px] rounded-lg overflow-hidden border" />
+      <CardContent className="flex-1 p-4">
+        <div ref={mapContainer} className="h-full min-h-[400px] rounded-lg overflow-hidden border" />
 
         {/* Legend */}
         {selectedReps.length > 0 && (
-          <div className="mt-4 p-4 border rounded-lg">
-            <h4 className="font-semibold mb-2">Selected Reps</h4>
-            <div className="grid grid-cols-2 gap-2">
+          <div className="mt-4 p-3 border rounded-lg">
+            <h4 className="font-semibold mb-2 text-sm">Selected Reps</h4>
+            <div className="space-y-2">
               {Object.entries(repOutlets).map(([repId, data]) => {
                 const schedule = filteredSchedules.find(s => s.repId === repId);
                 return (
                   <div key={repId} className="flex items-center gap-2">
                     <div 
-                      className="w-4 h-4 rounded-full" 
+                      className="w-3 h-3 rounded-full flex-shrink-0" 
                       style={{ backgroundColor: data.color }}
                     />
-                    <span className="text-sm">
+                    <span className="text-xs truncate">
                       {data.rep.name} - {data.outlets.length} outlets
                       {schedule && schedule.totalDistance && ` (${schedule.totalDistance.toFixed(1)}km)`}
                     </span>
