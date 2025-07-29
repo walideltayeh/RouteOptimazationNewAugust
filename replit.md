@@ -147,5 +147,6 @@ Preferred communication style: Simple, everyday language.
 ✓ **Implemented Drag-and-Drop Territory Customization**: Users can manually reassign outlets between zones by dragging them in a visual interface, with automatic schedule regeneration after saving changes
 ✓ **Added "Move to Zone" Dropdown Buttons**: Each outlet now has a "Move" button with dropdown menu showing all other zones, making it easy to transfer outlets to specific zones without needing to see all zones on screen
 ✓ **Rewrote Clustering Algorithm for Geographic Proximity**: New algorithm builds clusters by finding dense areas first, ensuring all 25 outlets in each zone are geographically close together (within 5km radius when possible)
+✓ **Improved Clustering with Gradual Radius Expansion**: Algorithm now starts with 2km radius and gradually expands by 0.5km increments until reaching 25 outlets per zone, ensuring tighter geographic clustering
 
 The application follows a monorepo structure with clear separation between client, server, and shared code, enabling efficient development and maintainable architecture for scaling route optimization operations with advanced AI capabilities.

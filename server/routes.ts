@@ -56,7 +56,10 @@ function performGeographicClustering(outlets: Outlet[], targetRepCount: number):
 // Create clusters of exactly 25 outlets each with geographic proximity
 function createExact25OutletClusters(outlets: Outlet[]): GeographicCluster[] {
   const TARGET_SIZE = 25;
-  const MAX_CLUSTER_RADIUS = 5; // Maximum 5km radius for a cluster
+  const INITIAL_RADIUS = 2; // Start with 2km radius
+  const RADIUS_INCREMENT = 0.5; // Increase by 0.5km each iteration
+  const MAX_RADIUS = 20; // Maximum search radius
+  
   const clusters: GeographicCluster[] = [];
   const unassigned = new Set(outlets.map(o => o.id));
   const outletMap = new Map(outlets.map(o => [o.id, o]));
@@ -64,7 +67,7 @@ function createExact25OutletClusters(outlets: Outlet[]): GeographicCluster[] {
   
   // Continue until all outlets are assigned
   while (unassigned.size > 0) {
-    // Find the outlet with the most nearby unassigned outlets
+    // Find the outlet with the most nearby unassigned outlets within 2km
     let bestSeed: Outlet | null = null;
     let maxNearbyCount = 0;
     
@@ -72,7 +75,7 @@ function createExact25OutletClusters(outlets: Outlet[]): GeographicCluster[] {
       const outlet = outletMap.get(outletId)!;
       let nearbyCount = 0;
       
-      // Count unassigned outlets within MAX_CLUSTER_RADIUS
+      // Count unassigned outlets within INITIAL_RADIUS
       for (const otherId of unassigned) {
         if (otherId === outletId) continue;
         const other = outletMap.get(otherId)!;
@@ -80,7 +83,7 @@ function createExact25OutletClusters(outlets: Outlet[]): GeographicCluster[] {
           outlet.latitude, outlet.longitude,
           other.latitude, other.longitude
         );
-        if (distance <= MAX_CLUSTER_RADIUS) {
+        if (distance <= INITIAL_RADIUS) {
           nearbyCount++;
         }
       }
@@ -105,33 +108,38 @@ function createExact25OutletClusters(outlets: Outlet[]): GeographicCluster[] {
     };
     unassigned.delete(bestSeed.id);
     
-    // Build a list of nearby unassigned outlets
-    const candidates: { outlet: Outlet; distance: number }[] = [];
-    for (const outletId of unassigned) {
-      const outlet = outletMap.get(outletId)!;
-      const distance = calculateHaversineDistance(
-        bestSeed.latitude, bestSeed.longitude,
-        outlet.latitude, outlet.longitude
-      );
-      if (distance <= MAX_CLUSTER_RADIUS) {
-        candidates.push({ outlet, distance });
+    // Gradually expand radius until we get 25 outlets
+    let currentRadius = INITIAL_RADIUS;
+    
+    while (cluster.outlets.length < TARGET_SIZE && currentRadius <= MAX_RADIUS && unassigned.size > 0) {
+      const candidates: { outlet: Outlet; distance: number }[] = [];
+      
+      // Find all outlets within current radius
+      for (const outletId of unassigned) {
+        const outlet = outletMap.get(outletId)!;
+        
+        // Calculate distance to all outlets in the cluster
+        let minDistanceToCluster = Infinity;
+        for (const clusterOutlet of cluster.outlets) {
+          const distance = calculateHaversineDistance(
+            outlet.latitude, outlet.longitude,
+            clusterOutlet.latitude, clusterOutlet.longitude
+          );
+          minDistanceToCluster = Math.min(minDistanceToCluster, distance);
+        }
+        
+        if (minDistanceToCluster <= currentRadius) {
+          candidates.push({ outlet, distance: minDistanceToCluster });
+        }
       }
-    }
-    
-    // Sort candidates by distance
-    candidates.sort((a, b) => a.distance - b.distance);
-    
-    // Add outlets to cluster until we reach TARGET_SIZE or run out of nearby outlets
-    for (const candidate of candidates) {
-      if (cluster.outlets.length >= TARGET_SIZE) break;
       
-      // Check if outlet is still within reasonable distance of cluster centroid
-      const distToCluster = calculateHaversineDistance(
-        candidate.outlet.latitude, candidate.outlet.longitude,
-        cluster.centroid.lat, cluster.centroid.lng
-      );
+      // Sort candidates by distance
+      candidates.sort((a, b) => a.distance - b.distance);
       
-      if (distToCluster <= MAX_CLUSTER_RADIUS) {
+      // Add outlets to cluster until we reach TARGET_SIZE
+      for (const candidate of candidates) {
+        if (cluster.outlets.length >= TARGET_SIZE) break;
+        
         cluster.outlets.push(candidate.outlet);
         unassigned.delete(candidate.outlet.id);
         
@@ -141,11 +149,16 @@ function createExact25OutletClusters(outlets: Outlet[]): GeographicCluster[] {
           lng: cluster.outlets.reduce((sum, o) => sum + o.longitude, 0) / cluster.outlets.length
         };
       }
+      
+      // If we haven't reached target size, expand radius
+      if (cluster.outlets.length < TARGET_SIZE && unassigned.size > 0) {
+        currentRadius += RADIUS_INCREMENT;
+      }
     }
     
-    // If we couldn't get 25 outlets and there are still many unassigned, this is a sparse area
-    // Fill up to 25 with next nearest outlets
-    if (cluster.outlets.length < TARGET_SIZE && unassigned.size > TARGET_SIZE) {
+    // If we still don't have 25 outlets and this is not the last cluster, fill from nearest
+    if (cluster.outlets.length < TARGET_SIZE && unassigned.size >= TARGET_SIZE) {
+      const remainingNeeded = TARGET_SIZE - cluster.outlets.length;
       const remainingCandidates: { outlet: Outlet; distance: number }[] = [];
       
       for (const outletId of unassigned) {
@@ -159,10 +172,9 @@ function createExact25OutletClusters(outlets: Outlet[]): GeographicCluster[] {
       
       remainingCandidates.sort((a, b) => a.distance - b.distance);
       
-      for (const candidate of remainingCandidates) {
-        if (cluster.outlets.length >= TARGET_SIZE) break;
-        cluster.outlets.push(candidate.outlet);
-        unassigned.delete(candidate.outlet.id);
+      for (let i = 0; i < remainingNeeded && i < remainingCandidates.length; i++) {
+        cluster.outlets.push(remainingCandidates[i].outlet);
+        unassigned.delete(remainingCandidates[i].outlet.id);
         
         // Update centroid
         cluster.centroid = {
@@ -172,8 +184,18 @@ function createExact25OutletClusters(outlets: Outlet[]): GeographicCluster[] {
       }
     }
     
+    // Calculate actual radius of the cluster
+    let maxDistFromCentroid = 0;
+    for (const outlet of cluster.outlets) {
+      const dist = calculateHaversineDistance(
+        outlet.latitude, outlet.longitude,
+        cluster.centroid.lat, cluster.centroid.lng
+      );
+      maxDistFromCentroid = Math.max(maxDistFromCentroid, dist);
+    }
+    
     clusters.push(cluster);
-    console.log(`Created Zone ${cluster.id + 1} with ${cluster.outlets.length} outlets`);
+    console.log(`Created Zone ${cluster.id + 1} with ${cluster.outlets.length} outlets (radius: ${maxDistFromCentroid.toFixed(2)}km)`);
   }
   
   return clusters;
