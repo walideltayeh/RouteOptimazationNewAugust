@@ -7,6 +7,7 @@ import AnalyticsCharts from "@/components/analytics-charts";
 import MLInsights from "@/components/ml-insights";
 import TerritoryMap from "@/components/territory-map-new";
 import TerritoryCustomization from "@/components/territory-customization";
+import { RepMap } from "@/components/rep-map";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -239,6 +240,11 @@ export default function Dashboard() {
 
               {/* Zone details table below map */}
               <RepScheduleTable />
+              
+              {/* Rep Map below Territory Map */}
+              {schedules.length > 0 && (
+                <RepMap />
+              )}
             </TabsContent>
 
             <TabsContent value="schedules">
