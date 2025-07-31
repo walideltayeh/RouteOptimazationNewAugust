@@ -35,6 +35,7 @@ export interface IStorage {
   createSchedules(schedules: InsertSchedule[]): Promise<Schedule[]>;
   updateSchedule(id: string, schedule: Partial<InsertSchedule>): Promise<Schedule | undefined>;
   deleteSchedulesByRepId(repId: string): Promise<void>;
+  clearSchedules(): Promise<void>;
 
   // Optimization Runs
   getOptimizationRuns(): Promise<OptimizationRun[]>;
@@ -188,6 +189,10 @@ export class MemStorage implements IStorage {
   async deleteSchedulesByRepId(repId: string): Promise<void> {
     const schedules = await this.getSchedulesByRepId(repId);
     schedules.forEach(schedule => this.schedules.delete(schedule.id));
+  }
+
+  async clearSchedules(): Promise<void> {
+    this.schedules.clear();
   }
 
   // Optimization Runs

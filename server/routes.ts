@@ -1172,9 +1172,19 @@ function generateZoneBasedSchedules(rep: Rep, zones: GeographicCluster[], allClu
   const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
   const workingDays = daysOfWeek.slice(0, rep.workingDaysPerWeek);
   
-  // Split zones into two groups for alternating weeks
-  const week1Zones = zones.slice(0, 5); // First 5 zones for week 1 (and week 3)
-  const week2Zones = zones.slice(5, 10); // Next 5 zones for week 2 (and week 4)
+  // Determine how to split zones based on working days
+  let zonesPerWeek: number;
+  if (rep.workingDaysPerWeek <= 5) {
+    zonesPerWeek = 5; // 5 zones per week for 5-day workweek
+  } else if (rep.workingDaysPerWeek === 6) {
+    zonesPerWeek = 6; // 6 zones per week for 6-day workweek
+  } else {
+    zonesPerWeek = 7; // 7 zones per week for 7-day workweek
+  }
+  
+  // Split zones into groups based on working days
+  const week1Zones = zones.slice(0, Math.min(zonesPerWeek, zones.length));
+  const week2Zones = zones.slice(zonesPerWeek, Math.min(zonesPerWeek * 2, zones.length));
   
   // Generate schedules for Week 1 and Week 2 (pattern repeats for weeks 3 and 4)
   for (let week = 1; week <= 2; week++) {
@@ -1685,6 +1695,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const requiredRepCount = Math.ceil(actualZoneCount / 10);
       
       console.log(`Need ${requiredRepCount} reps to cover ${actualZoneCount} zones (10 zones per rep)`);
+      
+      // Check if working days have changed for existing optimization
+      const existingSchedules = await storage.getSchedules();
+      if (existingSchedules.length > 0) {
+        // Clear existing schedules to regenerate with new working days
+        await storage.clearSchedules();
+      }
       
       // Create the required number of reps
       const allReps: Rep[] = [];

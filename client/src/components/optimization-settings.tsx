@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -7,13 +7,22 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { Settings, Play } from "lucide-react";
+import { Settings, Play, AlertCircle } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 
 interface FileAnalysis {
   outlets: number;
   vf2: number;
   vf4: number;
+  recommendedReps?: number;
+}
+
+interface DashboardMetrics {
+  totalOutlets: number;
+  activeReps: number;
+  recommendedReps: number;
+  routeEfficiency: number;
 }
 
 export default function OptimizationSettings() {
@@ -28,8 +37,53 @@ export default function OptimizationSettings() {
     queryKey: ["/api/analysis"],
   });
 
+  const { data: metrics } = useQuery<DashboardMetrics>({
+    queryKey: ["/api/dashboard/metrics"],
+  });
+
   // Show initial estimate from file upload analysis
   const estimatedReps = analysis?.recommendedReps || 0;
+
+  // Check feasibility when working days change
+  const feasibilityCheck = useMemo(() => {
+    if (!analysis || !metrics) return { feasible: true, message: "", warning: false };
+    
+    const currentReps = metrics.activeReps || 2;
+    const totalOutlets = analysis.outlets;
+    
+    if (totalOutlets === 0) return { feasible: true, message: "", warning: false };
+    
+    // Each rep covers 10 zones max, each zone has ~25 outlets
+    const totalZones = Math.ceil(totalOutlets / 25);
+    const requiredDays = Math.ceil(totalZones / currentReps);
+    
+    if (workingDaysPerWeek < requiredDays) {
+      return {
+        feasible: false,
+        message: `Cannot complete routes in ${workingDaysPerWeek} days. Need at least ${requiredDays} days or add more reps.`,
+        warning: true
+      };
+    }
+    
+    // Calculate daily workload
+    const zonesPerDay = Math.ceil(totalZones / workingDaysPerWeek);
+    const outletsPerDay = zonesPerDay * 25;
+    const outletsPerRepPerDay = Math.ceil(outletsPerDay / currentReps);
+    
+    if (outletsPerRepPerDay > maxVisitsPerDay) {
+      return {
+        feasible: false,
+        message: `Too many visits per day (${outletsPerRepPerDay}). Max is ${maxVisitsPerDay}. Add more reps or increase working days.`,
+        warning: true
+      };
+    }
+    
+    return {
+      feasible: true,
+      message: `Feasible with ${currentReps} reps. Each rep visits ~${outletsPerRepPerDay} outlets/day.`,
+      warning: false
+    };
+  }, [analysis, metrics, workingDaysPerWeek, maxVisitsPerDay]);
 
   const optimizationMutation = useMutation({
     mutationFn: async (settings: { 
@@ -127,6 +181,15 @@ export default function OptimizationSettings() {
           </Select>
         </div>
 
+        {feasibilityCheck.message && (
+          <Alert className={feasibilityCheck.warning ? "border-red-200 bg-red-50" : "border-green-200 bg-green-50"}>
+            <AlertCircle className={`h-4 w-4 ${feasibilityCheck.warning ? "text-red-600" : "text-green-600"}`} />
+            <AlertDescription className={feasibilityCheck.warning ? "text-red-800" : "text-green-800"}>
+              {feasibilityCheck.message}
+            </AlertDescription>
+          </Alert>
+        )}
+
         {analysis && analysis.outlets > 0 && (
           <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
             <h4 className="font-semibold text-blue-900 mb-2">Initial Estimate</h4>
@@ -144,7 +207,7 @@ export default function OptimizationSettings() {
 
         <Button 
           onClick={handleOptimization} 
-          disabled={optimizationMutation.isPending}
+          disabled={optimizationMutation.isPending || !feasibilityCheck.feasible}
           className="w-full"
         >
           <Play className="mr-2 h-4 w-4" />
@@ -153,6 +216,8 @@ export default function OptimizationSettings() {
               <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
               Optimizing...
             </>
+          ) : !feasibilityCheck.feasible ? (
+            "Cannot Optimize - Adjust Settings"
           ) : (
             "Run Optimization"
           )}
