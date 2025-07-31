@@ -124,7 +124,7 @@ export function RepMap() {
           }
           return outlet;
         })
-        .filter((o): o is Outlet => o !== undefined);
+        .filter((o: Outlet | undefined): o is Outlet => o !== undefined);
       
       console.log('Found outlets:', scheduleOutlets.length, 'of', outletIdArray.length);
 
