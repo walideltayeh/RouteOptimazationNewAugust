@@ -27,12 +27,18 @@ if (MAPBOX_TOKEN && MAPBOX_TOKEN !== 'demo_token' && !MAPBOX_TOKEN.includes('you
   mapboxgl.accessToken = MAPBOX_TOKEN;
 }
 
-// Color palette for different reps
-const REP_COLORS = [
-  '#FF6B6B', '#4ECDC4', '#45B7D1', '#FED766', '#2AB7CA',
-  '#FE4A49', '#6C5CE7', '#A8E6CF', '#FFD93D', '#FC913A',
-  '#F9C74F', '#90BE6D', '#43AA8B', '#577590', '#F94144'
+// Color palette for different days
+const DAY_COLORS = [
+  '#FF6B6B', // Monday - Red
+  '#4ECDC4', // Tuesday - Teal
+  '#45B7D1', // Wednesday - Blue
+  '#FED766', // Thursday - Yellow
+  '#2AB7CA', // Friday - Light Blue
+  '#FE4A49', // Saturday - Pink
+  '#6C5CE7'  // Sunday - Purple
 ];
+
+const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
 export function RepMap() {
   const mapContainer = useRef<HTMLDivElement>(null);
@@ -69,9 +75,17 @@ export function RepMap() {
     );
   }, [schedules, selectedReps, selectedDays]);
 
-  // Group outlets by rep for the selected day
-  const repOutlets = useMemo(() => {
-    const result: Record<string, { rep: Rep; outlets: Outlet[]; color: string }> = {};
+  // Group outlets by rep and day for the selected days
+  const repDayOutlets = useMemo(() => {
+    const result: Record<string, { 
+      rep: Rep; 
+      daySchedules: Record<number, { 
+        outlets: Outlet[]; 
+        color: string; 
+        dayOfWeek: number;
+        schedule: Schedule;
+      }> 
+    }> = {};
     
     filteredSchedules.forEach(schedule => {
       const rep = reps.find(r => r.id === schedule.repId);
@@ -82,15 +96,18 @@ export function RepMap() {
         .filter((o): o is Outlet => o !== undefined);
 
       if (!result[rep.id]) {
-        const repIndex = reps.findIndex(r => r.id === rep.id);
         result[rep.id] = {
           rep,
-          outlets: [],
-          color: REP_COLORS[repIndex % REP_COLORS.length]
+          daySchedules: {}
         };
       }
 
-      result[rep.id].outlets.push(...scheduleOutlets);
+      result[rep.id].daySchedules[schedule.dayOfWeek] = {
+        outlets: scheduleOutlets,
+        color: DAY_COLORS[schedule.dayOfWeek % DAY_COLORS.length],
+        dayOfWeek: schedule.dayOfWeek,
+        schedule
+      };
     });
 
     return result;
@@ -131,7 +148,7 @@ export function RepMap() {
 
     console.log('RepMap update - Selected reps:', selectedReps);
     console.log('RepMap update - Filtered schedules:', filteredSchedules);
-    console.log('RepMap update - Rep outlets:', repOutlets);
+    console.log('RepMap update - Rep outlets:', repDayOutlets);
 
     // Clear existing markers
     markersRef.current.forEach(marker => marker.remove());
@@ -150,85 +167,114 @@ export function RepMap() {
       }
     });
 
-    // Add markers and routes for each selected rep
-    Object.entries(repOutlets).forEach(([repId, data]) => {
-      // Add markers for outlets
-      data.outlets.forEach((outlet, idx) => {
-        const el = document.createElement('div');
-        el.className = 'rep-marker';
-        el.style.width = '30px';
-        el.style.height = '30px';
-        el.style.backgroundColor = data.color;
-        el.style.borderRadius = '50%';
-        el.style.border = '2px solid white';
-        el.style.boxShadow = '0 2px 4px rgba(0,0,0,0.3)';
-        el.style.display = 'flex';
-        el.style.alignItems = 'center';
-        el.style.justifyContent = 'center';
-        el.style.color = 'white';
-        el.style.fontWeight = 'bold';
-        el.style.fontSize = '12px';
-        el.innerHTML = (idx + 1).toString();
-
-        const marker = new mapboxgl.Marker(el)
-          .setLngLat([outlet.longitude, outlet.latitude])
-          .setPopup(
-            new mapboxgl.Popup({ offset: 25 })
-              .setHTML(`
-                <div>
-                  <strong>${outlet.name}</strong><br/>
-                  ${outlet.address}<br/>
-                  <span style="color: ${data.color}">${data.rep.name}</span>
-                </div>
-              `)
-          )
-          .addTo(map.current!);
-
-        markersRef.current.push(marker);
-      });
-
-      // Draw route lines
-      if (data.outlets.length > 1 && map.current) {
-        const routeCoordinates = data.outlets.map(o => [o.longitude, o.latitude]);
+    // Clear existing layers and sources for all reps and days
+    reps.forEach((rep) => {
+      selectedDays.forEach((day) => {
+        const sourceId = `route-${rep.id}-${day}`;
+        const layerId = `route-layer-${rep.id}-${day}`;
         
-        // Add source and layer for this rep's route
-        const sourceId = `route-${repId}`;
-        const layerId = `route-layer-${repId}`;
-
-        if (!map.current.getSource(sourceId)) {
-          map.current.addSource(sourceId, {
-            type: 'geojson',
-            data: {
-              type: 'Feature',
-              properties: {},
-              geometry: {
-                type: 'LineString',
-                coordinates: routeCoordinates
-              }
-            }
-          });
-
-          map.current.addLayer({
-            id: layerId,
-            type: 'line',
-            source: sourceId,
-            layout: {
-              'line-join': 'round',
-              'line-cap': 'round'
-            },
-            paint: {
-              'line-color': data.color,
-              'line-width': 3,
-              'line-opacity': 0.6
-            }
-          });
+        if (map.current!.getLayer(layerId)) {
+          map.current!.removeLayer(layerId);
         }
-      }
+        if (map.current!.getSource(sourceId)) {
+          map.current!.removeSource(sourceId);
+        }
+      });
+    });
+
+    // Add markers and routes for each selected rep and day
+    Object.entries(repDayOutlets).forEach(([repId, repData]) => {
+      Object.entries(repData.daySchedules).forEach(([dayStr, dayData]) => {
+        const day = parseInt(dayStr);
+        
+        // Add markers for outlets with day-specific colors
+        dayData.outlets.forEach((outlet, idx) => {
+          const el = document.createElement('div');
+          el.className = 'rep-marker';
+          el.style.width = '30px';
+          el.style.height = '30px';
+          el.style.backgroundColor = dayData.color;
+          el.style.borderRadius = '50%';
+          el.style.border = '2px solid white';
+          el.style.boxShadow = '0 2px 4px rgba(0,0,0,0.3)';
+          el.style.display = 'flex';
+          el.style.alignItems = 'center';
+          el.style.justifyContent = 'center';
+          el.style.color = 'white';
+          el.style.fontWeight = 'bold';
+          el.style.fontSize = '12px';
+          el.innerHTML = (idx + 1).toString();
+
+          const marker = new mapboxgl.Marker(el)
+            .setLngLat([outlet.longitude, outlet.latitude])
+            .setPopup(
+              new mapboxgl.Popup({ offset: 25 })
+                .setHTML(`
+                  <div>
+                    <strong>${outlet.name}</strong><br/>
+                    ${outlet.address}<br/>
+                    <span style="color: ${dayData.color}">${repData.rep.name} - ${daysOfWeek[day]}</span>
+                  </div>
+                `)
+            )
+            .addTo(map.current!);
+
+          markersRef.current.push(marker);
+        });
+
+        // Draw route lines for each day separately
+        if (dayData.outlets.length > 1 && map.current) {
+          // Use route order if available, otherwise use outlet order
+          const orderedOutlets = dayData.schedule.routeOrder 
+            ? (dayData.schedule.routeOrder as string[]).map(id => 
+                dayData.outlets.find(o => o.id === id)!
+              ).filter(Boolean)
+            : dayData.outlets;
+            
+          const routeCoordinates = orderedOutlets.map(o => [o.longitude, o.latitude]);
+          
+          // Add source and layer for this rep's route on this specific day
+          const sourceId = `route-${repId}-${day}`;
+          const layerId = `route-layer-${repId}-${day}`;
+
+          if (!map.current.getSource(sourceId)) {
+            map.current.addSource(sourceId, {
+              type: 'geojson',
+              data: {
+                type: 'Feature',
+                properties: {},
+                geometry: {
+                  type: 'LineString',
+                  coordinates: routeCoordinates
+                }
+              }
+            });
+
+            map.current.addLayer({
+              id: layerId,
+              type: 'line',
+              source: sourceId,
+              layout: {
+                'line-join': 'round',
+                'line-cap': 'round'
+              },
+              paint: {
+                'line-color': dayData.color,
+                'line-width': 3,
+                'line-opacity': 0.6,
+                'line-dasharray': [2, 2] // Dashed line to distinguish days
+              }
+            });
+          }
+        }
+      });
     });
 
     // Fit bounds to show all outlets
-    if (Object.keys(repOutlets).length > 0) {
-      const allOutlets = Object.values(repOutlets).flatMap(r => r.outlets);
+    if (Object.keys(repDayOutlets).length > 0) {
+      const allOutlets = Object.values(repDayOutlets).flatMap(r => 
+        Object.values(r.daySchedules).flatMap(d => d.outlets)
+      );
       if (allOutlets.length > 0) {
         const bounds = new mapboxgl.LngLatBounds();
         allOutlets.forEach(outlet => {
@@ -237,7 +283,7 @@ export function RepMap() {
         map.current.fitBounds(bounds, { padding: 50 });
       }
     }
-  }, [repOutlets, isMapLoaded, reps]);
+  }, [repDayOutlets, isMapLoaded, reps, selectedDays]);
 
   const toggleRep = (repId: string) => {
     setSelectedReps(prev => 
@@ -441,8 +487,6 @@ export function RepMap() {
                 <CommandEmpty>No rep found.</CommandEmpty>
                 <CommandGroup className="max-h-[300px] overflow-y-auto">
                   {reps.map((rep) => {
-                    const repIndex = reps.findIndex(r => r.id === rep.id);
-                    const color = REP_COLORS[repIndex % REP_COLORS.length];
                     return (
                       <CommandItem
                         key={rep.id}
@@ -456,10 +500,6 @@ export function RepMap() {
                           )}
                         />
                         <div className="flex items-center gap-2 flex-1">
-                          <div 
-                            className="w-3 h-3 rounded-full" 
-                            style={{ backgroundColor: color }}
-                          />
                           <span>{rep.name} - {rep.territory}</span>
                         </div>
                       </CommandItem>
@@ -487,7 +527,13 @@ export function RepMap() {
                     }}
                     className="rounded border-gray-300"
                   />
-                  <span className="text-sm">{day}</span>
+                  <div className="flex items-center gap-1">
+                    <div 
+                      className="w-3 h-3 rounded-full" 
+                      style={{ backgroundColor: DAY_COLORS[index] }}
+                    />
+                    <span className="text-sm">{day}</span>
+                  </div>
                 </label>
               ))}
             </div>
@@ -500,22 +546,24 @@ export function RepMap() {
         {/* Legend */}
         {selectedReps.length > 0 && (
           <div className="mt-4 p-3 border rounded-lg">
-            <h4 className="font-semibold mb-2 text-sm">Selected Reps</h4>
+            <h4 className="font-semibold mb-2 text-sm">Selected Routes</h4>
             <div className="space-y-2">
-              {Object.entries(repOutlets).map(([repId, data]) => {
-                const schedule = filteredSchedules.find(s => s.repId === repId);
-                return (
-                  <div key={repId} className="flex items-center gap-2">
-                    <div 
-                      className="w-3 h-3 rounded-full flex-shrink-0" 
-                      style={{ backgroundColor: data.color }}
-                    />
-                    <span className="text-xs truncate">
-                      {data.rep.name} - {data.outlets.length} outlets
-                      {schedule && schedule.totalDistance && ` (${schedule.totalDistance.toFixed(1)}km)`}
-                    </span>
-                  </div>
-                );
+              {Object.entries(repDayOutlets).map(([repId, repData]) => {
+                return Object.entries(repData.daySchedules).map(([dayStr, dayData]) => {
+                  const day = parseInt(dayStr);
+                  return (
+                    <div key={`${repId}-${day}`} className="flex items-center gap-2">
+                      <div 
+                        className="w-3 h-3 rounded-full flex-shrink-0" 
+                        style={{ backgroundColor: dayData.color }}
+                      />
+                      <span className="text-xs truncate">
+                        {repData.rep.name} - {daysOfWeek[day]} - {dayData.outlets.length} outlets
+                        {dayData.schedule.totalDistance && ` (${dayData.schedule.totalDistance.toFixed(1)}km)`}
+                      </span>
+                    </div>
+                  );
+                });
               })}
             </div>
           </div>

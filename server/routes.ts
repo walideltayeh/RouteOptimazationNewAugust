@@ -35,6 +35,59 @@ function toRadians(degrees: number): number {
   return degrees * (Math.PI / 180);
 }
 
+// Helper function to calculate distance (alias for calculateHaversineDistance)
+function calculateDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  return calculateHaversineDistance(lat1, lng1, lat2, lng2);
+}
+
+// Helper function to optimize route using nearest neighbor
+function optimizeRoute(outlets: Outlet[]): Outlet[] {
+  if (outlets.length <= 1) return outlets;
+  
+  const unvisited = [...outlets];
+  const route: Outlet[] = [];
+  
+  // Start from first outlet
+  let current = unvisited.shift()!;
+  route.push(current);
+  
+  // Nearest neighbor algorithm
+  while (unvisited.length > 0) {
+    let nearestIdx = 0;
+    let nearestDist = Infinity;
+    
+    for (let i = 0; i < unvisited.length; i++) {
+      const dist = calculateDistance(
+        current.latitude, current.longitude,
+        unvisited[i].latitude, unvisited[i].longitude
+      );
+      
+      if (dist < nearestDist) {
+        nearestDist = dist;
+        nearestIdx = i;
+      }
+    }
+    
+    current = unvisited[nearestIdx];
+    route.push(current);
+    unvisited.splice(nearestIdx, 1);
+  }
+  
+  return route;
+}
+
+// Helper function to calculate total route distance
+function calculateTotalDistance(outlets: Outlet[]): number {
+  let total = 0;
+  for (let i = 1; i < outlets.length; i++) {
+    total += calculateDistance(
+      outlets[i-1].latitude, outlets[i-1].longitude,
+      outlets[i].latitude, outlets[i].longitude
+    );
+  }
+  return total;
+}
+
 interface GeographicCluster {
   id: number;
   centroid: { lat: number; lng: number };
