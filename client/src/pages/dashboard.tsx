@@ -226,18 +226,16 @@ export default function Dashboard() {
                     </div>
                   </div>
                   
-                  {/* Estimated Reps Card */}
+                  {/* Estimated Reps Card - Always show estimate until optimization is run */}
                   <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
                     <p className="text-sm font-medium text-blue-900 mb-1">
-                      {hasOptimization ? "Actual Reps Needed" : "Estimated Reps Needed"}
+                      Initial Estimate
                     </p>
                     <p className="text-2xl font-bold text-blue-700">
-                      {hasOptimization ? reps.length : `~${Math.ceil(outlets.length / 25)}`} reps
+                      ~{Math.ceil(outlets.length / 25)} reps
                     </p>
                     <p className="text-xs text-blue-600 mt-1">
-                      {hasOptimization 
-                        ? "Optimized based on your settings" 
-                        : "Based on 25 outlets per zone, 1 zone per rep per day"}
+                      Based on 25 outlets per zone, 1 zone per rep per day
                     </p>
                   </div>
                   
@@ -256,6 +254,26 @@ export default function Dashboard() {
           <div className={`${!hasOutlets ? 'opacity-50 pointer-events-none' : 'animate-in fade-in slide-in-from-bottom-3 duration-500'}`}>
             <OptimizationSettings disabled={!hasOutlets} />
           </div>
+
+          {/* Final Recommendation (shown after optimization) */}
+          {hasOptimization && (
+            <div className="animate-in fade-in slide-in-from-bottom-3 duration-500">
+              <Card className="border-green-200 bg-green-50">
+                <CardContent className="p-6">
+                  <div className="flex items-center space-x-4">
+                    <div className="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center">
+                      <Users className="h-6 w-6 text-green-600" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-green-900">Final Recommendation</p>
+                      <p className="text-3xl font-bold text-green-700">{reps.length} reps needed</p>
+                      <p className="text-sm text-green-600 mt-1">Optimized based on your settings</p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          )}
 
           {/* Step 4: Load Maps (shown after optimization) */}
           {hasOptimization && (

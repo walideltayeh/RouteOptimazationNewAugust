@@ -62,9 +62,14 @@ export function RepMap() {
     queryKey: ["/api/outlets"] 
   });
 
-  const { data: schedules = [] } = useQuery<Schedule[]>({ 
+  const { data: schedules = [], isLoading: schedulesLoading, refetch: refetchSchedules } = useQuery<Schedule[]>({ 
     queryKey: ["/api/schedules"] 
   });
+  
+  // Force refetch schedules when component mounts
+  useEffect(() => {
+    refetchSchedules();
+  }, []);
 
   // Filter schedules for selected reps and days
   const filteredSchedules = useMemo(() => {
@@ -97,9 +102,17 @@ export function RepMap() {
       }> 
     }> = {};
     
+    if (schedulesLoading || !outlets.length || !schedules.length) {
+      console.log('Data not ready:', { schedulesLoading, outlets: outlets.length, schedules: schedules.length });
+      return result;
+    }
+    
     filteredSchedules.forEach(schedule => {
       const rep = reps.find(r => r.id === schedule.repId);
-      if (!rep) return;
+      if (!rep) {
+        console.log('Rep not found for ID:', schedule.repId);
+        return;
+      }
 
       // Check if outletIds is an array or needs parsing
       const outletIdArray = Array.isArray(schedule.outletIds) 
