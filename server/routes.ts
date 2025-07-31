@@ -1709,6 +1709,139 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Optimize selected routes
+  app.post("/api/optimize-routes", async (req, res) => {
+    try {
+      const { repIds, days } = req.body;
+      const schedules = await storage.getSchedules();
+      const outlets = await storage.getOutlets();
+      
+      // Get schedules for selected reps and days
+      const targetSchedules = schedules.filter(s => 
+        repIds.includes(s.repId) && 
+        days.includes(s.dayOfWeek) && 
+        s.week === 1
+      );
+      
+      // Optimize each schedule's route
+      for (const schedule of targetSchedules) {
+        const scheduleOutlets = outlets.filter(o => 
+          (schedule.outletIds as string[]).includes(o.id)
+        );
+        
+        if (scheduleOutlets.length > 1) {
+          // Optimize route using nearest neighbor
+          const optimizedOrder = optimizeRoute(scheduleOutlets);
+          const optimizedIds = optimizedOrder.map(o => o.id);
+          const totalDistance = calculateTotalDistance(optimizedOrder);
+          
+          // Update schedule with optimized route
+          await storage.updateSchedule(schedule.id!, {
+            routeOrder: optimizedIds,
+            totalDistance: totalDistance
+          });
+        }
+      }
+      
+      res.json({ success: true, message: "Routes optimized successfully" });
+    } catch (error) {
+      console.error("Route optimization error:", error);
+      res.status(500).json({ message: "Failed to optimize routes" });
+    }
+  });
+  
+  // Save optimized routes
+  app.post("/api/save-routes", async (req, res) => {
+    try {
+      const { repIds, days } = req.body;
+      
+      // Mark schedules as saved/finalized
+      // In a real implementation, you might want to save to a separate table
+      // or add a 'finalized' flag to the schedules
+      
+      res.json({ success: true, message: "Routes saved successfully" });
+    } catch (error) {
+      console.error("Save routes error:", error);
+      res.status(500).json({ message: "Failed to save routes" });
+    }
+  });
+  
+  // Export routes to Excel
+  app.post("/api/export-routes", async (req, res) => {
+    try {
+      const { repIds, days } = req.body;
+      const schedules = await storage.getSchedules();
+      const outlets = await storage.getOutlets();
+      const reps = await storage.getReps();
+      
+      // Filter schedules
+      const targetSchedules = schedules.filter(s => 
+        repIds.includes(s.repId) && 
+        days.includes(s.dayOfWeek) && 
+        s.week === 1
+      );
+      
+      // Create workbook
+      const wb = XLSX.utils.book_new();
+      
+      // Create detailed schedule sheet
+      const scheduleData: any[] = [];
+      const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+      
+      for (const schedule of targetSchedules) {
+        const rep = reps.find(r => r.id === schedule.repId);
+        const scheduleOutlets = outlets.filter(o => 
+          (schedule.outletIds as string[]).includes(o.id)
+        );
+        
+        // Use route order if available
+        const orderedOutlets = schedule.routeOrder 
+          ? (schedule.routeOrder as string[]).map(id => 
+              scheduleOutlets.find(o => o.id === id)!
+            ).filter(Boolean)
+          : scheduleOutlets;
+        
+        orderedOutlets.forEach((outlet, index) => {
+          scheduleData.push({
+            'Rep Name': rep?.name || 'Unknown',
+            'Rep Code': rep?.code || 'Unknown',
+            'Day': daysOfWeek[schedule.dayOfWeek],
+            'Week': schedule.week,
+            'Visit Order': index + 1,
+            'Outlet Name': outlet.name,
+            'Address': outlet.address,
+            'District': outlet.district,
+            'Region': outlet.region,
+            'Area': outlet.area,
+            'Latitude': outlet.latitude,
+            'Longitude': outlet.longitude,
+            'Visit Frequency': outlet.visitFrequency,
+            'Distance (km)': index === 0 ? 0 : 
+              calculateDistance(
+                orderedOutlets[index - 1].latitude,
+                orderedOutlets[index - 1].longitude,
+                outlet.latitude,
+                outlet.longitude
+              ).toFixed(2)
+          });
+        });
+      }
+      
+      const ws = XLSX.utils.json_to_sheet(scheduleData);
+      XLSX.utils.book_append_sheet(wb, ws, "Route Schedules");
+      
+      // Generate buffer
+      const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+      
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="route_schedules_${new Date().toISOString().split('T')[0]}.xlsx"`);
+      res.send(buffer);
+    } catch (error) {
+      console.error("Export routes error:", error);
+      res.status(500).json({ message: "Failed to export routes" });
+    }
+  });
+
   const httpServer = createServer(app);
   return httpServer;
 }

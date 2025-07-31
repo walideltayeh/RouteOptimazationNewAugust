@@ -16,8 +16,10 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { Check, ChevronsUpDown } from "lucide-react";
+import { Check, ChevronsUpDown, Zap, Save, Download } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useToast } from "@/hooks/use-toast";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Rep, Outlet, Schedule } from "@shared/schema";
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || import.meta.env.VITE_MAPBOX_PUBLIC_KEY;
@@ -37,9 +39,14 @@ export function RepMap() {
   const map = useRef<mapboxgl.Map | null>(null);
   const [selectedReps, setSelectedReps] = useState<string[]>([]);
   const [open, setOpen] = useState(false);
-  const [selectedDay, setSelectedDay] = useState<number>(0); // 0 = Monday
+  const [selectedDays, setSelectedDays] = useState<number[]>([0]); // 0 = Monday
   const [isMapLoaded, setIsMapLoaded] = useState(false);
+  const [isOptimizing, setIsOptimizing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   const markersRef = useRef<mapboxgl.Marker[]>([]);
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
 
   const { data: reps = [] } = useQuery<Rep[]>({ 
     queryKey: ["/api/reps"] 
@@ -53,14 +60,14 @@ export function RepMap() {
     queryKey: ["/api/schedules"] 
   });
 
-  // Filter schedules for selected reps and day
+  // Filter schedules for selected reps and days
   const filteredSchedules = useMemo(() => {
     return schedules.filter(schedule => 
       selectedReps.includes(schedule.repId) && 
-      schedule.dayOfWeek === selectedDay &&
+      selectedDays.includes(schedule.dayOfWeek) &&
       schedule.week === 1 // Show week 1 schedule
     );
-  }, [schedules, selectedReps, selectedDay]);
+  }, [schedules, selectedReps, selectedDays]);
 
   // Group outlets by rep for the selected day
   const repOutlets = useMemo(() => {
@@ -240,6 +247,109 @@ export function RepMap() {
     );
   };
 
+  // Optimize route mutation
+  const optimizeRouteMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch('/api/optimize-routes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repIds: selectedReps,
+          days: selectedDays
+        })
+      });
+      if (!response.ok) throw new Error('Failed to optimize routes');
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/schedules'] });
+      toast({
+        title: "Routes Optimized!",
+        description: "The selected routes have been further optimized for efficiency.",
+      });
+      setIsOptimizing(false);
+    },
+    onError: () => {
+      toast({
+        title: "Optimization Failed",
+        description: "There was an error optimizing the routes. Please try again.",
+        variant: "destructive",
+      });
+      setIsOptimizing(false);
+    }
+  });
+
+  // Save routes mutation
+  const saveRoutesMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch('/api/save-routes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repIds: selectedReps,
+          days: selectedDays
+        })
+      });
+      if (!response.ok) throw new Error('Failed to save routes');
+      return response.json();
+    },
+    onSuccess: () => {
+      toast({
+        title: "Routes Saved!",
+        description: "The optimized routes have been saved successfully.",
+      });
+      setIsSaving(false);
+    },
+    onError: () => {
+      toast({
+        title: "Save Failed",
+        description: "There was an error saving the routes. Please try again.",
+        variant: "destructive",
+      });
+      setIsSaving(false);
+    }
+  });
+
+  // Export to Excel
+  const handleExport = async () => {
+    setIsExporting(true);
+    try {
+      const response = await fetch('/api/export-routes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repIds: selectedReps,
+          days: selectedDays
+        })
+      });
+
+      if (!response.ok) throw new Error('Failed to export routes');
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `route_schedules_${new Date().toISOString().split('T')[0]}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+
+      toast({
+        title: "Export Successful!",
+        description: "Routes have been exported to Excel.",
+      });
+    } catch (error) {
+      toast({
+        title: "Export Failed",
+        description: "There was an error exporting the routes.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   const daysOfWeek = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
   if (!MAPBOX_TOKEN) {
@@ -261,6 +371,55 @@ export function RepMap() {
     <Card className="h-full flex flex-col">
       <CardHeader className="pb-4">
         <CardTitle>Sales Rep Routes</CardTitle>
+        {/* Action Buttons */}
+        {selectedReps.length > 0 && (
+          <div className="flex gap-2 mt-4">
+            <Button
+              onClick={() => {
+                setIsOptimizing(true);
+                optimizeRouteMutation.mutate();
+              }}
+              disabled={isOptimizing || selectedReps.length === 0}
+              size="sm"
+            >
+              {isOptimizing ? (
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+              ) : (
+                <Zap className="h-4 w-4 mr-2" />
+              )}
+              Optimize Routes
+            </Button>
+            <Button
+              onClick={() => {
+                setIsSaving(true);
+                saveRoutesMutation.mutate();
+              }}
+              disabled={isSaving || selectedReps.length === 0}
+              variant="secondary"
+              size="sm"
+            >
+              {isSaving ? (
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-800 mr-2"></div>
+              ) : (
+                <Save className="h-4 w-4 mr-2" />
+              )}
+              Save
+            </Button>
+            <Button
+              onClick={handleExport}
+              disabled={isExporting || selectedReps.length === 0}
+              variant="outline"
+              size="sm"
+            >
+              {isExporting ? (
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-800 mr-2"></div>
+              ) : (
+                <Download className="h-4 w-4 mr-2" />
+              )}
+              Export to Excel
+            </Button>
+          </div>
+        )}
         <div className="flex flex-col gap-4 mt-4">
           <Popover open={open} onOpenChange={setOpen}>
             <PopoverTrigger asChild>
@@ -311,15 +470,28 @@ export function RepMap() {
             </PopoverContent>
           </Popover>
 
-          <select
-            value={selectedDay}
-            onChange={(e) => setSelectedDay(Number(e.target.value))}
-            className="px-3 py-2 border rounded-md w-full"
-          >
-            {daysOfWeek.map((day, index) => (
-              <option key={day} value={index}>{day}</option>
-            ))}
-          </select>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Select Days</label>
+            <div className="grid grid-cols-2 gap-2">
+              {daysOfWeek.map((day, index) => (
+                <label key={day} className="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    checked={selectedDays.includes(index)}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setSelectedDays([...selectedDays, index]);
+                      } else {
+                        setSelectedDays(selectedDays.filter(d => d !== index));
+                      }
+                    }}
+                    className="rounded border-gray-300"
+                  />
+                  <span className="text-sm">{day}</span>
+                </label>
+              ))}
+            </div>
+          </div>
         </div>
       </CardHeader>
       <CardContent className="flex-1 p-4">
