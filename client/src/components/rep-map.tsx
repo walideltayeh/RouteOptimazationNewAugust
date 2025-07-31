@@ -197,9 +197,14 @@ export function RepMap() {
     });
 
     // Add markers and routes for each selected rep and day
+    console.log('Adding markers for repDayOutlets:', repDayOutlets);
+    
     Object.entries(repDayOutlets).forEach(([repId, repData]) => {
+      console.log('Processing rep:', repId, repData.rep.name);
+      
       Object.entries(repData.daySchedules).forEach(([dayStr, dayData]) => {
         const day = parseInt(dayStr);
+        console.log(`Processing day ${day} for rep ${repData.rep.name}, outlets:`, dayData.outlets.length);
         
         // Add markers for outlets with day-specific colors
         dayData.outlets.forEach((outlet, idx) => {

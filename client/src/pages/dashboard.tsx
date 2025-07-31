@@ -228,12 +228,16 @@ export default function Dashboard() {
                   
                   {/* Estimated Reps Card */}
                   <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-                    <p className="text-sm font-medium text-blue-900 mb-1">Estimated Reps Needed</p>
+                    <p className="text-sm font-medium text-blue-900 mb-1">
+                      {hasOptimization ? "Actual Reps Needed" : "Estimated Reps Needed"}
+                    </p>
                     <p className="text-2xl font-bold text-blue-700">
-                      ~{Math.ceil(outlets.length / 25)} reps
+                      {hasOptimization ? reps.length : `~${Math.ceil(outlets.length / 25)}`} reps
                     </p>
                     <p className="text-xs text-blue-600 mt-1">
-                      Based on 25 outlets per zone, 1 zone per rep per day
+                      {hasOptimization 
+                        ? "Optimized based on your settings" 
+                        : "Based on 25 outlets per zone, 1 zone per rep per day"}
                     </p>
                   </div>
                   
