@@ -6,6 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import Sidebar from "@/components/sidebar";
 import Dashboard from "@/pages/dashboard";
 import TerritoriesPage from "@/pages/territories";
+import RepMapPage from "@/pages/rep-map";
 import NotFound from "@/pages/not-found";
 
 function AppContent() {
@@ -16,6 +17,7 @@ function AppContent() {
         <Switch>
           <Route path="/" component={Dashboard} />
           <Route path="/territories" component={TerritoriesPage} />
+          <Route path="/rep-map" component={RepMapPage} />
           <Route component={NotFound} />
         </Switch>
       </main>

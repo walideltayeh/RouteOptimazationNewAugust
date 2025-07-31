@@ -12,6 +12,7 @@ import {
 const navigation = [
   { name: "Dashboard", href: "/", icon: BarChart3 },
   { name: "Territory Map", href: "/territories", icon: Map },
+  { name: "Rep Map", href: "/rep-map", icon: Route },
 ];
 
 export default function Sidebar() {

@@ -7,7 +7,6 @@ import AnalyticsCharts from "@/components/analytics-charts";
 import MLInsights from "@/components/ml-insights";
 import TerritoryMap from "@/components/territory-map-new";
 import TerritoryCustomization from "@/components/territory-customization";
-import { RepMap } from "@/components/rep-map";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -212,45 +211,33 @@ export default function Dashboard() {
             </TabsList>
 
             <TabsContent value="map" className="space-y-6">
-              {/* Maps layout: Rep Map on left, Territory Map on right */}
-              <div className="grid grid-cols-12 gap-6">
-                {/* Rep Map - Left Panel (4 columns) */}
-                {schedules.length > 0 && (
-                  <div className="col-span-12 lg:col-span-4">
-                    <RepMap />
-                  </div>
-                )}
-                
-                {/* Territory Map - Right Panel (8 columns, or full width if no schedules) */}
-                <div className={schedules.length > 0 ? "col-span-12 lg:col-span-8" : "col-span-12"}>
-                  <Card>
-                    <CardHeader className="flex flex-row items-center justify-between">
-                      <CardTitle>Territory Map - Zone Visualization</CardTitle>
-                      {outlets.length > 0 && (
-                        <Button
-                          onClick={() => setShowTerritoryCustomization(!showTerritoryCustomization)}
-                          variant={showTerritoryCustomization ? "secondary" : "outline"}
-                          size="sm"
-                        >
-                          <Edit3 className="h-4 w-4 mr-2" />
-                          {showTerritoryCustomization ? "Close Customization" : "Customize Territories"}
-                        </Button>
-                      )}
-                    </CardHeader>
-                    <CardContent className="p-0">
-                      {showTerritoryCustomization ? (
-                        <TerritoryCustomization onClose={() => setShowTerritoryCustomization(false)} />
-                      ) : (
-                        <div className="h-[600px] w-full">
-                          <TerritoryMap className="h-full w-full" />
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
-                </div>
-              </div>
+              {/* Full-width Territory Map */}
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between">
+                  <CardTitle>Territory Map - Zone Visualization</CardTitle>
+                  {outlets.length > 0 && (
+                    <Button
+                      onClick={() => setShowTerritoryCustomization(!showTerritoryCustomization)}
+                      variant={showTerritoryCustomization ? "secondary" : "outline"}
+                      size="sm"
+                    >
+                      <Edit3 className="h-4 w-4 mr-2" />
+                      {showTerritoryCustomization ? "Close Customization" : "Customize Territories"}
+                    </Button>
+                  )}
+                </CardHeader>
+                <CardContent className="p-0">
+                  {showTerritoryCustomization ? (
+                    <TerritoryCustomization onClose={() => setShowTerritoryCustomization(false)} />
+                  ) : (
+                    <div className="h-[600px] w-full">
+                      <TerritoryMap className="h-full w-full" />
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
 
-              {/* Zone details table below maps */}
+              {/* Zone details table below map */}
               <RepScheduleTable />
             </TabsContent>
 

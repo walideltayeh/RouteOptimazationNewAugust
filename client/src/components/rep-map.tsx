@@ -260,7 +260,7 @@ export function RepMap() {
   return (
     <Card className="h-full flex flex-col">
       <CardHeader className="pb-4">
-        <CardTitle>Rep Map</CardTitle>
+        <CardTitle>Sales Rep Routes</CardTitle>
         <div className="flex flex-col gap-4 mt-4">
           <Popover open={open} onOpenChange={setOpen}>
             <PopoverTrigger asChild>
