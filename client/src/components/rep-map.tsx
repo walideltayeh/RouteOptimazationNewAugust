@@ -91,9 +91,20 @@ export function RepMap() {
       const rep = reps.find(r => r.id === schedule.repId);
       if (!rep) return;
 
-      const scheduleOutlets = (schedule.outletIds as string[])
-        .map(id => outlets.find(o => o.id === id))
+      // Check if outletIds is an array or needs parsing
+      const outletIdArray = Array.isArray(schedule.outletIds) 
+        ? schedule.outletIds 
+        : typeof schedule.outletIds === 'string' 
+          ? JSON.parse(schedule.outletIds as string)
+          : [];
+      
+      console.log('Processing schedule:', schedule.id, 'outletIds:', outletIdArray);
+      
+      const scheduleOutlets = outletIdArray
+        .map((id: string) => outlets.find((o: Outlet) => o.id === id))
         .filter((o): o is Outlet => o !== undefined);
+      
+      console.log('Found outlets:', scheduleOutlets.length);
 
       if (!result[rep.id]) {
         result[rep.id] = {

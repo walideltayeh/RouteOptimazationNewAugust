@@ -225,6 +225,18 @@ export default function Dashboard() {
                       </p>
                     </div>
                   </div>
+                  
+                  {/* Estimated Reps Card */}
+                  <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                    <p className="text-sm font-medium text-blue-900 mb-1">Estimated Reps Needed</p>
+                    <p className="text-2xl font-bold text-blue-700">
+                      ~{Math.ceil(outlets.length / 25)} reps
+                    </p>
+                    <p className="text-xs text-blue-600 mt-1">
+                      Based on 25 outlets per zone, 1 zone per rep per day
+                    </p>
+                  </div>
+                  
                   <div className="mt-4 p-4 bg-blue-50 rounded-lg border border-blue-200">
                     <p className="text-sm text-blue-800">
                       Based on your file analysis, the system has calculated an initial recommendation.
