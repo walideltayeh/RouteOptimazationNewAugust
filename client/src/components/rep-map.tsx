@@ -147,8 +147,11 @@ export function RepMap() {
     if (!map.current || !isMapLoaded) return;
 
     console.log('RepMap update - Selected reps:', selectedReps);
+    console.log('RepMap update - Selected days:', selectedDays);
+    console.log('RepMap update - All schedules:', schedules.length);
     console.log('RepMap update - Filtered schedules:', filteredSchedules);
     console.log('RepMap update - Rep outlets:', repDayOutlets);
+    console.log('RepMap update - Total outlets:', outlets.length);
 
     // Clear existing markers
     markersRef.current.forEach(marker => marker.remove());
@@ -360,14 +363,7 @@ export function RepMap() {
   const handleExport = async () => {
     setIsExporting(true);
     try {
-      const response = await fetch('/api/export-routes', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          repIds: selectedReps,
-          days: selectedDays
-        })
-      });
+      const response = await fetch('/api/export/schedules');
 
       if (!response.ok) throw new Error('Failed to export routes');
 
@@ -396,7 +392,7 @@ export function RepMap() {
     }
   };
 
-  const daysOfWeek = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
 
   if (!MAPBOX_TOKEN) {
     return (
