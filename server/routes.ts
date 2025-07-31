@@ -40,16 +40,33 @@ function calculateDistance(lat1: number, lng1: number, lat2: number, lng2: numbe
   return calculateHaversineDistance(lat1, lng1, lat2, lng2);
 }
 
-// Helper function to optimize route using nearest neighbor
+// Helper function to optimize route using nearest neighbor with 2-opt improvement
 function optimizeRoute(outlets: Outlet[]): Outlet[] {
   if (outlets.length <= 1) return outlets;
   
+  // Step 1: Find the centroid of all outlets
+  const avgLat = outlets.reduce((sum, o) => sum + o.latitude, 0) / outlets.length;
+  const avgLng = outlets.reduce((sum, o) => sum + o.longitude, 0) / outlets.length;
+  
+  // Step 2: Find the outlet farthest from centroid as starting point
+  let startIdx = 0;
+  let maxDist = 0;
+  outlets.forEach((outlet, idx) => {
+    const dist = calculateDistance(avgLat, avgLng, outlet.latitude, outlet.longitude);
+    if (dist > maxDist) {
+      maxDist = dist;
+      startIdx = idx;
+    }
+  });
+  
+  // Step 3: Build initial route using nearest neighbor from the starting point
   const unvisited = [...outlets];
   const route: Outlet[] = [];
   
-  // Start from first outlet
-  let current = unvisited.shift()!;
+  // Start from the farthest outlet
+  let current = unvisited[startIdx];
   route.push(current);
+  unvisited.splice(startIdx, 1);
   
   // Nearest neighbor algorithm
   while (unvisited.length > 0) {
@@ -71,6 +88,48 @@ function optimizeRoute(outlets: Outlet[]): Outlet[] {
     current = unvisited[nearestIdx];
     route.push(current);
     unvisited.splice(nearestIdx, 1);
+  }
+  
+  // Step 4: Apply 2-opt improvement
+  let improved = true;
+  let iterations = 0;
+  const maxIterations = 100;
+  
+  while (improved && iterations < maxIterations) {
+    improved = false;
+    iterations++;
+    
+    for (let i = 1; i < route.length - 2; i++) {
+      for (let j = i + 1; j < route.length; j++) {
+        if (j - i === 1) continue;
+        
+        // Calculate current distance
+        const currentDist = calculateDistance(
+          route[i - 1].latitude, route[i - 1].longitude,
+          route[i].latitude, route[i].longitude
+        ) + calculateDistance(
+          route[j - 1].latitude, route[j - 1].longitude,
+          route[j].latitude, route[j].longitude
+        );
+        
+        // Calculate new distance after swap
+        const newDist = calculateDistance(
+          route[i - 1].latitude, route[i - 1].longitude,
+          route[j - 1].latitude, route[j - 1].longitude
+        ) + calculateDistance(
+          route[i].latitude, route[i].longitude,
+          route[j].latitude, route[j].longitude
+        );
+        
+        // If improvement found, reverse the route segment
+        if (newDist < currentDist) {
+          // Reverse the route between i and j-1
+          const reversed = route.slice(i, j).reverse();
+          route.splice(i, j - i, ...reversed);
+          improved = true;
+        }
+      }
+    }
   }
   
   return route;
@@ -1125,17 +1184,20 @@ function generateZoneBasedSchedules(rep: Rep, zones: GeographicCluster[], allClu
       const zone = currentWeekZones[dayIndex];
       if (!zone) continue;
       
-      // Get all outlet IDs from this zone
-      const zoneOutletIds = zone.outlets.map(outlet => outlet.id);
+      // Get all outlets from this zone and optimize the route
+      const zoneOutlets = zone.outlets;
+      const optimizedOutlets = optimizeRoute(zoneOutlets);
+      const zoneOutletIds = optimizedOutlets.map(outlet => outlet.id);
+      const totalDistance = calculateTotalDistance(optimizedOutlets);
       
-      // Create schedule for this day
+      // Create schedule for this day with optimized route
       schedules.push({
         repId: rep.id,
         week: week,
         dayOfWeek: dayIndex,
         outletIds: zoneOutletIds,
-        routeOrder: zoneOutletIds, // Can be optimized later with TSP
-        totalDistance: calculateClusterRadius(zone) * 2, // Approximate
+        routeOrder: zoneOutletIds, // Already optimized
+        totalDistance: totalDistance,
         estimatedDuration: zone.outlets.length * 15 // 15 minutes per outlet average
       });
       
@@ -1145,8 +1207,8 @@ function generateZoneBasedSchedules(rep: Rep, zones: GeographicCluster[], allClu
         week: week + 2,
         dayOfWeek: dayIndex,
         outletIds: zoneOutletIds,
-        routeOrder: zoneOutletIds,
-        totalDistance: calculateClusterRadius(zone) * 2,
+        routeOrder: zoneOutletIds, // Already optimized
+        totalDistance: totalDistance,
         estimatedDuration: zone.outlets.length * 15
       });
     }
