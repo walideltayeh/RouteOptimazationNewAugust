@@ -154,5 +154,6 @@ Preferred communication style: Simple, everyday language.
 ✓ **Added Multi-Day Selection to Rep Map**: Users can now select and view multiple days simultaneously on the Rep Map for better route planning
 ✓ **Implemented Route Optimization Button**: Added "Optimize Routes" functionality to further optimize existing scheduled routes using TSP algorithms
 ✓ **Added Save and Export Functionality**: Implemented save routes and export to Excel features for finalized route schedules
+✓ **Removed Feasibility Blocking**: App now works with any user-provided parameters (min visits, max visits, working days) without blocking execution due to feasibility checks
 
 The application follows a monorepo structure with clear separation between client, server, and shared code, enabling efficient development and maintainable architecture for scaling route optimization operations with advanced AI capabilities.

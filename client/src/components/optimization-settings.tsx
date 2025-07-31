@@ -48,46 +48,25 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
   // Show initial estimate from file upload analysis
   const estimatedReps = analysis?.recommendedReps || 0;
 
-  // Check feasibility when working days change
+  // Show estimated calculation based on user parameters
   const feasibilityCheck = useMemo(() => {
     if (!analysis || !metrics) return { feasible: true, message: "", warning: false };
     
-    const currentReps = metrics.activeReps || 2;
     const totalOutlets = analysis.outlets;
     
     if (totalOutlets === 0) return { feasible: true, message: "", warning: false };
     
-    // Each rep covers 10 zones max, each zone has ~25 outlets
-    const totalZones = Math.ceil(totalOutlets / 25);
-    const requiredDays = Math.ceil(totalZones / currentReps);
-    
-    if (workingDaysPerWeek < requiredDays) {
-      return {
-        feasible: false,
-        message: `Cannot complete routes in ${workingDaysPerWeek} days. Need at least ${requiredDays} days or add more reps.`,
-        warning: true
-      };
-    }
-    
-    // Calculate daily workload
-    const zonesPerDay = Math.ceil(totalZones / workingDaysPerWeek);
-    const outletsPerDay = zonesPerDay * 25;
-    const outletsPerRepPerDay = Math.ceil(outletsPerDay / currentReps);
-    
-    if (outletsPerRepPerDay > maxVisitsPerDay) {
-      return {
-        feasible: false,
-        message: `Too many visits per day (${outletsPerRepPerDay}). Max is ${maxVisitsPerDay}. Add more reps or increase working days.`,
-        warning: true
-      };
-    }
+    // Calculate based on user's parameters
+    const totalWeeklyVisits = (analysis.vf2 * 2) + (analysis.vf4 * 4);
+    const maxWeeklyCapacityPerRep = workingDaysPerWeek * maxVisitsPerDay;
+    const estimatedRepsNeeded = Math.ceil(totalWeeklyVisits / maxWeeklyCapacityPerRep);
     
     return {
-      feasible: true,
-      message: `Feasible with ${currentReps} reps. Each rep visits ~${outletsPerRepPerDay} outlets/day.`,
+      feasible: true, // Always allow optimization with user parameters
+      message: `Will create ~${estimatedRepsNeeded} routes based on your settings (${minVisitsPerDay}-${maxVisitsPerDay} visits/day, ${workingDaysPerWeek} days/week)`,
       warning: false
     };
-  }, [analysis, metrics, workingDaysPerWeek, maxVisitsPerDay]);
+  }, [analysis, metrics, workingDaysPerWeek, minVisitsPerDay, maxVisitsPerDay]);
 
   const optimizationMutation = useMutation({
     mutationFn: async (settings: { 
@@ -214,7 +193,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
 
         <Button 
           onClick={handleOptimization} 
-          disabled={disabled || optimizationMutation.isPending || !feasibilityCheck.feasible}
+          disabled={disabled || optimizationMutation.isPending}
           className="w-full"
         >
           <Play className="mr-2 h-4 w-4" />
