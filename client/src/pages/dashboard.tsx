@@ -19,6 +19,7 @@ export default function Dashboard() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [showTerritoryCustomization, setShowTerritoryCustomization] = useState(false);
+  const [currentStep, setCurrentStep] = useState(1);
 
   const { data: metrics, isLoading } = useQuery<DashboardMetrics>({
     queryKey: ["/api/dashboard/metrics"],
@@ -35,6 +36,10 @@ export default function Dashboard() {
   const { data: schedules = [] } = useQuery<Schedule[]>({
     queryKey: ["/api/schedules"],
   });
+
+  // Determine current step based on data state
+  const hasOutlets = outlets.length > 0;
+  const hasOptimization = reps.length > 0 && schedules.length > 0;
 
   const clearAllMutation = useMutation({
     mutationFn: () => fetch("/api/clear", { method: "DELETE" }).then(res => res.json()),
@@ -106,8 +111,9 @@ export default function Dashboard() {
           </div>
         </header>
 
-        {/* Key Metrics Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+        {/* Key Metrics Cards - Only show after optimization */}
+        {hasOptimization && (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
           <Card className="metric-card">
             <CardContent className="p-6">
               <div className="flex items-center justify-between">
@@ -185,30 +191,78 @@ export default function Dashboard() {
               </div>
             </CardContent>
           </Card>
-        </div>
+          </div>
+        )}
 
         {/* Step-by-step process */}
         <div className="space-y-6">
-          {/* Step 1 & 2: Settings and Upload in a row */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <OptimizationSettings />
-            <FileUpload />
+          {/* Step 1: File Upload */}
+          <FileUpload />
+
+          {/* Step 2: File Analysis (shown after upload) */}
+          {hasOutlets && (
+            <div className="animate-in fade-in slide-in-from-bottom-3 duration-500">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Step 2: File Analysis Complete</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="text-center p-4 bg-gray-50 rounded-lg">
+                      <p className="text-sm text-gray-600">Total Outlets</p>
+                      <p className="text-2xl font-bold text-gray-900">{outlets.length}</p>
+                    </div>
+                    <div className="text-center p-4 bg-gray-50 rounded-lg">
+                      <p className="text-sm text-gray-600">VF2 Outlets</p>
+                      <p className="text-2xl font-bold text-gray-900">
+                        {outlets.filter(o => o.visitFrequency === 2).length}
+                      </p>
+                    </div>
+                    <div className="text-center p-4 bg-gray-50 rounded-lg">
+                      <p className="text-sm text-gray-600">VF4 Outlets</p>
+                      <p className="text-2xl font-bold text-gray-900">
+                        {outlets.filter(o => o.visitFrequency === 4).length}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="mt-4 p-4 bg-blue-50 rounded-lg border border-blue-200">
+                    <p className="text-sm text-blue-800">
+                      Based on your file analysis, the system has calculated an initial recommendation.
+                      Please proceed to Step 3 to configure optimization settings.
+                    </p>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          )}
+
+          {/* Step 3: Optimization Settings */}
+          <div className={`${!hasOutlets ? 'opacity-50 pointer-events-none' : 'animate-in fade-in slide-in-from-bottom-3 duration-500'}`}>
+            <OptimizationSettings disabled={!hasOutlets} />
           </div>
 
-          {/* Main Dashboard Tabs */}
-          <Tabs defaultValue="map" className="space-y-6">
-            <TabsList className="grid w-full grid-cols-4">
-              <TabsTrigger value="map" className="flex items-center space-x-2">
-                <Map className="h-4 w-4" />
-                <span>Territory Map</span>
-              </TabsTrigger>
-              <TabsTrigger value="schedules">Schedules</TabsTrigger>
-              <TabsTrigger value="analytics">Analytics</TabsTrigger>
-              <TabsTrigger value="ml-insights" className="flex items-center space-x-2">
-                <Brain className="h-4 w-4" />
-                <span>ML Insights</span>
-              </TabsTrigger>
-            </TabsList>
+          {/* Step 4: Load Maps (shown after optimization) */}
+          {hasOptimization && (
+            <div className="animate-in fade-in slide-in-from-bottom-3 duration-500">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Step 4: Territory Maps & Schedules</CardTitle>
+                </CardHeader>
+                <CardContent className="p-4">
+                  {/* Main Dashboard Tabs */}
+                  <Tabs defaultValue="map" className="space-y-6">
+                <TabsList className="grid w-full grid-cols-4">
+                  <TabsTrigger value="map" className="flex items-center space-x-2">
+                    <Map className="h-4 w-4" />
+                    <span>Territory Map</span>
+                  </TabsTrigger>
+                  <TabsTrigger value="schedules">Schedules</TabsTrigger>
+                  <TabsTrigger value="analytics">Analytics</TabsTrigger>
+                  <TabsTrigger value="ml-insights" className="flex items-center space-x-2">
+                    <Brain className="h-4 w-4" />
+                    <span>ML Insights</span>
+                  </TabsTrigger>
+                </TabsList>
 
             <TabsContent value="map" className="space-y-6">
               {/* Full-width Territory Map */}
@@ -252,7 +306,11 @@ export default function Dashboard() {
             <TabsContent value="ml-insights">
               <MLInsights outlets={outlets} reps={reps} schedules={schedules} />
             </TabsContent>
-          </Tabs>
+                  </Tabs>
+                </CardContent>
+              </Card>
+            </div>
+          )}
         </div>
       </div>
     </div>

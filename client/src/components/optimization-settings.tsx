@@ -25,7 +25,11 @@ interface DashboardMetrics {
   routeEfficiency: number;
 }
 
-export default function OptimizationSettings() {
+interface OptimizationSettingsProps {
+  disabled?: boolean;
+}
+
+export default function OptimizationSettings({ disabled = false }: OptimizationSettingsProps) {
   const [minVisitsPerDay, setMinVisitsPerDay] = useState(25);
   const [maxVisitsPerDay, setMaxVisitsPerDay] = useState(30);
   const [workingDaysPerWeek, setWorkingDaysPerWeek] = useState(5);
@@ -134,7 +138,7 @@ export default function OptimizationSettings() {
       <CardHeader>
         <CardTitle className="flex items-center">
           <Settings className="mr-2 h-5 w-5 text-primary" />
-          Optimization Settings
+          Step 3: Optimization Settings
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -148,6 +152,7 @@ export default function OptimizationSettings() {
             min="1"
             max="50"
             className="mt-1"
+            disabled={disabled}
           />
         </div>
 
@@ -161,6 +166,7 @@ export default function OptimizationSettings() {
             min="1"
             max="50"
             className="mt-1"
+            disabled={disabled}
           />
         </div>
 
@@ -169,8 +175,9 @@ export default function OptimizationSettings() {
           <Select 
             value={workingDaysPerWeek.toString()} 
             onValueChange={(value) => setWorkingDaysPerWeek(parseInt(value))}
+            disabled={disabled}
           >
-            <SelectTrigger className="mt-1">
+            <SelectTrigger className="mt-1" disabled={disabled}>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -207,7 +214,7 @@ export default function OptimizationSettings() {
 
         <Button 
           onClick={handleOptimization} 
-          disabled={optimizationMutation.isPending || !feasibilityCheck.feasible}
+          disabled={disabled || optimizationMutation.isPending || !feasibilityCheck.feasible}
           className="w-full"
         >
           <Play className="mr-2 h-4 w-4" />

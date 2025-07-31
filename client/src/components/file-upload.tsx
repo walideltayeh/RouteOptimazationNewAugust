@@ -107,11 +107,11 @@ export default function FileUpload() {
   };
 
   return (
-    <Card>
+    <Card className="border-2 border-primary">
       <CardHeader>
         <CardTitle className="flex items-center">
           <Upload className="mr-2 h-5 w-5 text-primary" />
-          Data Upload & Analysis
+          Step 1: Data Upload & Analysis
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -153,36 +153,15 @@ export default function FileUpload() {
           />
         </div>
 
-        {/* File Analysis Results */}
-        {analysis && (
-          <div className="space-y-4">
-            <h4 className="font-medium text-gray-900">Last Upload Analysis</h4>
-            <div className="space-y-3">
-              <div className="flex justify-between items-center py-2 border-b border-gray-100">
-                <span className="text-sm text-gray-600">Total Outlets</span>
-                <span className="text-sm font-semibold text-gray-900">
-                  {analysis.outlets.toLocaleString()}
-                </span>
-              </div>
-              <div className="flex justify-between items-center py-2 border-b border-gray-100">
-                <span className="text-sm text-gray-600">VF2 Outlets</span>
-                <span className="text-sm font-semibold text-gray-900">
-                  {analysis.vf2.toLocaleString()}
-                </span>
-              </div>
-              <div className="flex justify-between items-center py-2 border-b border-gray-100">
-                <span className="text-sm text-gray-600">VF4 Outlets</span>
-                <span className="text-sm font-semibold text-gray-900">
-                  {analysis.vf4.toLocaleString()}
-                </span>
-              </div>
-              <div className="flex justify-between items-center py-2">
-                <span className="text-sm text-gray-600">Initial Estimate</span>
-                <span className="text-sm font-semibold text-primary">
-                  ~{analysis.recommendedReps} reps (will be refined after optimization)
-                </span>
-              </div>
-            </div>
+        {/* File Status */}
+        {analysis && analysis.outlets > 0 && (
+          <div className="p-4 bg-green-50 rounded-lg border border-green-200">
+            <p className="text-sm text-green-800 font-medium">
+              ✓ File uploaded successfully
+            </p>
+            <p className="text-xs text-green-600 mt-1">
+              {analysis.outlets} outlets processed. See Step 2 for detailed analysis.
+            </p>
           </div>
         )}
       </CardContent>
