@@ -92,14 +92,15 @@ export function RepMap() {
     return filtered;
   }, [schedules, selectedReps, selectedDays, selectedWeeks]);
 
-  // Group outlets by rep and day for the selected days
+  // Group outlets by rep, day, and week for the selected days
   const repDayOutlets = useMemo(() => {
     const result: Record<string, { 
       rep: Rep; 
-      daySchedules: Record<number, { 
+      daySchedules: Record<string, { 
         outlets: Outlet[]; 
         color: string; 
         dayOfWeek: number;
+        week: number;
         schedule: Schedule;
       }> 
     }> = {};
@@ -150,10 +151,14 @@ export function RepMap() {
         };
       }
 
-      result[rep.id].daySchedules[schedule.dayOfWeek] = {
+      // Create a unique key for each day-week combination
+      const scheduleKey = `${schedule.dayOfWeek}-${schedule.week}`;
+      
+      result[rep.id].daySchedules[scheduleKey] = {
         outlets: scheduleOutlets,
         color: DAY_COLORS[schedule.dayOfWeek % DAY_COLORS.length],
         dayOfWeek: schedule.dayOfWeek,
+        week: schedule.week,
         schedule
       };
     });
@@ -218,18 +223,20 @@ export function RepMap() {
       }
     });
 
-    // Clear existing layers and sources for all reps and days
+    // Clear existing layers and sources for all reps, days, and weeks
     reps.forEach((rep) => {
       selectedDays.forEach((day) => {
-        const sourceId = `route-${rep.id}-${day}`;
-        const layerId = `route-layer-${rep.id}-${day}`;
-        
-        if (map.current!.getLayer(layerId)) {
-          map.current!.removeLayer(layerId);
-        }
-        if (map.current!.getSource(sourceId)) {
-          map.current!.removeSource(sourceId);
-        }
+        [1, 2, 3, 4].forEach((week) => {
+          const sourceId = `route-${rep.id}-${day}-${week}`;
+          const layerId = `route-layer-${rep.id}-${day}-${week}`;
+          
+          if (map.current!.getLayer(layerId)) {
+            map.current!.removeLayer(layerId);
+          }
+          if (map.current!.getSource(sourceId)) {
+            map.current!.removeSource(sourceId);
+          }
+        });
       });
     });
 
@@ -239,9 +246,8 @@ export function RepMap() {
     Object.entries(repDayOutlets).forEach(([repId, repData]) => {
       console.log('Processing rep:', repId, repData.rep.name);
       
-      Object.entries(repData.daySchedules).forEach(([dayStr, dayData]) => {
-        const day = parseInt(dayStr);
-        console.log(`Processing day ${day} for rep ${repData.rep.name}, outlets:`, dayData.outlets.length);
+      Object.entries(repData.daySchedules).forEach(([scheduleKey, dayData]) => {
+        console.log(`Processing schedule ${scheduleKey} for rep ${repData.rep.name}, outlets:`, dayData.outlets.length);
         
         // Add markers for outlets with day-specific colors
         dayData.outlets.forEach((outlet, idx) => {
@@ -269,7 +275,7 @@ export function RepMap() {
                   <div>
                     <strong>${outlet.name}</strong><br/>
                     ${outlet.address}<br/>
-                    <span style="color: ${dayData.color}">${repData.rep.name} - ${daysOfWeek[day]}</span>
+                    <span style="color: ${dayData.color}">${repData.rep.name} - ${daysOfWeek[dayData.dayOfWeek]} (Week ${dayData.week})</span>
                   </div>
                 `)
             )
@@ -289,9 +295,9 @@ export function RepMap() {
             
           const routeCoordinates = orderedOutlets.map(o => [o.longitude, o.latitude]);
           
-          // Add source and layer for this rep's route on this specific day
-          const sourceId = `route-${repId}-${day}`;
-          const layerId = `route-layer-${repId}-${day}`;
+          // Add source and layer for this rep's route on this specific day and week
+          const sourceId = `route-${repId}-${dayData.dayOfWeek}-${dayData.week}`;
+          const layerId = `route-layer-${repId}-${dayData.dayOfWeek}-${dayData.week}`;
 
           if (!map.current.getSource(sourceId)) {
             map.current.addSource(sourceId, {
@@ -318,7 +324,8 @@ export function RepMap() {
                 'line-color': dayData.color,
                 'line-width': 3,
                 'line-opacity': 0.6,
-                'line-dasharray': [2, 2] // Dashed line to distinguish days
+                // Different dash patterns for different weeks
+                'line-dasharray': dayData.week === 1 || dayData.week === 3 ? [1, 0] : [2, 2]
               }
             });
           }
@@ -590,22 +597,41 @@ export function RepMap() {
 
           <div className="space-y-2">
             <label className="text-sm font-medium">Select Weeks</label>
-            <div className="flex gap-2">
+            <div className="grid grid-cols-2 gap-2">
+              {[1, 2, 3, 4].map((week) => (
+                <label key={week} className="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    checked={selectedWeeks.includes(week)}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setSelectedWeeks([...selectedWeeks, week]);
+                      } else {
+                        setSelectedWeeks(selectedWeeks.filter(w => w !== week));
+                      }
+                    }}
+                    className="rounded border-gray-300"
+                  />
+                  <span className="text-sm">Week {week}</span>
+                </label>
+              ))}
+            </div>
+            <div className="flex gap-2 text-xs text-muted-foreground">
               <Button
                 size="sm"
-                variant={selectedWeeks.includes(1) && selectedWeeks.includes(3) ? "default" : "outline"}
+                variant="ghost"
                 onClick={() => setSelectedWeeks([1, 3])}
-                className="flex-1"
+                className="h-6 px-2"
               >
-                Week 1/3
+                Select Week 1/3
               </Button>
               <Button
                 size="sm"
-                variant={selectedWeeks.includes(2) && selectedWeeks.includes(4) ? "default" : "outline"}
+                variant="ghost"
                 onClick={() => setSelectedWeeks([2, 4])}
-                className="flex-1"
+                className="h-6 px-2"
               >
-                Week 2/4
+                Select Week 2/4
               </Button>
             </div>
           </div>
@@ -620,16 +646,15 @@ export function RepMap() {
             <h4 className="font-semibold mb-2 text-sm">Selected Routes</h4>
             <div className="space-y-2">
               {Object.entries(repDayOutlets).map(([repId, repData]) => {
-                return Object.entries(repData.daySchedules).map(([dayStr, dayData]) => {
-                  const day = parseInt(dayStr);
+                return Object.entries(repData.daySchedules).map(([scheduleKey, dayData]) => {
                   return (
-                    <div key={`${repId}-${day}`} className="flex items-center gap-2">
+                    <div key={`${repId}-${scheduleKey}`} className="flex items-center gap-2">
                       <div 
                         className="w-3 h-3 rounded-full flex-shrink-0" 
                         style={{ backgroundColor: dayData.color }}
                       />
                       <span className="text-xs truncate">
-                        {repData.rep.name} - {daysOfWeek[day]} (Week {dayData.schedule.week}) - {dayData.outlets.length} outlets
+                        {repData.rep.name} - {daysOfWeek[dayData.dayOfWeek]} (Week {dayData.week}) - {dayData.outlets.length} outlets
                         {dayData.schedule.totalDistance && ` (${dayData.schedule.totalDistance.toFixed(1)}km)`}
                       </span>
                     </div>
