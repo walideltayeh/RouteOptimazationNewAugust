@@ -68,11 +68,21 @@ export function RepMap() {
 
   // Filter schedules for selected reps and days
   const filteredSchedules = useMemo(() => {
-    return schedules.filter(schedule => 
+    console.log('Filtering schedules:', {
+      totalSchedules: schedules.length,
+      selectedReps,
+      selectedDays,
+      firstSchedule: schedules[0]
+    });
+    
+    const filtered = schedules.filter(schedule => 
       selectedReps.includes(schedule.repId) && 
       selectedDays.includes(schedule.dayOfWeek) &&
       schedule.week === 1 // Show week 1 schedule
     );
+    
+    console.log('Filtered schedules:', filtered.length);
+    return filtered;
   }, [schedules, selectedReps, selectedDays]);
 
   // Group outlets by rep and day for the selected days
@@ -98,13 +108,25 @@ export function RepMap() {
           ? JSON.parse(schedule.outletIds as string)
           : [];
       
-      console.log('Processing schedule:', schedule.id, 'outletIds:', outletIdArray);
+      console.log('Processing schedule:', {
+        scheduleId: schedule.id,
+        repId: schedule.repId,
+        dayOfWeek: schedule.dayOfWeek,
+        outletIds: outletIdArray,
+        totalOutletsAvailable: outlets.length
+      });
       
       const scheduleOutlets = outletIdArray
-        .map((id: string) => outlets.find((o: Outlet) => o.id === id))
+        .map((id: string) => {
+          const outlet = outlets.find((o: Outlet) => o.id === id);
+          if (!outlet) {
+            console.log('Outlet not found for ID:', id);
+          }
+          return outlet;
+        })
         .filter((o): o is Outlet => o !== undefined);
       
-      console.log('Found outlets:', scheduleOutlets.length);
+      console.log('Found outlets:', scheduleOutlets.length, 'of', outletIdArray.length);
 
       if (!result[rep.id]) {
         result[rep.id] = {
