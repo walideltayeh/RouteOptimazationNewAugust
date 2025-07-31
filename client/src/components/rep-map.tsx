@@ -46,6 +46,7 @@ export function RepMap() {
   const [selectedReps, setSelectedReps] = useState<string[]>([]);
   const [open, setOpen] = useState(false);
   const [selectedDays, setSelectedDays] = useState<number[]>([0]); // 0 = Monday
+  const [selectedWeeks, setSelectedWeeks] = useState<number[]>([1, 3]); // Default to Week 1/3
   const [isMapLoaded, setIsMapLoaded] = useState(false);
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -71,24 +72,25 @@ export function RepMap() {
     refetchSchedules();
   }, []);
 
-  // Filter schedules for selected reps and days
+  // Filter schedules for selected reps, days, and weeks
   const filteredSchedules = useMemo(() => {
     console.log('Filtering schedules:', {
       totalSchedules: schedules.length,
       selectedReps,
       selectedDays,
+      selectedWeeks,
       firstSchedule: schedules[0]
     });
     
     const filtered = schedules.filter(schedule => 
       selectedReps.includes(schedule.repId) && 
       selectedDays.includes(schedule.dayOfWeek) &&
-      schedule.week === 1 // Show week 1 schedule
+      selectedWeeks.includes(schedule.week)
     );
     
     console.log('Filtered schedules:', filtered.length);
     return filtered;
-  }, [schedules, selectedReps, selectedDays]);
+  }, [schedules, selectedReps, selectedDays, selectedWeeks]);
 
   // Group outlets by rep and day for the selected days
   const repDayOutlets = useMemo(() => {
@@ -585,6 +587,28 @@ export function RepMap() {
               ))}
             </div>
           </div>
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Select Weeks</label>
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                variant={selectedWeeks.includes(1) && selectedWeeks.includes(3) ? "default" : "outline"}
+                onClick={() => setSelectedWeeks([1, 3])}
+                className="flex-1"
+              >
+                Week 1/3
+              </Button>
+              <Button
+                size="sm"
+                variant={selectedWeeks.includes(2) && selectedWeeks.includes(4) ? "default" : "outline"}
+                onClick={() => setSelectedWeeks([2, 4])}
+                className="flex-1"
+              >
+                Week 2/4
+              </Button>
+            </div>
+          </div>
         </div>
       </CardHeader>
       <CardContent className="flex-1 p-4">
@@ -605,7 +629,7 @@ export function RepMap() {
                         style={{ backgroundColor: dayData.color }}
                       />
                       <span className="text-xs truncate">
-                        {repData.rep.name} - {daysOfWeek[day]} - {dayData.outlets.length} outlets
+                        {repData.rep.name} - {daysOfWeek[day]} (Week {dayData.schedule.week}) - {dayData.outlets.length} outlets
                         {dayData.schedule.totalDistance && ` (${dayData.schedule.totalDistance.toFixed(1)}km)`}
                       </span>
                     </div>
