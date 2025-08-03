@@ -45,8 +45,8 @@ export function RepMap() {
   const map = useRef<mapboxgl.Map | null>(null);
   const [selectedReps, setSelectedReps] = useState<string[]>([]);
   const [open, setOpen] = useState(false);
-  const [selectedDays, setSelectedDays] = useState<number[]>([0]); // 0 = Monday
-  const [selectedWeeks, setSelectedWeeks] = useState<number[]>([1, 3]); // Default to Week 1/3
+  const [selectedDays, setSelectedDays] = useState<number[]>([]); // Default to no days selected
+  const [selectedWeeks, setSelectedWeeks] = useState<number[]>([]); // Default to no weeks selected
   const [isMapLoaded, setIsMapLoaded] = useState(false);
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -639,6 +639,15 @@ export function RepMap() {
       </CardHeader>
       <CardContent className="flex-1 p-4">
         <div ref={mapContainer} className="h-full min-h-[400px] rounded-lg overflow-hidden border" />
+
+        {/* Help message when nothing is selected */}
+        {selectedReps.length === 0 && (
+          <div className="mt-4 p-4 bg-gray-50 border border-gray-200 rounded-lg text-center">
+            <p className="text-sm text-gray-600">
+              Select reps, days, and weeks from the filters above to view their routes on the map
+            </p>
+          </div>
+        )}
 
         {/* Legend */}
         {selectedReps.length > 0 && (

@@ -84,6 +84,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       });
       queryClient.invalidateQueries({ queryKey: ["/api/reps"] });
       queryClient.invalidateQueries({ queryKey: ["/api/outlets"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/schedules"] });
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard/metrics"] });
     },
     onError: (error: Error) => {
