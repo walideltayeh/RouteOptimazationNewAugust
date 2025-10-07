@@ -283,11 +283,12 @@ export function optimizeClusterRoutes(cluster: Cluster, maxOutletsPerRoute: numb
   return routes;
 }
 
-// Capacitated K-Means implementation with strict 25-outlet enforcement
+// Flexible Capacitated K-Means implementation that allows cluster sizes within min/max range
 export function capacitatedKMeans(
   outlets: Outlet[],
   k: number,
-  capacity: number = 25,
+  minCapacity: number = 20,
+  maxCapacity: number = 30,
   maxIterations: number = 100
 ): Cluster[] {
   const points: Point[] = outlets.map(o => ({
@@ -296,14 +297,11 @@ export function capacitatedKMeans(
     id: o.id
   }));
 
-  // Ensure we have enough outlets
-  if (points.length < k * capacity) {
-    console.warn(`Not enough outlets (${points.length}) for ${k} clusters of ${capacity} each`);
-    k = Math.floor(points.length / capacity);
-  }
+  // Calculate actual number of clusters needed - account for max capacity
+  let actualK = Math.max(k, Math.ceil(points.length / maxCapacity));
 
   // Initialize centroids using k-means++
-  const centroids = initializeCentroidsKMeansPlusPlus(points, k);
+  const centroids = initializeCentroidsKMeansPlusPlus(points, actualK);
   let clusters: Cluster[] = centroids.map((centroid, i) => ({
     id: i,
     points: [],
@@ -311,10 +309,10 @@ export function capacitatedKMeans(
     radius: 0
   }));
 
-  // Phase 1: Initial assignment with strict capacity
+  // Phase 1: Initial assignment respecting max capacity
   const unassignedPoints = [...points];
   
-  for (let clusterIdx = 0; clusterIdx < k; clusterIdx++) {
+  for (let clusterIdx = 0; clusterIdx < actualK && unassignedPoints.length > 0; clusterIdx++) {
     const cluster = clusters[clusterIdx];
     
     // Sort unassigned points by distance to this cluster's centroid
@@ -324,15 +322,50 @@ export function capacitatedKMeans(
       return distA - distB;
     });
 
-    // Assign exactly 'capacity' points to this cluster
-    const assignCount = Math.min(capacity, unassignedPoints.length);
+    // Assign up to 'maxCapacity' points to this cluster
+    const assignCount = Math.min(maxCapacity, unassignedPoints.length);
     for (let i = 0; i < assignCount; i++) {
       cluster.points.push(unassignedPoints[0]);
       unassignedPoints.shift();
     }
   }
 
-  // Phase 2: Iterative refinement while maintaining capacity constraints
+  // Handle any remaining unassigned points by adding to clusters with capacity or creating new ones
+  if (unassignedPoints.length > 0) {
+    console.log(`Assigning ${unassignedPoints.length} remaining points`);
+    
+    for (const point of unassignedPoints) {
+      // Find nearest cluster that still has capacity
+      let nearestCluster: Cluster | null = null;
+      let nearestDist = Infinity;
+      
+      for (const cluster of clusters) {
+        if (cluster.points.length < maxCapacity) {
+          const dist = calculateDistance(point.lat, point.lng, cluster.centroid.lat, cluster.centroid.lng);
+          if (dist < nearestDist) {
+            nearestDist = dist;
+            nearestCluster = cluster;
+          }
+        }
+      }
+      
+      if (nearestCluster) {
+        nearestCluster.points.push(point);
+      } else {
+        // Create new cluster if all existing ones are at max capacity
+        const newCluster: Cluster = {
+          id: clusters.length,
+          points: [point],
+          centroid: { ...point },
+          radius: 0
+        };
+        clusters.push(newCluster);
+        console.log(`Created new cluster ${newCluster.id} for overflow outlet`);
+      }
+    }
+  }
+
+  // Phase 2: Iterative refinement
   let iteration = 0;
   let improved = true;
 
@@ -346,8 +379,8 @@ export function capacitatedKMeans(
         const cluster1 = clusters[i];
         const cluster2 = clusters[j];
 
-        // Skip if clusters don't have exactly 'capacity' points
-        if (cluster1.points.length !== capacity || cluster2.points.length !== capacity) {
+        // Skip empty clusters
+        if (cluster1.points.length === 0 || cluster2.points.length === 0) {
           continue;
         }
 
@@ -397,10 +430,13 @@ export function capacitatedKMeans(
     });
   }
 
-  // Final validation: ensure each cluster has exactly 'capacity' outlets
-  clusters = clusters.filter(c => c.points.length === capacity);
+  // Keep all clusters with points (no filtering by exact capacity)
+  clusters = clusters.filter(c => c.points.length > 0);
 
-  console.log(`Capacitated K-Means: ${clusters.length} clusters, each with ${capacity} outlets`);
+  console.log(`Capacitated K-Means: ${clusters.length} clusters with varying sizes`);
+  clusters.forEach((c, idx) => {
+    console.log(`  Cluster ${idx + 1}: ${c.points.length} points`);
+  });
   
   return clusters;
 }
@@ -501,11 +537,16 @@ function calculateRadius(points: Point[], centroid: Point): number {
 }
 
 // Main clustering algorithm combining all three approaches
-export function performAdvancedClustering(outlets: Outlet[], targetClusters: number): GeographicCluster[] {
-  console.log(`Starting advanced clustering for ${outlets.length} outlets targeting ${targetClusters} clusters`);
+export function performAdvancedClustering(
+  outlets: Outlet[], 
+  targetClusters: number, 
+  minVisitsPerDay: number = 25, 
+  maxVisitsPerDay: number = 30
+): GeographicCluster[] {
+  console.log(`Starting advanced clustering for ${outlets.length} outlets targeting ${targetClusters} clusters (${minVisitsPerDay}-${maxVisitsPerDay} outlets/zone)`);
 
-  // Calculate the exact number of clusters needed (each with 25 outlets)
-  const outletsPerZone = 25;
+  // Use maxVisitsPerDay as the target zone size
+  const outletsPerZone = maxVisitsPerDay;
   const exactClusters = Math.floor(outlets.length / outletsPerZone);
   const remainingOutlets = outlets.length % outletsPerZone;
   
@@ -524,11 +565,11 @@ export function performAdvancedClustering(outlets: Outlet[], targetClusters: num
       // Split large clusters using VRP
       const subRoutes = optimizeClusterRoutes(cluster, outletsPerZone);
       processedClusters.push(...subRoutes);
-    } else if (cluster.points.length < outletsPerZone) {
-      // Collect small clusters for merging
+    } else if (cluster.points.length < minVisitsPerDay) {
+      // Collect small clusters for merging (below minimum)
       smallClusters.push(cluster);
     } else {
-      // Keep clusters that are close to the target size
+      // Keep clusters that are within the acceptable range
       processedClusters.push(cluster);
     }
   }
@@ -554,44 +595,79 @@ export function performAdvancedClustering(outlets: Outlet[], targetClusters: num
 
   console.log(`After processing: ${processedClusters.length} clusters`);
 
-  // Step 3: Use Capacitated K-Means to get exactly the right number of clusters with 25 outlets each
-  const finalClusters = capacitatedKMeans(outlets, exactClusters, outletsPerZone);
+  // Step 3: Use Capacitated K-Means to get clusters within the min/max range
+  const finalClusters = capacitatedKMeans(outlets, exactClusters, minVisitsPerDay, maxVisitsPerDay);
   console.log(`Capacitated K-Means created ${finalClusters.length} final clusters`);
 
-  // Ensure each cluster has exactly 25 outlets (except possibly the last one)
+  // Accept clusters that are within the min/max range
   const result: GeographicCluster[] = [];
+  const rejectedOutlets: Outlet[] = [];
+  
   for (let i = 0; i < finalClusters.length; i++) {
     const cluster = finalClusters[i];
-    if (cluster.points.length === outletsPerZone || (i === finalClusters.length - 1 && remainingOutlets > 0)) {
+    const clusterSize = cluster.points.length;
+    const clusterOutlets = cluster.points.map(p => outlets.find(o => o.id === p.id)!).filter(o => o);
+    
+    // Accept if within range
+    if (clusterSize >= minVisitsPerDay && clusterSize <= maxVisitsPerDay) {
       result.push({
         id: cluster.id,
         centroid: { lat: cluster.centroid.lat, lng: cluster.centroid.lng },
-        outlets: cluster.points.map(p => outlets.find(o => o.id === p.id)!).filter(o => o),
+        outlets: clusterOutlets,
         radius: cluster.radius
       });
+    } else {
+      // Collect rejected outlets for redistribution
+      rejectedOutlets.push(...clusterOutlets);
     }
   }
 
-  // Handle remaining outlets
-  if (remainingOutlets > 0) {
-    const assignedOutletIds = new Set(result.flatMap(c => c.outlets.map(o => o.id)));
-    const unassignedOutlets = outlets.filter(o => !assignedOutletIds.has(o.id));
+  // Redistribute rejected outlets to nearest acceptable clusters or create new ones
+  if (rejectedOutlets.length > 0) {
+    console.log(`Redistributing ${rejectedOutlets.length} outlets from rejected clusters`);
     
-    if (unassignedOutlets.length > 0) {
-      const lastCluster = result[result.length - 1];
-      if (lastCluster) {
-        lastCluster.outlets.push(...unassignedOutlets);
+    for (const outlet of rejectedOutlets) {
+      // Find nearest cluster that can accommodate this outlet without exceeding max
+      let nearestCluster: GeographicCluster | null = null;
+      let nearestDist = Infinity;
+      
+      for (const cluster of result) {
+        if (cluster.outlets.length < maxVisitsPerDay) {
+          const dist = calculateDistance(
+            outlet.latitude, outlet.longitude,
+            cluster.centroid.lat, cluster.centroid.lng
+          );
+          if (dist < nearestDist) {
+            nearestDist = dist;
+            nearestCluster = cluster;
+          }
+        }
+      }
+      
+      if (nearestCluster) {
+        nearestCluster.outlets.push(outlet);
         // Recalculate centroid and radius
-        const points = lastCluster.outlets.map(o => ({ lat: o.latitude, lng: o.longitude, id: o.id }));
-        lastCluster.centroid = calculateCentroid(points);
-        lastCluster.radius = calculateRadius(points, lastCluster.centroid);
+        const points = nearestCluster.outlets.map(o => ({ lat: o.latitude, lng: o.longitude, id: o.id }));
+        const newCentroid = calculateCentroid(points);
+        nearestCluster.centroid = { lat: newCentroid.lat, lng: newCentroid.lng };
+        nearestCluster.radius = calculateRadius(points, newCentroid);
+      } else {
+        // Create new cluster if no existing cluster can accommodate
+        const lastCluster = result[result.length - 1];
+        if (lastCluster) {
+          lastCluster.outlets.push(outlet);
+          const points = lastCluster.outlets.map(o => ({ lat: o.latitude, lng: o.longitude, id: o.id }));
+          const newCentroid = calculateCentroid(points);
+          lastCluster.centroid = { lat: newCentroid.lat, lng: newCentroid.lng };
+          lastCluster.radius = calculateRadius(points, newCentroid);
+        }
       }
     }
   }
 
   console.log(`Final result: ${result.length} zones`);
   result.forEach((zone, idx) => {
-    console.log(`Zone ${idx + 1}: ${zone.outlets.length} outlets`);
+    console.log(`Zone ${idx + 1}: ${zone.outlets.length} outlets (target: ${minVisitsPerDay}-${maxVisitsPerDay})`);
   });
 
   return result;

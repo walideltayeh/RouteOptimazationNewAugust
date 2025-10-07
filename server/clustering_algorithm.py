@@ -133,29 +133,32 @@ def optimize_route_with_ortools(outlets, depot_index=0, max_outlets_per_day=25):
     return [list(range(i, min(i + max_outlets_per_day, len(outlets)))) 
             for i in range(0, len(outlets), max_outlets_per_day)]
 
-def capacitated_kmeans(outlets, n_clusters, cluster_capacity=25, max_iterations=100):
-    """Step 3: Capacitated K-Means to ensure clusters align with rep count"""
+def capacitated_kmeans(outlets, n_clusters, min_capacity=20, max_capacity=30, max_iterations=100):
+    """Flexible Capacitated K-Means that allows cluster sizes within min/max range"""
     coords = np.array([[o['latitude'], o['longitude']] for o in outlets])
     n_outlets = len(outlets)
     
+    # Calculate actual number of clusters needed - account for max capacity
+    actual_k = max(n_clusters, int(np.ceil(n_outlets / max_capacity)))
+    
     # Initialize centroids using K-means++
-    kmeans = KMeans(n_clusters=n_clusters, init='k-means++', n_init=1, max_iter=1)
+    kmeans = KMeans(n_clusters=actual_k, init='k-means++', n_init=1, max_iter=1)
     kmeans.fit(np.radians(coords))
     centroids = kmeans.cluster_centers_
     
     for iteration in range(max_iterations):
         # Calculate distances to centroids
-        distances = np.zeros((n_outlets, n_clusters))
+        distances = np.zeros((n_outlets, actual_k))
         for i in range(n_outlets):
-            for j in range(n_clusters):
+            for j in range(actual_k):
                 distances[i, j] = haversine_distance(
                     coords[i, 0], coords[i, 1],
                     np.degrees(centroids[j, 0]), np.degrees(centroids[j, 1])
                 )
         
-        # Assign outlets to clusters with capacity constraints
+        # Assign outlets to clusters with flexible capacity
         assignments = np.full(n_outlets, -1)
-        cluster_sizes = np.zeros(n_clusters, dtype=int)
+        cluster_sizes = np.zeros(actual_k, dtype=int)
         
         # Sort outlets by minimum distance to any centroid
         min_distances = np.min(distances, axis=1)
@@ -165,14 +168,52 @@ def capacitated_kmeans(outlets, n_clusters, cluster_capacity=25, max_iterations=
             # Find closest cluster with capacity
             sorted_clusters = np.argsort(distances[idx])
             for cluster_id in sorted_clusters:
-                if cluster_sizes[cluster_id] < cluster_capacity:
+                if cluster_sizes[cluster_id] < max_capacity:
                     assignments[idx] = cluster_id
                     cluster_sizes[cluster_id] += 1
                     break
         
+        # Handle any unassigned outlets (those that didn't fit due to capacity constraints)
+        unassigned_indices = np.where(assignments == -1)[0]
+        if len(unassigned_indices) > 0:
+            print(f"Handling {len(unassigned_indices)} overflow outlets", file=sys.stderr)
+            
+            for idx in unassigned_indices:
+                # Try to find a cluster that still has capacity
+                sorted_clusters = np.argsort(distances[idx])
+                assigned = False
+                
+                for cluster_id in sorted_clusters:
+                    if cluster_sizes[cluster_id] < max_capacity:
+                        assignments[idx] = cluster_id
+                        cluster_sizes[cluster_id] += 1
+                        assigned = True
+                        break
+                
+                # If still not assigned, create a new cluster
+                if not assigned:
+                    # Expand clusters array
+                    new_cluster_id = actual_k
+                    actual_k += 1
+                    
+                    # Add new row to distances and centroids
+                    new_centroid = coords[idx]
+                    new_distances = np.array([haversine_distance(
+                        coords[i, 0], coords[i, 1],
+                        new_centroid[0], new_centroid[1]
+                    ) for i in range(n_outlets)])
+                    distances = np.column_stack([distances, new_distances])
+                    
+                    # Assign to new cluster
+                    assignments[idx] = new_cluster_id
+                    cluster_sizes = np.append(cluster_sizes, 1)
+                    centroids = np.vstack([centroids, np.radians(new_centroid)])
+                    
+                    print(f"Created new cluster {new_cluster_id} for overflow outlet {idx}", file=sys.stderr)
+        
         # Update centroids
-        new_centroids = np.zeros_like(centroids)
-        for j in range(n_clusters):
+        new_centroids = np.zeros((len(centroids), 2))
+        for j in range(actual_k):
             cluster_outlets = coords[assignments == j]
             if len(cluster_outlets) > 0:
                 new_centroids[j] = np.radians(np.mean(cluster_outlets, axis=0))
@@ -185,12 +226,13 @@ def capacitated_kmeans(outlets, n_clusters, cluster_capacity=25, max_iterations=
         
         centroids = new_centroids
     
-    # Group outlets by cluster
+    # Group outlets by cluster - keep all clusters with points
     clusters = []
-    for j in range(n_clusters):
+    for j in range(actual_k):
         cluster_outlets = [outlets[i] for i in range(n_outlets) if assignments[i] == j]
         if cluster_outlets:
             clusters.append(cluster_outlets)
+            print(f"Cluster {j}: {len(cluster_outlets)} outlets", file=sys.stderr)
     
     return clusters
 
@@ -199,8 +241,13 @@ def main():
     input_data = json.loads(sys.stdin.read())
     outlets = input_data['outlets']
     target_zones = input_data['targetZones']
+    min_visits_per_day = input_data.get('minVisitsPerDay', 25)
+    max_visits_per_day = input_data.get('maxVisitsPerDay', 30)
     
-    print(f"Processing {len(outlets)} outlets into {target_zones} zones", file=sys.stderr)
+    # Use max_visits_per_day as the target cluster size
+    cluster_capacity = max_visits_per_day
+    
+    print(f"Processing {len(outlets)} outlets into {target_zones} zones (capacity: {cluster_capacity}, min: {min_visits_per_day})", file=sys.stderr)
     
     # Step 1: HDBSCAN for initial geographic clustering
     hdbscan_clusters, labels = perform_hdbscan_clustering(outlets, min_cluster_size=10, min_samples=3)
@@ -211,9 +258,9 @@ def main():
     for cluster_id, outlet_indices in hdbscan_clusters.items():
         cluster_outlets = [outlets[i] for i in outlet_indices]
         
-        if len(cluster_outlets) > 25:
+        if len(cluster_outlets) > cluster_capacity:
             # Use OR-Tools to optimize routes within this cluster
-            routes = optimize_route_with_ortools(cluster_outlets, max_outlets_per_day=25)
+            routes = optimize_route_with_ortools(cluster_outlets, max_outlets_per_day=cluster_capacity)
             for route in routes:
                 subcluster = [cluster_outlets[i] for i in route]
                 if subcluster:
@@ -225,9 +272,9 @@ def main():
     noise_outlets = [outlets[i] for i in range(len(outlets)) if labels[i] == -1]
     if noise_outlets:
         # Group noise points geographically
-        if len(noise_outlets) > 25:
-            n_noise_clusters = max(1, len(noise_outlets) // 25)
-            noise_clusters = capacitated_kmeans(noise_outlets, n_noise_clusters, cluster_capacity=25)
+        if len(noise_outlets) > max_visits_per_day:
+            n_noise_clusters = max(1, len(noise_outlets) // max_visits_per_day)
+            noise_clusters = capacitated_kmeans(noise_outlets, n_noise_clusters, min_capacity=min_visits_per_day, max_capacity=max_visits_per_day)
             optimized_subclusters.extend(noise_clusters)
         else:
             optimized_subclusters.append(noise_outlets)
@@ -239,13 +286,17 @@ def main():
     for subcluster in optimized_subclusters:
         all_outlets_flat.extend(subcluster)
     
-    final_clusters = capacitated_kmeans(all_outlets_flat, target_zones, cluster_capacity=25)
+    final_clusters = capacitated_kmeans(all_outlets_flat, target_zones, min_capacity=min_visits_per_day, max_capacity=max_visits_per_day)
     
-    # Format output
+    # Format output and filter clusters within min/max range
     result = []
+    rejected_outlets = []
+    
     for i, cluster_outlets in enumerate(final_clusters):
-        # Calculate cluster centroid
-        if cluster_outlets:
+        cluster_size = len(cluster_outlets)
+        
+        # Accept clusters within the min/max range
+        if cluster_size >= min_visits_per_day and cluster_size <= max_visits_per_day:
             centroid_lat = np.mean([o['latitude'] for o in cluster_outlets])
             centroid_lng = np.mean([o['longitude'] for o in cluster_outlets])
             
@@ -264,6 +315,55 @@ def main():
                 'centroid': {'lat': centroid_lat, 'lng': centroid_lng},
                 'radius': max_dist
             })
+        else:
+            # Collect rejected outlets for redistribution
+            rejected_outlets.extend(cluster_outlets)
+    
+    # Redistribute rejected outlets to nearest acceptable clusters
+    if rejected_outlets:
+        print(f"Redistributing {len(rejected_outlets)} outlets from rejected clusters", file=sys.stderr)
+        
+        for outlet in rejected_outlets:
+            # Find nearest cluster that can accommodate this outlet
+            nearest_cluster = None
+            nearest_dist = float('inf')
+            
+            for cluster in result:
+                if len(cluster['outlets']) < max_visits_per_day:
+                    dist = haversine_distance(
+                        outlet['latitude'], outlet['longitude'],
+                        cluster['centroid']['lat'], cluster['centroid']['lng']
+                    )
+                    if dist < nearest_dist:
+                        nearest_dist = dist
+                        nearest_cluster = cluster
+            
+            if nearest_cluster:
+                nearest_cluster['outlets'].append(outlet)
+                # Recalculate centroid and radius
+                centroid_lat = np.mean([o['latitude'] for o in nearest_cluster['outlets']])
+                centroid_lng = np.mean([o['longitude'] for o in nearest_cluster['outlets']])
+                nearest_cluster['centroid'] = {'lat': centroid_lat, 'lng': centroid_lng}
+                
+                max_dist = 0
+                for o in nearest_cluster['outlets']:
+                    dist = haversine_distance(o['latitude'], o['longitude'], centroid_lat, centroid_lng)
+                    max_dist = max(max_dist, dist)
+                nearest_cluster['radius'] = max_dist
+            elif result:
+                # Add to last cluster if no suitable cluster found
+                last_cluster = result[-1]
+                last_cluster['outlets'].append(outlet)
+                # Recalculate centroid and radius
+                centroid_lat = np.mean([o['latitude'] for o in last_cluster['outlets']])
+                centroid_lng = np.mean([o['longitude'] for o in last_cluster['outlets']])
+                last_cluster['centroid'] = {'lat': centroid_lat, 'lng': centroid_lng}
+                
+                max_dist = 0
+                for o in last_cluster['outlets']:
+                    dist = haversine_distance(o['latitude'], o['longitude'], centroid_lat, centroid_lng)
+                    max_dist = max(max_dist, dist)
+                last_cluster['radius'] = max_dist
     
     # Output result as JSON
     print(json.dumps(result))

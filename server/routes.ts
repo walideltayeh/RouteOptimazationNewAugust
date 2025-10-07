@@ -153,7 +153,12 @@ interface GeographicCluster {
   outlets: Outlet[];
 }
 
-async function performAdvancedClustering(outlets: Outlet[], targetZones: number): Promise<GeographicCluster[]> {
+async function performAdvancedClustering(
+  outlets: Outlet[], 
+  targetZones: number, 
+  minVisitsPerDay: number = 25, 
+  maxVisitsPerDay: number = 30
+): Promise<GeographicCluster[]> {
   console.log(`Using advanced clustering algorithm (HDBSCAN + OR-Tools + Capacitated K-Means)`);
   
   try {
@@ -165,7 +170,9 @@ async function performAdvancedClustering(outlets: Outlet[], targetZones: number)
         longitude: o.longitude,
         visitFrequency: o.visitFrequency
       })),
-      targetZones
+      targetZones,
+      minVisitsPerDay,
+      maxVisitsPerDay
     };
     
     // Call Python clustering algorithm
@@ -193,7 +200,7 @@ async function performAdvancedClustering(outlets: Outlet[], targetZones: number)
           console.error(`Python script failed with code ${code}`);
           console.error(errorOutput);
           // Fallback to original algorithm
-          resolve(performGeographicClustering(outlets, targetZones));
+          resolve(performGeographicClustering(outlets, targetZones, minVisitsPerDay, maxVisitsPerDay));
           return;
         }
         
@@ -215,37 +222,42 @@ async function performAdvancedClustering(outlets: Outlet[], targetZones: number)
           console.error('Failed to parse Python output:', error);
           console.error('Python stderr:', errorOutput);
           // Fallback to original algorithm
-          resolve(performGeographicClustering(outlets, targetZones));
+          resolve(performGeographicClustering(outlets, targetZones, minVisitsPerDay, maxVisitsPerDay));
         }
       });
     });
   } catch (error) {
     console.error('Failed to run advanced clustering:', error);
     // Fallback to original algorithm
-    return performGeographicClustering(outlets, targetZones);
+    return performGeographicClustering(outlets, targetZones, minVisitsPerDay, maxVisitsPerDay);
   }
 }
 
-function performGeographicClustering(outlets: Outlet[], targetRepCount: number): GeographicCluster[] {
+function performGeographicClustering(
+  outlets: Outlet[], 
+  targetRepCount: number, 
+  minVisitsPerDay: number = 25, 
+  maxVisitsPerDay: number = 30
+): GeographicCluster[] {
   if (outlets.length === 0) return [];
   
-  const targetClusterSize = 25;
+  const targetClusterSize = maxVisitsPerDay;
   
-  console.log(`Creating geographic clusters for ${outlets.length} outlets (strict ${targetClusterSize} outlets per cluster)`);
+  console.log(`Creating geographic clusters for ${outlets.length} outlets (target ${targetClusterSize} outlets per cluster, min ${minVisitsPerDay})`);
   
-  // Step 1: Create initial clusters of exactly 25 outlets each
-  const initialClusters = createExact25OutletClusters(outlets);
+  // Step 1: Create initial clusters of exactly maxVisitsPerDay outlets each
+  const initialClusters = createExact25OutletClusters(outlets, maxVisitsPerDay);
   
   // Step 2: Merge zones with ≤5 outlets with nearby zones
-  const finalClusters = mergeSmallZones(initialClusters);
+  const finalClusters = mergeSmallZones(initialClusters, minVisitsPerDay);
   
   console.log(`Created ${finalClusters.length} territories with strict size constraints`);
   return finalClusters;
 }
 
-// Create clusters of exactly 25 outlets each with geographic proximity
-function createExact25OutletClusters(outlets: Outlet[]): GeographicCluster[] {
-  const TARGET_SIZE = 25;
+// Create clusters of exactly targetSize outlets each with geographic proximity
+function createExact25OutletClusters(outlets: Outlet[], targetSize: number = 25): GeographicCluster[] {
+  const TARGET_SIZE = targetSize;
   const INITIAL_RADIUS = 2; // Start with 2km radius
   const RADIUS_INCREMENT = 0.5; // Increase by 0.5km each iteration
   const MAX_RADIUS = 20; // Maximum search radius
@@ -523,9 +535,12 @@ function selectKMeansPlusCentroids(outlets: Outlet[], k: number): { lat: number;
 }
 
 // Merge zones with ≤5 outlets with nearby zones
-function mergeSmallZones(clusters: GeographicCluster[]): GeographicCluster[] {
+function mergeSmallZones(clusters: GeographicCluster[], minOutlets: number = 5): GeographicCluster[] {
   let mergedClusters = [...clusters];
   let hasSmallZones = true;
+  
+  // Use a threshold based on minOutlets, but allow some flexibility for very small values
+  const mergeThreshold = Math.max(5, Math.floor(minOutlets * 0.5));
   
   while (hasSmallZones) {
     hasSmallZones = false;
@@ -537,7 +552,7 @@ function mergeSmallZones(clusters: GeographicCluster[]): GeographicCluster[] {
       
       const cluster = mergedClusters[i];
       
-      if (cluster.outlets.length <= 5) {
+      if (cluster.outlets.length <= mergeThreshold) {
         // Find nearest cluster that can accommodate these outlets
         let nearestIdx = -1;
         let nearestDist = Infinity;
@@ -1656,15 +1671,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Create territories based on geographic clusters (each cluster = one zone)
       console.log(`Creating zones based on geographic clustering for ${outlets.length} outlets`);
       
-      // Calculate target zones based on the required rep count
+      // Calculate target zones based on the required rep count and user's max visits per day
       const zonesPerRep = 10; // 5 zones in week 1, 5 zones in week 2
       const targetZones = Math.max(
-        Math.ceil(outlets.length / 25), // At least one zone per 25 outlets
+        Math.ceil(outlets.length / maxVisitsPerDay), // At least one zone per maxVisitsPerDay outlets
         finalRequiredReps * zonesPerRep // Or enough zones for all reps
       );
       
       // Perform advanced clustering using JavaScript implementation (HDBSCAN + VRP + Capacitated K-Means)
-      const advancedClusters = performAdvancedClusteringJS(outlets, targetZones);
+      const advancedClusters = performAdvancedClusteringJS(outlets, targetZones, minVisitsPerDay, maxVisitsPerDay);
       const clusters = advancedClusters.map(cluster => ({
         id: cluster.id,
         centroid: cluster.centroid,

@@ -155,5 +155,10 @@ Preferred communication style: Simple, everyday language.
 ✓ **Implemented Route Optimization Button**: Added "Optimize Routes" functionality to further optimize existing scheduled routes using TSP algorithms
 ✓ **Added Save and Export Functionality**: Implemented save routes and export to Excel features for finalized route schedules
 ✓ **Removed Feasibility Blocking**: App now works with any user-provided parameters (min visits, max visits, working days) without blocking execution due to feasibility checks
+✓ **Implemented Dynamic Zone Sizing**: Clustering algorithms now respect user's min/max outlet parameters instead of hardcoded values (October 2025)
+  - Updated TypeScript and Python clustering functions to accept minVisitsPerDay and maxVisitsPerDay
+  - Modified capacitatedKMeans to create zones within the specified range
+  - Ensures no outlets are lost and all clusters respect user-defined bounds
+  - Creates additional clusters when needed to prevent exceeding max capacity
 
 The application follows a monorepo structure with clear separation between client, server, and shared code, enabling efficient development and maintainable architecture for scaling route optimization operations with advanced AI capabilities.
