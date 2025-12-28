@@ -217,8 +217,104 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     const currentVfFilters = { ...vfFilters };
     const currentSelectedZones = [...selectedZones];
 
+    // Helper to filter outlets by VF
+    const filterByVf = (outletList: typeof outlets) => {
+      return outletList.filter(outlet => {
+        const vf = outlet.visitFrequency;
+        if (vf === 1 && !currentVfFilters.vf1) return false;
+        if (vf === 2 && !currentVfFilters.vf2) return false;
+        if (vf === 4 && !currentVfFilters.vf4) return false;
+        return true;
+      });
+    };
+
     if (viewMode === 'cluster') {
-      renderClusterView();
+      // Render cluster view with VF filtering
+      const filteredTerritoryGroups: Record<string, typeof outlets> = {};
+      
+      Object.entries(territoryGroups).forEach(([territory, territoryOutlets]) => {
+        const filtered = filterByVf(territoryOutlets);
+        if (filtered.length > 0) {
+          filteredTerritoryGroups[territory] = filtered;
+        }
+      });
+
+      const territoryFeatures = Object.entries(filteredTerritoryGroups).map(([territory, filteredOutlets], index) => {
+        const avgLat = filteredOutlets.reduce((sum, o) => sum + o.latitude, 0) / filteredOutlets.length;
+        const avgLng = filteredOutlets.reduce((sum, o) => sum + o.longitude, 0) / filteredOutlets.length;
+        
+        return {
+          type: 'Feature' as const,
+          properties: {
+            territory,
+            count: filteredOutlets.length,
+            color: TERRITORY_COLORS[index % TERRITORY_COLORS.length],
+            outlets: JSON.stringify(filteredOutlets.slice(0, 10).map(o => ({ id: o.id, name: o.name })))
+          },
+          geometry: {
+            type: 'Point' as const,
+            coordinates: [avgLng, avgLat]
+          }
+        };
+      });
+
+      try {
+        mapInstance.addSource('territories', {
+          type: 'geojson',
+          data: {
+            type: 'FeatureCollection',
+            features: territoryFeatures
+          }
+        });
+
+        mapInstance.addLayer({
+          id: 'territory-clusters',
+          type: 'circle',
+          source: 'territories',
+          paint: {
+            'circle-radius': {
+              type: 'exponential',
+              property: 'count',
+              stops: [[1, 15], [10, 25], [50, 35], [100, 45]]
+            },
+            'circle-color': ['get', 'color'],
+            'circle-opacity': 0.8,
+            'circle-stroke-width': 2,
+            'circle-stroke-color': '#ffffff'
+          }
+        });
+
+        mapInstance.addLayer({
+          id: 'territory-labels',
+          type: 'symbol',
+          source: 'territories',
+          layout: {
+            'text-field': ['get', 'count'],
+            'text-font': ['Open Sans Semibold', 'Arial Unicode MS Bold'],
+            'text-size': 12,
+            'text-offset': [0, 0],
+            'text-anchor': 'center'
+          },
+          paint: {
+            'text-color': '#ffffff'
+          }
+        });
+
+        // Attach cluster click handler
+        attachClusterClickHandler();
+
+        if (territoryFeatures.length > 0) {
+          const coordinates = territoryFeatures.map(f => f.geometry.coordinates);
+          const bounds = coordinates.reduce((bounds, coord) => {
+            return bounds.extend(coord as [number, number]);
+          }, new mapboxgl.LngLatBounds(coordinates[0] as [number, number], coordinates[0] as [number, number]));
+          mapInstance.fitBounds(bounds, { padding: 50 });
+        }
+
+        console.log(`Successfully rendered ${territoryFeatures.length} territory clusters (VF filtered)`);
+      } catch (error) {
+        console.error('Error adding territory clusters:', error);
+      }
     } else {
       // Inline rendering for individual view to ensure fresh filter state
       let outletsToShow = currentSelectedZones.length > 0
@@ -357,6 +453,65 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
               const outletName = target.dataset.outletName || '';
               const outletTerritory = target.dataset.outletTerritory || '';
               setEditingOutlet({ id: outletId, name: outletName, territory: outletTerritory });
+              popup.remove();
+            });
+          }
+        }, 0);
+      }
+    });
+  };
+
+  // Helper function to attach click handler for cluster view
+  const attachClusterClickHandler = () => {
+    if (!map.current) return;
+    
+    map.current.on('click', 'territory-clusters', (e) => {
+      if (e.features && e.features[0]) {
+        const feature = e.features[0];
+        const properties = feature.properties as any;
+        const { territory, count, outlets } = properties;
+        
+        const escapeHtml = (str: string) => str
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#039;');
+        
+        const safeTerritory = escapeHtml(territory || '');
+        let outletList: { id: string; name: string }[] = [];
+        try {
+          outletList = JSON.parse(outlets || '[]');
+        } catch { outletList = []; }
+        
+        const outletNames = outletList.map(o => escapeHtml(o.name)).join('<br>');
+        
+        const popup = new mapboxgl.Popup()
+          .setLngLat(e.lngLat)
+          .setHTML(`
+            <div class="p-2">
+              <h3 class="font-bold text-sm mb-1">${safeTerritory}</h3>
+              <p class="text-xs text-gray-600 mb-2">${count} outlets</p>
+              <div class="text-xs text-gray-500 max-h-32 overflow-y-auto">
+                ${outletNames}${outletList.length < count ? '<br>...' : ''}
+              </div>
+              <button 
+                data-territory="${safeTerritory}"
+                class="view-zone-btn mt-2 w-full px-2 py-1 bg-blue-500 text-white text-xs rounded hover:bg-blue-600 cursor-pointer">
+                View Individual Outlets
+              </button>
+            </div>
+          `)
+          .addTo(map.current!);
+        
+        setTimeout(() => {
+          const btn = document.querySelector('.view-zone-btn');
+          if (btn) {
+            btn.addEventListener('click', (evt) => {
+              const target = evt.target as HTMLElement;
+              const territoryName = target.dataset.territory || '';
+              setSelectedZones([territoryName]);
+              setViewMode('individual');
               popup.remove();
             });
           }
