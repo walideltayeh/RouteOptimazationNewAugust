@@ -241,13 +241,23 @@ export default function VehicleDetailPage() {
             </Card>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <Card data-testid="card-monthly-km">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <Card data-testid="card-projected-monthly-km" className="border-l-4 border-l-blue-500">
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-medium text-gray-500">This Month</CardTitle>
+                <CardTitle className="text-sm font-medium text-gray-500">Projected Monthly KM</CardTitle>
               </CardHeader>
               <CardContent>
-                <p className="text-2xl font-bold text-blue-600">{overview.monthlyKm.toLocaleString()} km</p>
+                <p className="text-2xl font-bold text-blue-600">{overview.projectedMonthlyKm.toLocaleString()} km</p>
+                <p className="text-xs text-gray-500 mt-1">Based on rep's scheduled routes</p>
+              </CardContent>
+            </Card>
+
+            <Card data-testid="card-monthly-km">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-medium text-gray-500">Actual This Month</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-2xl font-bold text-green-600">{overview.monthlyKm.toLocaleString()} km</p>
               </CardContent>
             </Card>
 

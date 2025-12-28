@@ -347,6 +347,7 @@ export interface VehicleDashboardOverview {
   lifetimeKm: number;
   monthlyKm: number;
   quarterlyKm: number;
+  projectedMonthlyKm: number;
   status: string;
 }
 

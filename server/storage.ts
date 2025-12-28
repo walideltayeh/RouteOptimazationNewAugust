@@ -760,6 +760,41 @@ export class MemStorage implements IStorage {
     const forecasts = await this.getMaintenanceForecasts(vehicleId);
     const snapshots = await this.getVehicleMileageSnapshots(vehicleId);
     const allVehicles = await this.getVehicles();
+    const allOutlets = await this.getOutlets();
+
+    // Calculate projected monthly KM from rep's scheduled routes
+    let projectedMonthlyKmFromRoutes = 0;
+    if (assignedRep) {
+      const repSchedules = await this.getSchedulesByRepId(assignedRep.id);
+      const weeklyKmByWeek: Record<number, number> = {};
+      
+      for (const schedule of repSchedules) {
+        const outletIds = schedule.outletIds as string[];
+        const scheduleOutlets = outletIds
+          .map(id => allOutlets.find(o => o.id === id))
+          .filter(Boolean);
+
+        let routeDistance = 0;
+        for (let i = 0; i < scheduleOutlets.length - 1; i++) {
+          const from = scheduleOutlets[i];
+          const to = scheduleOutlets[i + 1];
+          if (from?.latitude && from?.longitude && to?.latitude && to?.longitude) {
+            routeDistance += this.haversineDistance(
+              from.latitude, from.longitude,
+              to.latitude, to.longitude
+            );
+          }
+        }
+        weeklyKmByWeek[schedule.week] = (weeklyKmByWeek[schedule.week] || 0) + routeDistance;
+      }
+
+      // Calculate average weekly KM across all scheduled weeks, then multiply by 4 for monthly
+      const weeks = Object.keys(weeklyKmByWeek);
+      const avgWeeklyKm = weeks.length > 0 
+        ? Object.values(weeklyKmByWeek).reduce((sum, km) => sum + km, 0) / weeks.length 
+        : 0;
+      projectedMonthlyKmFromRoutes = avgWeeklyKm * 4;
+    }
 
     // Calculate lifetime KM
     const lifetimeKm = vehicle.currentMileage - vehicle.startingMileage;
@@ -978,6 +1013,7 @@ export class MemStorage implements IStorage {
         lifetimeKm,
         monthlyKm,
         quarterlyKm,
+        projectedMonthlyKm: Math.round(projectedMonthlyKmFromRoutes),
         status: vehicle.status
       },
       usage: {
@@ -1011,6 +1047,17 @@ export class MemStorage implements IStorage {
     this.optimizationRuns.clear();
     this.maintenanceForecasts.clear();
     this.vehicleMileageSnapshots.clear();
+  }
+
+  private haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
+    const R = 6371;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
   }
 }
 
