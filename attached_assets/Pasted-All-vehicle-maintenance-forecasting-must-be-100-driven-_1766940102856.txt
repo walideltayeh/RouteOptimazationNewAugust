@@ -1,0 +1,191 @@
+All vehicle maintenance forecasting must be 100% driven by kilometers traveled (KM).
+
+KM is calculated from:
+
+The Rep’s actual route distance
+
+The number of working days
+
+The Rep’s assigned schedule and zones
+
+KM traveled is the primary and mandatory working variable for all vehicle health, performance, and maintenance predictions.
+
+Rep Route–Based KM Calculation
+Route KM Engine
+
+For each assigned Rep, the system must:
+
+Calculate daily route KM based on:
+
+Planned routes (optimized routes)
+
+Actual driven routes (if GPS is available)
+
+Multiply daily route KM by:
+
+Number of working days per week
+
+Assigned visit frequency (VF1 / VF2 / VF4 if applicable)
+
+KM Aggregation Levels
+
+The system must maintain:
+
+Daily KM
+
+Weekly KM
+
+Monthly KM
+
+Annual KM
+
+Lifetime KM per vehicle
+
+Once a Rep is assigned to a vehicle:
+
+All Rep route KM is automatically attributed to that vehicle
+
+Reassignment resets attribution from the reassignment date onward (no historical overwrite)
+
+Vehicle Maintenance Forecast Engine
+Maintenance Logic (KM-Based)
+
+Maintenance forecasting must be calculated using:
+
+Current total KM
+
+Average KM per working day
+
+Projected future KM (based on schedule)
+
+The system should dynamically predict:
+
+Oil change intervals
+
+Tire rotation & replacement
+
+Brake service
+
+Major servicing milestones
+
+Risk of accelerated wear due to heavy usage
+
+Predictive Timeline
+
+For each maintenance item, the system must display:
+
+Remaining KM
+
+Estimated calendar date
+
+Confidence level (based on route stability)
+
+Vehicle Intelligence Dashboard (Per Vehicle)
+
+Each vehicle must have its own dedicated dashboard, updated in real time.
+
+1. Vehicle Overview
+
+Plate / Vehicle ID
+
+Assigned Rep
+
+Vehicle type
+
+Current odometer
+
+Lifetime KM
+
+Average KM per working day
+
+2. Route & Usage Analytics
+
+Daily route KM
+
+Monthly usage trend
+
+Usage intensity classification:
+
+Light
+
+Normal
+
+Heavy
+
+Deviation alerts (KM spike detection)
+
+3. Maintenance Forecast
+
+Last maintenance (date & KM)
+
+Upcoming maintenance items
+
+KM remaining per service
+
+Estimated service dates
+
+Overdue indicators
+
+4. Predictive Risk Scoring (Added Feature)
+
+Vehicle health score (0–100)
+
+Wear acceleration indicator
+
+Risk flag for breakdown probability
+
+5. Smart Recommendations (Added Feature)
+
+System-generated actions such as:
+
+“Advance oil change due to heavy route load”
+
+“Consider rotating vehicle between reps”
+
+“Reduce route density to extend service interval”
+
+Alerts & Automation (Enhanced)
+Automatic Alerts
+
+Triggered when:
+
+Maintenance is within X KM
+
+KM usage exceeds expected thresholds
+
+Rep route intensity changes significantly
+
+Auto-Generated Maintenance Plan (New)
+
+Monthly maintenance outlook
+
+Cost projection per vehicle
+
+Fleet-wide maintenance heatmap
+
+Data & Control Features (New)
+Manual Overrides
+
+Ability to log manual maintenance
+
+Adjust odometer if needed (audit logged)
+
+Override maintenance rules per vehicle type
+
+Vehicle Reassignment Impact Analysis (New)
+
+When reassigning a vehicle:
+
+System simulates future KM impact
+
+Shows maintenance acceleration or delay
+
+Warns if reassignment increases risk
+
+Output & Scalability
+
+Export vehicle maintenance reports (PDF / CSV)
+
+Fleet-level dashboard (future-ready)
+
+API-ready structure for GPS or telematics integration

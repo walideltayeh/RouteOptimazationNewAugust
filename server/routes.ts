@@ -2623,6 +2623,256 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Calculate route KM for a rep from their schedule
+  app.get("/api/reps/:id/route-km", async (req, res) => {
+    try {
+      const repId = req.params.id;
+      const rep = await storage.getRep(repId);
+      if (!rep) {
+        return res.status(404).json({ message: "Rep not found" });
+      }
+
+      const schedules = await storage.getSchedulesByRepId(repId);
+      const outlets = await storage.getOutlets();
+      
+      // Calculate route distances for each scheduled day
+      let totalWeeklyKm = 0;
+      const dailyRouteKm: { week: number; day: number; km: number; outlets: number }[] = [];
+
+      // Group schedules by week
+      const weeklyKmByWeek: Record<number, number> = {};
+      
+      for (const schedule of schedules) {
+        const outletIds = schedule.outletIds as string[];
+        const scheduleOutlets = outletIds
+          .map(id => outlets.find(o => o.id === id))
+          .filter(Boolean) as typeof outlets;
+
+        // Calculate route distance using simple haversine
+        let routeDistance = 0;
+        for (let i = 0; i < scheduleOutlets.length - 1; i++) {
+          const from = scheduleOutlets[i];
+          const to = scheduleOutlets[i + 1];
+          if (from.latitude && from.longitude && to.latitude && to.longitude) {
+            routeDistance += haversineDistance(
+              from.latitude, from.longitude,
+              to.latitude, to.longitude
+            );
+          }
+        }
+
+        dailyRouteKm.push({
+          week: schedule.week,
+          day: schedule.dayOfWeek,
+          km: routeDistance,
+          outlets: outletIds.length
+        });
+
+        // Accumulate KM per week
+        weeklyKmByWeek[schedule.week] = (weeklyKmByWeek[schedule.week] || 0) + routeDistance;
+      }
+
+      // Calculate total weekly KM as average across all weeks
+      const weeks = Object.keys(weeklyKmByWeek);
+      const totalMonthlyKm = Object.values(weeklyKmByWeek).reduce((sum, km) => sum + km, 0);
+      totalWeeklyKm = weeks.length > 0 ? totalMonthlyKm / weeks.length : 0;
+
+      const workingDays = rep.workingDaysPerWeek || 5;
+      const avgDailyKm = workingDays > 0 ? totalWeeklyKm / workingDays : 0;
+      const monthlyProjectedKm = totalMonthlyKm;
+      const annualProjectedKm = monthlyProjectedKm * 12;
+
+      res.json({
+        repId,
+        repName: rep.name,
+        dailyRouteKm,
+        totalWeeklyKm,
+        avgDailyKm,
+        monthlyProjectedKm,
+        annualProjectedKm,
+        workingDays
+      });
+    } catch (error) {
+      console.error("Route KM calculation error:", error);
+      res.status(500).json({ message: "Failed to calculate route KM" });
+    }
+  });
+
+  // Vehicle reassignment impact analysis
+  app.post("/api/vehicles/:id/reassignment-impact", async (req, res) => {
+    try {
+      const vehicleId = req.params.id;
+      const { toRepId } = req.body;
+
+      const vehicle = await storage.getVehicle(vehicleId);
+      if (!vehicle) {
+        return res.status(404).json({ message: "Vehicle not found" });
+      }
+
+      const reps = await storage.getReps();
+      const fromRep = vehicle.assignedRepId ? reps.find(r => r.id === vehicle.assignedRepId) : null;
+      const toRep = reps.find(r => r.id === toRepId);
+
+      if (!toRep) {
+        return res.status(404).json({ message: "Target rep not found" });
+      }
+
+      // Get current vehicle usage
+      const usageRecords = await storage.getVehicleUsageRecords(vehicleId);
+      const now = new Date();
+      const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      const recentUsage = usageRecords.filter(r => new Date(r.tripDate) >= monthAgo);
+      const currentAvgDailyKm = recentUsage.length > 0 
+        ? recentUsage.reduce((sum, r) => sum + r.distance, 0) / 30 
+        : 0;
+
+      // Calculate projected KM for new rep's routes
+      const schedules = await storage.getSchedulesByRepId(toRepId);
+      const outlets = await storage.getOutlets();
+      const weeklyKmByWeek: Record<number, number> = {};
+
+      for (const schedule of schedules) {
+        const outletIds = schedule.outletIds as string[];
+        const scheduleOutlets = outletIds
+          .map(id => outlets.find(o => o.id === id))
+          .filter(Boolean) as typeof outlets;
+
+        let routeDistance = 0;
+        for (let i = 0; i < scheduleOutlets.length - 1; i++) {
+          const from = scheduleOutlets[i];
+          const to = scheduleOutlets[i + 1];
+          if (from.latitude && from.longitude && to.latitude && to.longitude) {
+            routeDistance += haversineDistance(
+              from.latitude, from.longitude,
+              to.latitude, to.longitude
+            );
+          }
+        }
+
+        weeklyKmByWeek[schedule.week] = (weeklyKmByWeek[schedule.week] || 0) + routeDistance;
+      }
+
+      // Calculate average weekly KM across all weeks
+      const weeks = Object.keys(weeklyKmByWeek);
+      const projectedWeeklyKm = weeks.length > 0 
+        ? Object.values(weeklyKmByWeek).reduce((sum, km) => sum + km, 0) / weeks.length 
+        : 0;
+
+      const workingDays = toRep.workingDaysPerWeek || 5;
+      const projectedAvgDailyKm = workingDays > 0 ? projectedWeeklyKm / workingDays : 0;
+      const kmChangePercent = currentAvgDailyKm > 0 
+        ? ((projectedAvgDailyKm - currentAvgDailyKm) / currentAvgDailyKm) * 100 
+        : 0;
+
+      // Determine maintenance impact
+      let maintenanceImpact: 'accelerated' | 'normal' | 'delayed' = 'normal';
+      if (kmChangePercent > 20) maintenanceImpact = 'accelerated';
+      else if (kmChangePercent < -20) maintenanceImpact = 'delayed';
+
+      // Get affected maintenance items
+      const forecasts = await storage.getMaintenanceForecasts(vehicleId);
+      const affectedMaintenanceItems = forecasts.map(f => {
+        const currentDaysRemaining = currentAvgDailyKm > 0 ? f.remainingKm / currentAvgDailyKm : null;
+        const projectedDaysRemaining = projectedAvgDailyKm > 0 ? f.remainingKm / projectedAvgDailyKm : null;
+        
+        return {
+          maintenanceType: f.maintenanceType,
+          currentDueDate: currentDaysRemaining ? new Date(now.getTime() + currentDaysRemaining * 24 * 60 * 60 * 1000) : null,
+          projectedDueDate: projectedDaysRemaining ? new Date(now.getTime() + projectedDaysRemaining * 24 * 60 * 60 * 1000) : null,
+          daysDifference: (currentDaysRemaining && projectedDaysRemaining) 
+            ? Math.round(currentDaysRemaining - projectedDaysRemaining) 
+            : 0
+        };
+      });
+
+      // Risk assessment
+      let riskLevel: 'low' | 'medium' | 'high' = 'low';
+      let riskReason = 'Reassignment has minimal impact on vehicle maintenance schedule.';
+      
+      if (Math.abs(kmChangePercent) > 50) {
+        riskLevel = 'high';
+        riskReason = `Significant KM change (${kmChangePercent > 0 ? '+' : ''}${kmChangePercent.toFixed(0)}%) may significantly impact maintenance schedules.`;
+      } else if (Math.abs(kmChangePercent) > 20) {
+        riskLevel = 'medium';
+        riskReason = `Moderate KM change (${kmChangePercent > 0 ? '+' : ''}${kmChangePercent.toFixed(0)}%) will adjust maintenance timing.`;
+      }
+
+      res.json({
+        fromRepId: vehicle.assignedRepId,
+        toRepId,
+        fromRepName: fromRep?.name || null,
+        toRepName: toRep.name,
+        currentAvgDailyKm,
+        projectedAvgDailyKm,
+        kmChangePercent,
+        maintenanceImpact,
+        affectedMaintenanceItems,
+        riskAssessment: {
+          level: riskLevel,
+          reason: riskReason
+        }
+      });
+    } catch (error) {
+      console.error("Reassignment impact analysis error:", error);
+      res.status(500).json({ message: "Failed to analyze reassignment impact" });
+    }
+  });
+
+  // Adjust odometer with audit logging
+  app.post("/api/vehicles/:id/adjust-odometer", async (req, res) => {
+    try {
+      const vehicleId = req.params.id;
+      const { newMileage, reason, adjustedBy, notes } = req.body;
+
+      const vehicle = await storage.getVehicle(vehicleId);
+      if (!vehicle) {
+        return res.status(404).json({ message: "Vehicle not found" });
+      }
+
+      const previousMileage = vehicle.currentMileage;
+
+      // Update vehicle mileage
+      await storage.updateVehicle(vehicleId, { currentMileage: newMileage });
+
+      // Create audit trail record as a special usage record
+      await storage.createVehicleUsageRecord({
+        vehicleId,
+        repId: adjustedBy || 'system',
+        scheduleId: null,
+        tripDate: new Date(),
+        startMileage: previousMileage,
+        endMileage: newMileage,
+        distance: newMileage - previousMileage
+      });
+      
+      res.json({
+        success: true,
+        previousMileage,
+        newMileage,
+        adjustmentReason: reason,
+        adjustedBy,
+        notes,
+        timestamp: new Date(),
+        auditTrailCreated: true
+      });
+    } catch (error) {
+      console.error("Odometer adjustment error:", error);
+      res.status(500).json({ message: "Failed to adjust odometer" });
+    }
+  });
+
   const httpServer = createServer(app);
   return httpServer;
+}
+
+// Haversine distance function
+function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371; // Earth's radius in km
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
 }

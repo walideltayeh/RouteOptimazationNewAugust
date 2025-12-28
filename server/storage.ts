@@ -734,6 +734,7 @@ export class MemStorage implements IStorage {
       dailyKm: insertSnapshot.dailyKm || 0,
       weeklyKm: insertSnapshot.weeklyKm || 0,
       monthlyKm: insertSnapshot.monthlyKm || 0,
+      annualKm: insertSnapshot.annualKm || 0,
       lifetimeKm: insertSnapshot.lifetimeKm || 0,
       avgDailyKm: insertSnapshot.avgDailyKm || 0,
       routeIntensity: insertSnapshot.routeIntensity || 'light'
@@ -879,6 +880,92 @@ export class MemStorage implements IStorage {
       });
     }
 
+    // Calculate health score (0-100)
+    const vehicleAge = now.getFullYear() - vehicle.year;
+    const maxExpectedMileage = 200000; // Expected max lifetime mileage
+    const mileageHealth = Math.max(0, 100 - (vehicle.currentMileage / maxExpectedMileage * 100));
+    
+    // Maintenance compliance - based on overdue items
+    const maintenanceCompliance = overdueItems.length === 0 ? 100 : 
+      Math.max(0, 100 - (overdueItems.length * 20));
+    
+    // Usage pattern score - penalize heavy usage
+    const usagePattern = routeIntensity === 'heavy' ? 60 : 
+      routeIntensity === 'medium' ? 80 : 100;
+    
+    // Age condition
+    const ageCondition = Math.max(0, 100 - (vehicleAge * 10));
+    
+    // Weighted health score
+    const healthScore = Math.round(
+      mileageHealth * 0.3 + 
+      maintenanceCompliance * 0.35 + 
+      usagePattern * 0.15 + 
+      ageCondition * 0.2
+    );
+
+    // Calculate wear acceleration factor
+    const wearAccelerationFactor = routeIntensity === 'heavy' ? 1.5 : 
+      routeIntensity === 'medium' ? 1.2 : 1.0;
+
+    // Calculate breakdown probability
+    const breakdownProbability = Math.max(0, Math.min(100, 
+      (100 - healthScore) * 0.5 + 
+      overdueItems.length * 10 + 
+      (vehicleAge > 5 ? (vehicleAge - 5) * 5 : 0)
+    ));
+
+    // Determine risk level
+    let riskLevel: 'low' | 'medium' | 'high' | 'critical' = 'low';
+    if (breakdownProbability > 60 || overdueItems.length > 2) riskLevel = 'critical';
+    else if (breakdownProbability > 40 || overdueItems.length > 1) riskLevel = 'high';
+    else if (breakdownProbability > 20 || overdueItems.length > 0) riskLevel = 'medium';
+
+    // Usage intensity classification
+    const usageIntensity: 'light' | 'normal' | 'heavy' = 
+      routeIntensity === 'heavy' ? 'heavy' : 
+      routeIntensity === 'medium' ? 'normal' : 'light';
+
+    const healthScoreData = {
+      healthScore,
+      wearAccelerationFactor,
+      breakdownProbability,
+      riskLevel,
+      usageIntensity,
+      healthFactors: {
+        mileageHealth: Math.round(mileageHealth),
+        maintenanceCompliance,
+        usagePattern,
+        ageCondition
+      }
+    };
+
+    // Generate monthly maintenance plan (simplified - next month projection)
+    const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    const safeAvgDailyKm = avgDailyKm > 0 ? avgDailyKm : 50; // Default to 50 km/day if no usage data
+    const projectedMonthlyKm = safeAvgDailyKm * 22; // 22 working days
+    const scheduledItems = forecasts
+      .filter(f => f.remainingKm < projectedMonthlyKm)
+      .map(f => {
+        const daysUntilDue = safeAvgDailyKm > 0 ? Math.max(0, f.remainingKm / safeAvgDailyKm) : 30;
+        return {
+          maintenanceType: f.maintenanceType,
+          estimatedDate: f.estimatedDueDate || new Date(now.getTime() + daysUntilDue * 24 * 60 * 60 * 1000),
+          estimatedCost: f.maintenanceType === 'oil_change' ? 50 : 
+            f.maintenanceType === 'tire_replacement' ? 400 : 
+            f.maintenanceType === 'brake_service' ? 200 : 100,
+          priority: f.severity
+        };
+      });
+
+    const monthlyPlan = {
+      month: nextMonth.toISOString().slice(0, 7),
+      projectedKm: projectedMonthlyKm,
+      estimatedCost: scheduledItems.reduce((sum, item) => sum + item.estimatedCost, 0),
+      scheduledItems,
+      status: 'planned' as const
+    };
+
     return {
       overview: {
         vehicleId: vehicle.id,
@@ -910,8 +997,10 @@ export class MemStorage implements IStorage {
         daysToNextService,
         kmToNextService
       },
+      healthScore: healthScoreData,
       recommendations,
-      alerts
+      alerts,
+      monthlyPlan: scheduledItems.length > 0 ? monthlyPlan : null
     };
   }
 

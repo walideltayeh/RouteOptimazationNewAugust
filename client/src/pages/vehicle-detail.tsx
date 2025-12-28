@@ -20,7 +20,12 @@ import {
   AlertCircle,
   Download,
   RefreshCw,
-  User
+  User,
+  Heart,
+  ShieldAlert,
+  Zap,
+  Target,
+  DollarSign
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
@@ -167,11 +172,20 @@ export default function VehicleDetailPage() {
       </div>
 
       <Tabs defaultValue="overview" className="space-y-4">
-        <TabsList className="grid w-full grid-cols-5">
+        <TabsList className="grid w-full grid-cols-6">
           <TabsTrigger value="overview" data-testid="tab-overview">Overview</TabsTrigger>
-          <TabsTrigger value="usage" data-testid="tab-usage">Usage & Performance</TabsTrigger>
-          <TabsTrigger value="maintenance" data-testid="tab-maintenance">Maintenance Status</TabsTrigger>
-          <TabsTrigger value="recommendations" data-testid="tab-recommendations">Recommendations</TabsTrigger>
+          <TabsTrigger value="health" data-testid="tab-health">
+            Health Score
+            {dashboard.healthScore && dashboard.healthScore.riskLevel !== 'low' && (
+              <Badge className={`ml-2 ${
+                dashboard.healthScore.riskLevel === 'critical' ? 'bg-red-500' : 
+                dashboard.healthScore.riskLevel === 'high' ? 'bg-orange-500' : 'bg-yellow-500'
+              } text-white`}>!</Badge>
+            )}
+          </TabsTrigger>
+          <TabsTrigger value="usage" data-testid="tab-usage">Usage</TabsTrigger>
+          <TabsTrigger value="maintenance" data-testid="tab-maintenance">Maintenance</TabsTrigger>
+          <TabsTrigger value="recommendations" data-testid="tab-recommendations">Plan</TabsTrigger>
           <TabsTrigger value="alerts" data-testid="tab-alerts">
             Alerts
             {alerts.length > 0 && (
@@ -257,6 +271,190 @@ export default function VehicleDetailPage() {
               </CardContent>
             </Card>
           </div>
+        </TabsContent>
+
+        <TabsContent value="health" className="space-y-4">
+          {dashboard.healthScore && (
+            <>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                <Card data-testid="card-health-score" className={`border-l-4 ${
+                  dashboard.healthScore.healthScore >= 80 ? 'border-l-green-500' :
+                  dashboard.healthScore.healthScore >= 60 ? 'border-l-yellow-500' :
+                  dashboard.healthScore.healthScore >= 40 ? 'border-l-orange-500' : 'border-l-red-500'
+                }`}>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium text-gray-500 flex items-center gap-2">
+                      <Heart className="h-4 w-4" />
+                      Vehicle Health Score
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="flex items-center gap-4">
+                      <div className={`text-4xl font-bold ${
+                        dashboard.healthScore.healthScore >= 80 ? 'text-green-600' :
+                        dashboard.healthScore.healthScore >= 60 ? 'text-yellow-600' :
+                        dashboard.healthScore.healthScore >= 40 ? 'text-orange-600' : 'text-red-600'
+                      }`}>
+                        {dashboard.healthScore.healthScore}
+                      </div>
+                      <div className="text-sm text-gray-500">/ 100</div>
+                    </div>
+                    <Progress 
+                      value={dashboard.healthScore.healthScore} 
+                      className={`h-2 mt-2 ${
+                        dashboard.healthScore.healthScore >= 80 ? '[&>div]:bg-green-500' :
+                        dashboard.healthScore.healthScore >= 60 ? '[&>div]:bg-yellow-500' :
+                        dashboard.healthScore.healthScore >= 40 ? '[&>div]:bg-orange-500' : '[&>div]:bg-red-500'
+                      }`}
+                    />
+                  </CardContent>
+                </Card>
+
+                <Card data-testid="card-risk-level">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium text-gray-500 flex items-center gap-2">
+                      <ShieldAlert className="h-4 w-4" />
+                      Risk Level
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <Badge className={`text-lg px-3 py-1 ${
+                      dashboard.healthScore.riskLevel === 'low' ? 'bg-green-100 text-green-800' :
+                      dashboard.healthScore.riskLevel === 'medium' ? 'bg-yellow-100 text-yellow-800' :
+                      dashboard.healthScore.riskLevel === 'high' ? 'bg-orange-100 text-orange-800' : 'bg-red-100 text-red-800'
+                    }`}>
+                      {dashboard.healthScore.riskLevel.toUpperCase()}
+                    </Badge>
+                  </CardContent>
+                </Card>
+
+                <Card data-testid="card-breakdown-probability">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium text-gray-500 flex items-center gap-2">
+                      <Zap className="h-4 w-4" />
+                      Breakdown Probability
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <p className={`text-2xl font-bold ${
+                      dashboard.healthScore.breakdownProbability <= 20 ? 'text-green-600' :
+                      dashboard.healthScore.breakdownProbability <= 40 ? 'text-yellow-600' :
+                      dashboard.healthScore.breakdownProbability <= 60 ? 'text-orange-600' : 'text-red-600'
+                    }`}>
+                      {dashboard.healthScore.breakdownProbability.toFixed(1)}%
+                    </p>
+                    <p className="text-sm text-gray-500">Probability of issues</p>
+                  </CardContent>
+                </Card>
+
+                <Card data-testid="card-wear-acceleration">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium text-gray-500 flex items-center gap-2">
+                      <Target className="h-4 w-4" />
+                      Wear Acceleration
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <p className={`text-2xl font-bold ${
+                      dashboard.healthScore.wearAccelerationFactor <= 1.0 ? 'text-green-600' :
+                      dashboard.healthScore.wearAccelerationFactor <= 1.2 ? 'text-yellow-600' : 'text-red-600'
+                    }`}>
+                      {dashboard.healthScore.wearAccelerationFactor.toFixed(1)}x
+                    </p>
+                    <p className="text-sm text-gray-500">
+                      {dashboard.healthScore.wearAccelerationFactor <= 1.0 ? 'Normal wear' :
+                       dashboard.healthScore.wearAccelerationFactor <= 1.2 ? 'Slightly accelerated' : 'Heavy wear'}
+                    </p>
+                  </CardContent>
+                </Card>
+              </div>
+
+              <Card data-testid="card-health-factors">
+                <CardHeader>
+                  <CardTitle>Health Factor Breakdown</CardTitle>
+                  <CardDescription>Components contributing to overall vehicle health score</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-sm">
+                        <span>Mileage Health</span>
+                        <span className="font-medium">{dashboard.healthScore.healthFactors.mileageHealth}%</span>
+                      </div>
+                      <Progress value={dashboard.healthScore.healthFactors.mileageHealth} className="h-2" />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-sm">
+                        <span>Maintenance Compliance</span>
+                        <span className="font-medium">{dashboard.healthScore.healthFactors.maintenanceCompliance}%</span>
+                      </div>
+                      <Progress value={dashboard.healthScore.healthFactors.maintenanceCompliance} className="h-2" />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-sm">
+                        <span>Usage Pattern</span>
+                        <span className="font-medium">{dashboard.healthScore.healthFactors.usagePattern}%</span>
+                      </div>
+                      <Progress value={dashboard.healthScore.healthFactors.usagePattern} className="h-2" />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-sm">
+                        <span>Age Condition</span>
+                        <span className="font-medium">{dashboard.healthScore.healthFactors.ageCondition}%</span>
+                      </div>
+                      <Progress value={dashboard.healthScore.healthFactors.ageCondition} className="h-2" />
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {dashboard.monthlyPlan && (
+                <Card data-testid="card-monthly-plan">
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <DollarSign className="h-5 w-5" />
+                      Monthly Maintenance Plan
+                    </CardTitle>
+                    <CardDescription>Projected maintenance for {dashboard.monthlyPlan.month}</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                      <div className="bg-blue-50 p-4 rounded-lg">
+                        <p className="text-sm text-blue-600">Projected KM</p>
+                        <p className="text-xl font-bold text-blue-800">{dashboard.monthlyPlan.projectedKm.toLocaleString()} km</p>
+                      </div>
+                      <div className="bg-green-50 p-4 rounded-lg">
+                        <p className="text-sm text-green-600">Estimated Cost</p>
+                        <p className="text-xl font-bold text-green-800">${dashboard.monthlyPlan.estimatedCost.toFixed(2)}</p>
+                      </div>
+                      <div className="bg-purple-50 p-4 rounded-lg">
+                        <p className="text-sm text-purple-600">Scheduled Items</p>
+                        <p className="text-xl font-bold text-purple-800">{dashboard.monthlyPlan.scheduledItems.length}</p>
+                      </div>
+                    </div>
+                    {dashboard.monthlyPlan.scheduledItems.length > 0 && (
+                      <div className="space-y-2">
+                        {dashboard.monthlyPlan.scheduledItems.map((item, idx) => (
+                          <div key={idx} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                            <div>
+                              <p className="font-medium">{item.maintenanceType.replace('_', ' ')}</p>
+                              <p className="text-sm text-gray-500">
+                                Est. {new Date(item.estimatedDate).toLocaleDateString()}
+                              </p>
+                            </div>
+                            <div className="text-right">
+                              <p className="font-medium">${item.estimatedCost}</p>
+                              {getSeverityBadge(item.priority)}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
+            </>
+          )}
         </TabsContent>
 
         <TabsContent value="usage" className="space-y-4">

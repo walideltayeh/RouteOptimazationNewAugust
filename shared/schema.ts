@@ -136,9 +136,78 @@ export const vehicleMileageSnapshots = pgTable("vehicle_mileage_snapshots", {
   dailyKm: real("daily_km").notNull().default(0),
   weeklyKm: real("weekly_km").notNull().default(0),
   monthlyKm: real("monthly_km").notNull().default(0),
+  annualKm: real("annual_km").notNull().default(0),
   lifetimeKm: real("lifetime_km").notNull().default(0),
   avgDailyKm: real("avg_daily_km").notNull().default(0),
   routeIntensity: text("route_intensity").notNull().default("light"), // light, medium, heavy
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// Vehicle health metrics (predictive risk scoring)
+export const vehicleHealthMetrics = pgTable("vehicle_health_metrics", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  vehicleId: varchar("vehicle_id").notNull(),
+  healthScore: real("health_score").notNull().default(100), // 0-100
+  wearAccelerationFactor: real("wear_acceleration_factor").notNull().default(1.0), // 1.0 = normal, >1.0 = accelerated
+  breakdownProbability: real("breakdown_probability").notNull().default(0), // 0-100%
+  riskLevel: text("risk_level").notNull().default("low"), // low, medium, high, critical
+  usageIntensity: text("usage_intensity").notNull().default("normal"), // light, normal, heavy
+  lastCalculatedAt: timestamp("last_calculated_at").defaultNow(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// Smart recommendations (system-generated actions)
+export const vehicleSmartRecommendations = pgTable("vehicle_smart_recommendations", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  vehicleId: varchar("vehicle_id").notNull(),
+  recommendationType: text("recommendation_type").notNull(), // advance_maintenance, rotate_vehicle, reduce_route_density, adjust_schedule
+  priority: text("priority").notNull().default("medium"), // low, medium, high, urgent
+  title: text("title").notNull(),
+  description: text("description").notNull(),
+  reason: text("reason").notNull(),
+  estimatedImpact: text("estimated_impact"), // e.g., "Extends service interval by 500km"
+  actionRequired: boolean("action_required").notNull().default(true),
+  isCompleted: boolean("is_completed").notNull().default(false),
+  completedAt: timestamp("completed_at"),
+  expiresAt: timestamp("expires_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// Odometer adjustments with audit logging
+export const odometerAdjustments = pgTable("odometer_adjustments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  vehicleId: varchar("vehicle_id").notNull(),
+  previousMileage: real("previous_mileage").notNull(),
+  newMileage: real("new_mileage").notNull(),
+  adjustmentReason: text("adjustment_reason").notNull(),
+  adjustedBy: text("adjusted_by").notNull(), // user or system identifier
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// Monthly maintenance plan (auto-generated)
+export const monthlyMaintenancePlans = pgTable("monthly_maintenance_plans", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  vehicleId: varchar("vehicle_id").notNull(),
+  planMonth: date("plan_month").notNull(), // First day of the month
+  projectedKm: real("projected_km").notNull(),
+  scheduledMaintenanceItems: jsonb("scheduled_maintenance_items").notNull(), // Array of maintenance items
+  estimatedCost: real("estimated_cost").notNull().default(0),
+  status: text("status").notNull().default("planned"), // planned, in_progress, completed
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// Vehicle reassignment history (impact analysis)
+export const vehicleReassignmentHistory = pgTable("vehicle_reassignment_history", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  vehicleId: varchar("vehicle_id").notNull(),
+  fromRepId: varchar("from_rep_id"),
+  toRepId: varchar("to_rep_id"),
+  reassignmentDate: timestamp("reassignment_date").notNull(),
+  previousAvgDailyKm: real("previous_avg_daily_km"),
+  projectedAvgDailyKm: real("projected_avg_daily_km"),
+  maintenanceImpact: text("maintenance_impact"), // accelerated, normal, delayed
+  riskAssessment: text("risk_assessment"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -194,6 +263,32 @@ export const insertVehicleMileageSnapshotSchema = createInsertSchema(vehicleMile
   createdAt: true,
 });
 
+export const insertVehicleHealthMetricsSchema = createInsertSchema(vehicleHealthMetrics).omit({
+  id: true,
+  createdAt: true,
+  lastCalculatedAt: true,
+});
+
+export const insertSmartRecommendationSchema = createInsertSchema(vehicleSmartRecommendations).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertOdometerAdjustmentSchema = createInsertSchema(odometerAdjustments).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertMonthlyMaintenancePlanSchema = createInsertSchema(monthlyMaintenancePlans).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertVehicleReassignmentHistorySchema = createInsertSchema(vehicleReassignmentHistory).omit({
+  id: true,
+  createdAt: true,
+});
+
 // Types
 export type InsertOutlet = z.infer<typeof insertOutletSchema>;
 export type Outlet = typeof outlets.$inferSelect;
@@ -224,6 +319,21 @@ export type MaintenanceForecast = typeof maintenanceForecasts.$inferSelect;
 
 export type InsertVehicleMileageSnapshot = z.infer<typeof insertVehicleMileageSnapshotSchema>;
 export type VehicleMileageSnapshot = typeof vehicleMileageSnapshots.$inferSelect;
+
+export type InsertVehicleHealthMetrics = z.infer<typeof insertVehicleHealthMetricsSchema>;
+export type VehicleHealthMetrics = typeof vehicleHealthMetrics.$inferSelect;
+
+export type InsertSmartRecommendation = z.infer<typeof insertSmartRecommendationSchema>;
+export type SmartRecommendation = typeof vehicleSmartRecommendations.$inferSelect;
+
+export type InsertOdometerAdjustment = z.infer<typeof insertOdometerAdjustmentSchema>;
+export type OdometerAdjustment = typeof odometerAdjustments.$inferSelect;
+
+export type InsertMonthlyMaintenancePlan = z.infer<typeof insertMonthlyMaintenancePlanSchema>;
+export type MonthlyMaintenancePlan = typeof monthlyMaintenancePlans.$inferSelect;
+
+export type InsertVehicleReassignmentHistory = z.infer<typeof insertVehicleReassignmentHistorySchema>;
+export type VehicleReassignmentHistory = typeof vehicleReassignmentHistory.$inferSelect;
 
 // Vehicle Dashboard Types
 export interface VehicleDashboardOverview {
@@ -279,12 +389,65 @@ export interface VehicleDashboardAlert {
   isRead: boolean;
 }
 
+// Vehicle Health Score interface
+export interface VehicleHealthScoreData {
+  healthScore: number; // 0-100
+  wearAccelerationFactor: number; // 1.0 = normal, >1.0 = accelerated
+  breakdownProbability: number; // 0-100%
+  riskLevel: 'low' | 'medium' | 'high' | 'critical';
+  usageIntensity: 'light' | 'normal' | 'heavy';
+  healthFactors: {
+    mileageHealth: number;
+    maintenanceCompliance: number;
+    usagePattern: number;
+    ageCondition: number;
+  };
+}
+
+// Reassignment impact analysis interface
+export interface VehicleReassignmentImpact {
+  fromRepId: string | null;
+  toRepId: string;
+  fromRepName: string | null;
+  toRepName: string;
+  currentAvgDailyKm: number;
+  projectedAvgDailyKm: number;
+  kmChangePercent: number;
+  maintenanceImpact: 'accelerated' | 'normal' | 'delayed';
+  affectedMaintenanceItems: {
+    maintenanceType: string;
+    currentDueDate: Date | null;
+    projectedDueDate: Date | null;
+    daysDifference: number;
+  }[];
+  riskAssessment: {
+    level: 'low' | 'medium' | 'high';
+    reason: string;
+  };
+}
+
+// Monthly maintenance plan interface
+export interface MonthlyMaintenancePlanData {
+  month: string;
+  projectedKm: number;
+  estimatedCost: number;
+  scheduledItems: {
+    maintenanceType: string;
+    estimatedDate: Date;
+    estimatedCost: number;
+    priority: string;
+  }[];
+  status: 'planned' | 'in_progress' | 'completed';
+}
+
 export interface VehicleFullDashboard {
   overview: VehicleDashboardOverview;
   usage: VehicleUsageMetrics;
   maintenance: VehicleMaintenanceStatus;
+  healthScore: VehicleHealthScoreData;
   recommendations: VehicleRecommendation[];
   alerts: VehicleDashboardAlert[];
+  monthlyPlan: MonthlyMaintenancePlanData | null;
 }
 
 // Analytics types
