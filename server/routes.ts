@@ -1323,7 +1323,7 @@ function generateWeeklySchedules(rep: Rep, outlets: Outlet[]): InsertSchedule[] 
   return schedules;
 }
 
-import { generateScheduleExcel } from './export';
+import { generateScheduleExcel, generateVehicleSummaryExcel } from './export';
 
 export async function registerRoutes(app: Express): Promise<Server> {
   
@@ -2268,6 +2268,358 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Schedule generation error:", error);
       res.status(500).json({ message: "Failed to generate schedule" });
+    }
+  });
+
+  // ============= VEHICLE DASHBOARD & MAINTENANCE FORECASTING =============
+
+  // Get vehicle dashboard with all analytics
+  app.get("/api/vehicles/:id/dashboard", async (req, res) => {
+    try {
+      const dashboard = await storage.getVehicleDashboard(req.params.id);
+      if (!dashboard) {
+        return res.status(404).json({ message: "Vehicle not found" });
+      }
+      res.json(dashboard);
+    } catch (error) {
+      console.error("Vehicle dashboard error:", error);
+      res.status(500).json({ message: "Failed to fetch vehicle dashboard" });
+    }
+  });
+
+  // Calculate and update maintenance forecasts for a vehicle
+  app.post("/api/vehicles/:id/calculate-forecasts", async (req, res) => {
+    try {
+      const vehicleId = req.params.id;
+      const vehicle = await storage.getVehicle(vehicleId);
+      if (!vehicle) {
+        return res.status(404).json({ message: "Vehicle not found" });
+      }
+
+      // Get maintenance policies and history
+      const policies = await storage.getMaintenancePolicies();
+      const maintenanceRecords = await storage.getVehicleMaintenanceRecords(vehicleId);
+      const usageRecords = await storage.getVehicleUsageRecords(vehicleId);
+
+      // Clear existing forecasts
+      await storage.deleteMaintenanceForecastsByVehicle(vehicleId);
+
+      // Calculate average daily KM from usage records
+      let avgDailyKm = 50; // Default estimate
+      if (usageRecords.length > 0) {
+        const totalKm = usageRecords.reduce((sum, r) => sum + r.distance, 0);
+        const days = Math.ceil((Date.now() - new Date(usageRecords[0].tripDate).getTime()) / (24 * 60 * 60 * 1000));
+        avgDailyKm = totalKm / Math.max(days, 1);
+      }
+
+      const forecasts = [];
+
+      for (const policy of policies.filter(p => p.isActive)) {
+        // Find last maintenance of this type
+        const lastMaintenance = maintenanceRecords
+          .filter(r => r.maintenanceType === policy.maintenanceType)
+          .sort((a, b) => new Date(b.serviceDate).getTime() - new Date(a.serviceDate).getTime())[0];
+
+        let dueMileage: number;
+        let kmSinceLastService: number;
+
+        if (lastMaintenance) {
+          dueMileage = lastMaintenance.mileageAtService + policy.intervalKm;
+          kmSinceLastService = vehicle.currentMileage - lastMaintenance.mileageAtService;
+        } else {
+          // No record - assume due based on starting mileage
+          dueMileage = vehicle.startingMileage + policy.intervalKm;
+          kmSinceLastService = vehicle.currentMileage - vehicle.startingMileage;
+        }
+
+        const remainingKm = dueMileage - vehicle.currentMileage;
+        const remainingDays = avgDailyKm > 0 ? Math.ceil(remainingKm / avgDailyKm) : null;
+        const estimatedDueDate = remainingDays ? new Date(Date.now() + remainingDays * 24 * 60 * 60 * 1000) : null;
+
+        // Determine severity and status
+        let severity: string;
+        let status: string;
+
+        if (remainingKm < 0) {
+          status = 'overdue';
+          severity = Math.abs(remainingKm) >= policy.criticalThresholdKm ? 'critical' : 'high';
+        } else if (remainingKm <= policy.warningThresholdKm) {
+          status = 'due';
+          severity = remainingKm <= policy.warningThresholdKm / 2 ? 'high' : 'medium';
+        } else {
+          status = 'upcoming';
+          severity = 'low';
+        }
+
+        // Generate recommendation
+        const recommendation = remainingKm < 0
+          ? `URGENT: ${policy.name} is overdue by ${Math.abs(remainingKm).toFixed(0)} km. Schedule immediately.`
+          : remainingKm <= policy.warningThresholdKm
+          ? `${policy.name} due soon. ${remainingKm.toFixed(0)} km remaining.`
+          : `${policy.name} scheduled in ${remainingKm.toFixed(0)} km (approx. ${remainingDays || '?'} days).`;
+
+        const forecast = await storage.createMaintenanceForecast({
+          vehicleId,
+          policyId: policy.id,
+          maintenanceType: policy.maintenanceType,
+          currentMileage: vehicle.currentMileage,
+          dueMileage,
+          estimatedDueDate,
+          remainingKm,
+          remainingDays,
+          severity,
+          status,
+          recommendation
+        });
+
+        forecasts.push(forecast);
+      }
+
+      res.json({
+        success: true,
+        vehicleId,
+        forecastsGenerated: forecasts.length,
+        forecasts
+      });
+    } catch (error) {
+      console.error("Forecast calculation error:", error);
+      res.status(500).json({ message: "Failed to calculate maintenance forecasts" });
+    }
+  });
+
+  // Get maintenance policies
+  app.get("/api/maintenance-policies", async (_req, res) => {
+    try {
+      const policies = await storage.getMaintenancePolicies();
+      res.json(policies);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch maintenance policies" });
+    }
+  });
+
+  // Update maintenance policy
+  app.patch("/api/maintenance-policies/:id", async (req, res) => {
+    try {
+      const policy = await storage.updateMaintenancePolicy(req.params.id, req.body);
+      if (!policy) {
+        return res.status(404).json({ message: "Policy not found" });
+      }
+      res.json(policy);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update maintenance policy" });
+    }
+  });
+
+  // Get vehicle forecasts
+  app.get("/api/vehicles/:id/forecasts", async (req, res) => {
+    try {
+      const forecasts = await storage.getMaintenanceForecasts(req.params.id);
+      res.json(forecasts);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch forecasts" });
+    }
+  });
+
+  // Export vehicle summary to Excel
+  app.get("/api/vehicles/:id/export", async (req, res) => {
+    try {
+      const vehicleId = req.params.id;
+      const vehicle = await storage.getVehicle(vehicleId);
+      if (!vehicle) {
+        return res.status(404).json({ message: "Vehicle not found" });
+      }
+
+      const reps = await storage.getReps();
+      const assignedRep = reps.find(r => r.id === vehicle.assignedRepId);
+      const forecasts = await storage.getMaintenanceForecasts(vehicleId);
+      const maintenanceHistory = await storage.getVehicleMaintenanceRecords(vehicleId);
+      const mileageSnapshots = await storage.getVehicleMileageSnapshots(vehicleId);
+
+      const latestSnapshot = mileageSnapshots.sort((a, b) => 
+        new Date(b.snapshotDate).getTime() - new Date(a.snapshotDate).getTime()
+      )[0];
+
+      const exportData = {
+        vehicle: {
+          plateNumber: vehicle.plateNumber,
+          model: vehicle.model,
+          year: vehicle.year,
+          currentMileage: vehicle.currentMileage,
+          startingMileage: vehicle.startingMileage,
+          status: vehicle.status,
+          assignedRepName: assignedRep?.name
+        },
+        usage: {
+          dailyKm: latestSnapshot?.dailyKm || 0,
+          weeklyKm: latestSnapshot?.weeklyKm || 0,
+          monthlyKm: latestSnapshot?.monthlyKm || 0,
+          lifetimeKm: latestSnapshot?.lifetimeKm || vehicle.currentMileage - vehicle.startingMileage,
+          avgDailyKm: latestSnapshot?.avgDailyKm || 0,
+          routeIntensity: latestSnapshot?.routeIntensity || 'light'
+        },
+        forecasts: forecasts.map(f => ({
+          maintenanceType: f.maintenanceType,
+          dueMileage: f.dueMileage,
+          remainingKm: f.remainingKm,
+          status: f.status,
+          severity: f.severity,
+          recommendation: f.recommendation || ''
+        })),
+        maintenanceHistory: maintenanceHistory.map(h => ({
+          serviceDate: h.serviceDate.toISOString(),
+          maintenanceType: h.maintenanceType,
+          mileageAtService: h.mileageAtService,
+          cost: h.cost || undefined,
+          notes: h.notes || undefined
+        }))
+      };
+
+      const buffer = generateVehicleSummaryExcel(exportData);
+      
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="vehicle_${vehicle.plateNumber}_summary.xlsx"`);
+      res.send(buffer);
+    } catch (error) {
+      console.error("Vehicle export error:", error);
+      res.status(500).json({ message: "Failed to export vehicle summary" });
+    }
+  });
+
+  // Record route usage (KM accumulation from rep routes)
+  app.post("/api/vehicles/:id/record-usage", async (req, res) => {
+    try {
+      const vehicleId = req.params.id;
+      const { repId, scheduleId, distance, tripDate } = req.body;
+
+      const vehicle = await storage.getVehicle(vehicleId);
+      if (!vehicle) {
+        return res.status(404).json({ message: "Vehicle not found" });
+      }
+
+      const startMileage = vehicle.currentMileage;
+      const endMileage = startMileage + distance;
+
+      // Create usage record
+      const usageRecord = await storage.createVehicleUsageRecord({
+        vehicleId,
+        repId,
+        scheduleId: scheduleId || null,
+        tripDate: new Date(tripDate || Date.now()),
+        startMileage,
+        endMileage,
+        distance
+      });
+
+      // Update vehicle mileage (already done in createVehicleUsageRecord)
+      
+      // Create daily mileage snapshot
+      const today = new Date().toISOString().split('T')[0];
+      const existingSnapshots = await storage.getVehicleMileageSnapshots(vehicleId);
+      const todaySnapshot = existingSnapshots.find(s => s.snapshotDate === today);
+      
+      if (!todaySnapshot) {
+        // Calculate aggregated values
+        const usageRecords = await storage.getVehicleUsageRecords(vehicleId);
+        const now = new Date();
+        const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+        const dailyKm = distance;
+        const weeklyKm = usageRecords
+          .filter(r => new Date(r.tripDate) >= weekAgo)
+          .reduce((sum, r) => sum + r.distance, 0);
+        const monthlyKm = usageRecords
+          .filter(r => new Date(r.tripDate) >= monthAgo)
+          .reduce((sum, r) => sum + r.distance, 0);
+        const lifetimeKm = endMileage - vehicle.startingMileage;
+        const avgDailyKm = monthlyKm / 30;
+
+        let routeIntensity: 'light' | 'medium' | 'heavy' = 'light';
+        if (avgDailyKm > 150) routeIntensity = 'heavy';
+        else if (avgDailyKm > 75) routeIntensity = 'medium';
+
+        await storage.createVehicleMileageSnapshot({
+          vehicleId,
+          snapshotDate: today,
+          dailyKm,
+          weeklyKm,
+          monthlyKm,
+          lifetimeKm,
+          avgDailyKm,
+          routeIntensity
+        });
+      }
+
+      res.json({
+        success: true,
+        usageRecord,
+        newMileage: endMileage
+      });
+    } catch (error) {
+      console.error("Usage recording error:", error);
+      res.status(500).json({ message: "Failed to record vehicle usage" });
+    }
+  });
+
+  // Assign rep to vehicle (triggers KM accumulation link)
+  app.post("/api/vehicles/:id/assign-rep", async (req, res) => {
+    try {
+      const { repId } = req.body;
+      const vehicleId = req.params.id;
+
+      // Update vehicle with assigned rep
+      const vehicle = await storage.updateVehicle(vehicleId, { assignedRepId: repId });
+      if (!vehicle) {
+        return res.status(404).json({ message: "Vehicle not found" });
+      }
+
+      // Update rep with vehicle assignment
+      if (repId) {
+        await storage.updateRep(repId, { vehicleId });
+      }
+
+      // Trigger initial forecast calculation
+      const policies = await storage.getMaintenancePolicies();
+      const maintenanceRecords = await storage.getVehicleMaintenanceRecords(vehicleId);
+
+      // Clear existing forecasts
+      await storage.deleteMaintenanceForecastsByVehicle(vehicleId);
+
+      // Generate initial forecasts
+      for (const policy of policies.filter(p => p.isActive)) {
+        const lastMaintenance = maintenanceRecords
+          .filter(r => r.maintenanceType === policy.maintenanceType)
+          .sort((a, b) => new Date(b.serviceDate).getTime() - new Date(a.serviceDate).getTime())[0];
+
+        const dueMileage = lastMaintenance 
+          ? lastMaintenance.mileageAtService + policy.intervalKm
+          : vehicle.startingMileage + policy.intervalKm;
+
+        const remainingKm = dueMileage - vehicle.currentMileage;
+        const severity = remainingKm < 0 ? 'critical' : remainingKm < policy.warningThresholdKm ? 'medium' : 'low';
+        const status = remainingKm < 0 ? 'overdue' : remainingKm < policy.warningThresholdKm ? 'due' : 'upcoming';
+
+        await storage.createMaintenanceForecast({
+          vehicleId,
+          policyId: policy.id,
+          maintenanceType: policy.maintenanceType,
+          currentMileage: vehicle.currentMileage,
+          dueMileage,
+          remainingKm,
+          severity,
+          status,
+          recommendation: `${policy.name}: ${remainingKm.toFixed(0)} km until next service`
+        });
+      }
+
+      res.json({
+        success: true,
+        vehicle,
+        message: `Rep assigned to vehicle. Maintenance forecasts generated.`
+      });
+    } catch (error) {
+      console.error("Rep assignment error:", error);
+      res.status(500).json({ message: "Failed to assign rep to vehicle" });
     }
   });
 

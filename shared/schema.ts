@@ -96,6 +96,52 @@ export const vehicleUsageRecords = pgTable("vehicle_usage_records", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+// Maintenance policies (configurable thresholds)
+export const maintenancePolicies = pgTable("maintenance_policies", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(), // e.g., "Oil Change", "Tire Replacement"
+  maintenanceType: text("maintenance_type").notNull(), // oil_change, tire_change, brake_service, general_service
+  intervalKm: real("interval_km").notNull(), // KM between services
+  intervalDays: integer("interval_days"), // Days between services (optional)
+  warningThresholdKm: real("warning_threshold_km").notNull(), // KM before due to trigger warning
+  warningThresholdDays: integer("warning_threshold_days"), // Days before due to trigger warning
+  criticalThresholdKm: real("critical_threshold_km").notNull(), // KM overdue to trigger critical alert
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// Maintenance forecasts (predicted upcoming maintenance)
+export const maintenanceForecasts = pgTable("maintenance_forecasts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  vehicleId: varchar("vehicle_id").notNull(),
+  policyId: varchar("policy_id"),
+  maintenanceType: text("maintenance_type").notNull(),
+  currentMileage: real("current_mileage").notNull(),
+  dueMileage: real("due_mileage").notNull(),
+  estimatedDueDate: timestamp("estimated_due_date"),
+  remainingKm: real("remaining_km").notNull(),
+  remainingDays: integer("remaining_days"),
+  severity: text("severity").notNull().default("low"), // low, medium, high, critical
+  status: text("status").notNull().default("upcoming"), // upcoming, due, overdue
+  recommendation: text("recommendation"),
+  lastCalculatedAt: timestamp("last_calculated_at").defaultNow(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// Mileage snapshots (aggregated KM data)
+export const vehicleMileageSnapshots = pgTable("vehicle_mileage_snapshots", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  vehicleId: varchar("vehicle_id").notNull(),
+  snapshotDate: date("snapshot_date").notNull(),
+  dailyKm: real("daily_km").notNull().default(0),
+  weeklyKm: real("weekly_km").notNull().default(0),
+  monthlyKm: real("monthly_km").notNull().default(0),
+  lifetimeKm: real("lifetime_km").notNull().default(0),
+  avgDailyKm: real("avg_daily_km").notNull().default(0),
+  routeIntensity: text("route_intensity").notNull().default("light"), // light, medium, heavy
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
 // Insert schemas
 export const insertOutletSchema = createInsertSchema(outlets).omit({
   id: true,
@@ -132,6 +178,22 @@ export const insertVehicleUsageSchema = createInsertSchema(vehicleUsageRecords).
   createdAt: true,
 });
 
+export const insertMaintenancePolicySchema = createInsertSchema(maintenancePolicies).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertMaintenanceForecastSchema = createInsertSchema(maintenanceForecasts).omit({
+  id: true,
+  createdAt: true,
+  lastCalculatedAt: true,
+});
+
+export const insertVehicleMileageSnapshotSchema = createInsertSchema(vehicleMileageSnapshots).omit({
+  id: true,
+  createdAt: true,
+});
+
 // Types
 export type InsertOutlet = z.infer<typeof insertOutletSchema>;
 export type Outlet = typeof outlets.$inferSelect;
@@ -153,6 +215,77 @@ export type VehicleMaintenance = typeof vehicleMaintenanceRecords.$inferSelect;
 
 export type InsertVehicleUsage = z.infer<typeof insertVehicleUsageSchema>;
 export type VehicleUsage = typeof vehicleUsageRecords.$inferSelect;
+
+export type InsertMaintenancePolicy = z.infer<typeof insertMaintenancePolicySchema>;
+export type MaintenancePolicy = typeof maintenancePolicies.$inferSelect;
+
+export type InsertMaintenanceForecast = z.infer<typeof insertMaintenanceForecastSchema>;
+export type MaintenanceForecast = typeof maintenanceForecasts.$inferSelect;
+
+export type InsertVehicleMileageSnapshot = z.infer<typeof insertVehicleMileageSnapshotSchema>;
+export type VehicleMileageSnapshot = typeof vehicleMileageSnapshots.$inferSelect;
+
+// Vehicle Dashboard Types
+export interface VehicleDashboardOverview {
+  vehicleId: string;
+  plateNumber: string;
+  model: string;
+  year: number;
+  assignedRepId: string | null;
+  assignedRepName: string | null;
+  currentMileage: number;
+  lifetimeKm: number;
+  monthlyKm: number;
+  quarterlyKm: number;
+  status: string;
+}
+
+export interface VehicleUsageMetrics {
+  avgDailyKm: number;
+  routeIntensity: 'light' | 'medium' | 'heavy';
+  fleetAvgDailyKm: number;
+  comparedToFleet: 'below' | 'average' | 'above';
+  dailyKmHistory: { date: string; km: number }[];
+  weeklyKmHistory: { week: string; km: number }[];
+}
+
+export interface VehicleMaintenanceStatus {
+  lastMaintenanceDate: Date | null;
+  lastMaintenanceType: string | null;
+  lastMaintenanceKm: number | null;
+  upcomingMaintenance: MaintenanceForecast[];
+  overdueItems: MaintenanceForecast[];
+  daysToNextService: number | null;
+  kmToNextService: number | null;
+}
+
+export interface VehicleRecommendation {
+  id: string;
+  maintenanceType: string;
+  priority: 'low' | 'medium' | 'high' | 'critical';
+  recommendation: string;
+  estimatedDueDate: Date | null;
+  estimatedDueKm: number | null;
+  reason: string;
+}
+
+export interface VehicleDashboardAlert {
+  id: string;
+  type: 'maintenance_approaching' | 'maintenance_overdue' | 'usage_anomaly' | 'critical_limit';
+  severity: 'info' | 'warning' | 'critical';
+  title: string;
+  message: string;
+  createdAt: Date;
+  isRead: boolean;
+}
+
+export interface VehicleFullDashboard {
+  overview: VehicleDashboardOverview;
+  usage: VehicleUsageMetrics;
+  maintenance: VehicleMaintenanceStatus;
+  recommendations: VehicleRecommendation[];
+  alerts: VehicleDashboardAlert[];
+}
 
 // Analytics types
 export interface DashboardMetrics {

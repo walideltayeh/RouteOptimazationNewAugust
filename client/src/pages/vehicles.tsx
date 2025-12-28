@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Link } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -20,7 +21,8 @@ import {
   Gauge,
   Edit,
   Trash2,
-  Bell
+  Bell,
+  ExternalLink
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -303,6 +305,16 @@ export default function VehiclesPage() {
                             <TableCell>{assignedRep?.name || '-'}</TableCell>
                             <TableCell>
                               <div className="flex gap-2">
+                                <Link href={`/vehicles/${vehicle.id}`}>
+                                  <Button 
+                                    size="sm" 
+                                    variant="default"
+                                    data-testid={`button-dashboard-${vehicle.id}`}
+                                  >
+                                    <ExternalLink className="h-4 w-4 mr-1" />
+                                    Dashboard
+                                  </Button>
+                                </Link>
                                 <Button 
                                   size="sm" 
                                   variant="outline"

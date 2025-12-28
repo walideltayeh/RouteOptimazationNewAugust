@@ -13,9 +13,16 @@ import {
   type InsertVehicleMaintenance,
   type VehicleUsage,
   type InsertVehicleUsage,
+  type MaintenancePolicy,
+  type InsertMaintenancePolicy,
+  type MaintenanceForecast,
+  type InsertMaintenanceForecast,
+  type VehicleMileageSnapshot,
+  type InsertVehicleMileageSnapshot,
   type DashboardMetrics,
   type FileAnalysis,
-  type VehicleAlert
+  type VehicleAlert,
+  type VehicleFullDashboard
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 
@@ -71,6 +78,27 @@ export interface IStorage {
   createVehicleUsageRecord(record: InsertVehicleUsage): Promise<VehicleUsage>;
   getVehicleAlerts(): Promise<VehicleAlert[]>;
 
+  // Maintenance Policies
+  getMaintenancePolicies(): Promise<MaintenancePolicy[]>;
+  getMaintenancePolicy(id: string): Promise<MaintenancePolicy | undefined>;
+  createMaintenancePolicy(policy: InsertMaintenancePolicy): Promise<MaintenancePolicy>;
+  updateMaintenancePolicy(id: string, policy: Partial<InsertMaintenancePolicy>): Promise<MaintenancePolicy | undefined>;
+  deleteMaintenancePolicy(id: string): Promise<void>;
+
+  // Maintenance Forecasts
+  getMaintenanceForecasts(vehicleId?: string): Promise<MaintenanceForecast[]>;
+  createMaintenanceForecast(forecast: InsertMaintenanceForecast): Promise<MaintenanceForecast>;
+  updateMaintenanceForecast(id: string, forecast: Partial<InsertMaintenanceForecast>): Promise<MaintenanceForecast | undefined>;
+  deleteMaintenanceForecastsByVehicle(vehicleId: string): Promise<void>;
+
+  // Mileage Snapshots
+  getVehicleMileageSnapshots(vehicleId: string): Promise<VehicleMileageSnapshot[]>;
+  createVehicleMileageSnapshot(snapshot: InsertVehicleMileageSnapshot): Promise<VehicleMileageSnapshot>;
+  getLatestMileageSnapshot(vehicleId: string): Promise<VehicleMileageSnapshot | undefined>;
+
+  // Vehicle Dashboard
+  getVehicleDashboard(vehicleId: string): Promise<VehicleFullDashboard | undefined>;
+
   // Analytics
   getDashboardMetrics(): Promise<DashboardMetrics>;
   getFileAnalysis(): Promise<FileAnalysis>;
@@ -87,6 +115,9 @@ export class MemStorage implements IStorage {
   private vehicles: Map<string, Vehicle>;
   private vehicleMaintenanceRecords: Map<string, VehicleMaintenance>;
   private vehicleUsageRecords: Map<string, VehicleUsage>;
+  private maintenancePolicies: Map<string, MaintenancePolicy>;
+  private maintenanceForecasts: Map<string, MaintenanceForecast>;
+  private vehicleMileageSnapshots: Map<string, VehicleMileageSnapshot>;
 
   constructor() {
     this.outlets = new Map();
@@ -96,6 +127,61 @@ export class MemStorage implements IStorage {
     this.vehicles = new Map();
     this.vehicleMaintenanceRecords = new Map();
     this.vehicleUsageRecords = new Map();
+    this.maintenancePolicies = new Map();
+    this.maintenanceForecasts = new Map();
+    this.vehicleMileageSnapshots = new Map();
+    
+    // Initialize default maintenance policies
+    this.initializeDefaultPolicies();
+  }
+
+  private async initializeDefaultPolicies(): Promise<void> {
+    const defaultPolicies: InsertMaintenancePolicy[] = [
+      {
+        name: 'Oil Change',
+        maintenanceType: 'oil_change',
+        intervalKm: 5000,
+        intervalDays: 90,
+        warningThresholdKm: 500,
+        warningThresholdDays: 14,
+        criticalThresholdKm: 1000,
+        isActive: true
+      },
+      {
+        name: 'Tire Replacement',
+        maintenanceType: 'tire_change',
+        intervalKm: 40000,
+        intervalDays: 730,
+        warningThresholdKm: 5000,
+        warningThresholdDays: 60,
+        criticalThresholdKm: 10000,
+        isActive: true
+      },
+      {
+        name: 'Brake Service',
+        maintenanceType: 'brake_service',
+        intervalKm: 30000,
+        intervalDays: 365,
+        warningThresholdKm: 3000,
+        warningThresholdDays: 30,
+        criticalThresholdKm: 5000,
+        isActive: true
+      },
+      {
+        name: 'General Service',
+        maintenanceType: 'general_service',
+        intervalKm: 10000,
+        intervalDays: 180,
+        warningThresholdKm: 1000,
+        warningThresholdDays: 14,
+        criticalThresholdKm: 2000,
+        isActive: true
+      }
+    ];
+
+    for (const policy of defaultPolicies) {
+      await this.createMaintenancePolicy(policy);
+    }
   }
 
   // Outlets
@@ -551,11 +637,291 @@ export class MemStorage implements IStorage {
     };
   }
 
+  // Maintenance Policies
+  async getMaintenancePolicies(): Promise<MaintenancePolicy[]> {
+    return Array.from(this.maintenancePolicies.values());
+  }
+
+  async getMaintenancePolicy(id: string): Promise<MaintenancePolicy | undefined> {
+    return this.maintenancePolicies.get(id);
+  }
+
+  async createMaintenancePolicy(insertPolicy: InsertMaintenancePolicy): Promise<MaintenancePolicy> {
+    const id = randomUUID();
+    const policy: MaintenancePolicy = {
+      ...insertPolicy,
+      id,
+      createdAt: new Date(),
+      intervalDays: insertPolicy.intervalDays || null,
+      warningThresholdDays: insertPolicy.warningThresholdDays || null,
+      isActive: insertPolicy.isActive ?? true
+    };
+    this.maintenancePolicies.set(id, policy);
+    return policy;
+  }
+
+  async updateMaintenancePolicy(id: string, update: Partial<InsertMaintenancePolicy>): Promise<MaintenancePolicy | undefined> {
+    const policy = this.maintenancePolicies.get(id);
+    if (!policy) return undefined;
+    
+    const updatedPolicy = { ...policy, ...update };
+    this.maintenancePolicies.set(id, updatedPolicy);
+    return updatedPolicy;
+  }
+
+  async deleteMaintenancePolicy(id: string): Promise<void> {
+    this.maintenancePolicies.delete(id);
+  }
+
+  // Maintenance Forecasts
+  async getMaintenanceForecasts(vehicleId?: string): Promise<MaintenanceForecast[]> {
+    const forecasts = Array.from(this.maintenanceForecasts.values());
+    if (vehicleId) {
+      return forecasts.filter(f => f.vehicleId === vehicleId);
+    }
+    return forecasts;
+  }
+
+  async createMaintenanceForecast(insertForecast: InsertMaintenanceForecast): Promise<MaintenanceForecast> {
+    const id = randomUUID();
+    const forecast: MaintenanceForecast = {
+      ...insertForecast,
+      id,
+      createdAt: new Date(),
+      lastCalculatedAt: new Date(),
+      policyId: insertForecast.policyId || null,
+      estimatedDueDate: insertForecast.estimatedDueDate || null,
+      remainingDays: insertForecast.remainingDays || null,
+      severity: insertForecast.severity || 'low',
+      status: insertForecast.status || 'upcoming',
+      recommendation: insertForecast.recommendation || null
+    };
+    this.maintenanceForecasts.set(id, forecast);
+    return forecast;
+  }
+
+  async updateMaintenanceForecast(id: string, update: Partial<InsertMaintenanceForecast>): Promise<MaintenanceForecast | undefined> {
+    const forecast = this.maintenanceForecasts.get(id);
+    if (!forecast) return undefined;
+    
+    const updatedForecast = { ...forecast, ...update, lastCalculatedAt: new Date() };
+    this.maintenanceForecasts.set(id, updatedForecast);
+    return updatedForecast;
+  }
+
+  async deleteMaintenanceForecastsByVehicle(vehicleId: string): Promise<void> {
+    const entries = Array.from(this.maintenanceForecasts.entries());
+    for (const [id, forecast] of entries) {
+      if (forecast.vehicleId === vehicleId) {
+        this.maintenanceForecasts.delete(id);
+      }
+    }
+  }
+
+  // Mileage Snapshots
+  async getVehicleMileageSnapshots(vehicleId: string): Promise<VehicleMileageSnapshot[]> {
+    return Array.from(this.vehicleMileageSnapshots.values())
+      .filter(s => s.vehicleId === vehicleId)
+      .sort((a, b) => new Date(b.snapshotDate).getTime() - new Date(a.snapshotDate).getTime());
+  }
+
+  async createVehicleMileageSnapshot(insertSnapshot: InsertVehicleMileageSnapshot): Promise<VehicleMileageSnapshot> {
+    const id = randomUUID();
+    const snapshot: VehicleMileageSnapshot = {
+      ...insertSnapshot,
+      id,
+      createdAt: new Date(),
+      dailyKm: insertSnapshot.dailyKm || 0,
+      weeklyKm: insertSnapshot.weeklyKm || 0,
+      monthlyKm: insertSnapshot.monthlyKm || 0,
+      lifetimeKm: insertSnapshot.lifetimeKm || 0,
+      avgDailyKm: insertSnapshot.avgDailyKm || 0,
+      routeIntensity: insertSnapshot.routeIntensity || 'light'
+    };
+    this.vehicleMileageSnapshots.set(id, snapshot);
+    return snapshot;
+  }
+
+  async getLatestMileageSnapshot(vehicleId: string): Promise<VehicleMileageSnapshot | undefined> {
+    const snapshots = await this.getVehicleMileageSnapshots(vehicleId);
+    return snapshots[0];
+  }
+
+  // Vehicle Dashboard - comprehensive data for vehicle detail page
+  async getVehicleDashboard(vehicleId: string): Promise<VehicleFullDashboard | undefined> {
+    const vehicle = await this.getVehicle(vehicleId);
+    if (!vehicle) return undefined;
+
+    const reps = await this.getReps();
+    const assignedRep = vehicle.assignedRepId ? reps.find(r => r.id === vehicle.assignedRepId) : null;
+    const usageRecords = await this.getVehicleUsageRecords(vehicleId);
+    const maintenanceRecords = await this.getVehicleMaintenanceRecords(vehicleId);
+    const forecasts = await this.getMaintenanceForecasts(vehicleId);
+    const snapshots = await this.getVehicleMileageSnapshots(vehicleId);
+    const allVehicles = await this.getVehicles();
+
+    // Calculate lifetime KM
+    const lifetimeKm = vehicle.currentMileage - vehicle.startingMileage;
+
+    // Calculate monthly and quarterly KM from usage records
+    const now = new Date();
+    const oneMonthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const threeMonthsAgo = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+    
+    const monthlyKm = usageRecords
+      .filter(r => new Date(r.tripDate) >= oneMonthAgo)
+      .reduce((sum, r) => sum + r.distance, 0);
+    
+    const quarterlyKm = usageRecords
+      .filter(r => new Date(r.tripDate) >= threeMonthsAgo)
+      .reduce((sum, r) => sum + r.distance, 0);
+
+    // Calculate usage metrics
+    const totalDays = Math.max(1, Math.ceil((now.getTime() - new Date(vehicle.createdAt || now).getTime()) / (24 * 60 * 60 * 1000)));
+    const avgDailyKm = lifetimeKm / totalDays;
+    
+    // Calculate fleet average
+    const fleetTotalKm = allVehicles.reduce((sum, v) => sum + (v.currentMileage - v.startingMileage), 0);
+    const fleetDays = allVehicles.reduce((sum, v) => {
+      const days = Math.ceil((now.getTime() - new Date(v.createdAt || now).getTime()) / (24 * 60 * 60 * 1000));
+      return sum + Math.max(1, days);
+    }, 0);
+    const fleetAvgDailyKm = fleetTotalKm / fleetDays;
+
+    // Determine route intensity
+    let routeIntensity: 'light' | 'medium' | 'heavy' = 'light';
+    if (avgDailyKm > 150) routeIntensity = 'heavy';
+    else if (avgDailyKm > 75) routeIntensity = 'medium';
+
+    // Determine comparison to fleet
+    let comparedToFleet: 'below' | 'average' | 'above' = 'average';
+    if (avgDailyKm < fleetAvgDailyKm * 0.8) comparedToFleet = 'below';
+    else if (avgDailyKm > fleetAvgDailyKm * 1.2) comparedToFleet = 'above';
+
+    // Get daily and weekly KM history
+    const dailyKmHistory = snapshots.slice(0, 30).map(s => ({
+      date: s.snapshotDate,
+      km: s.dailyKm
+    }));
+
+    const weeklyKmHistory = snapshots.filter((_, i) => i % 7 === 0).slice(0, 12).map(s => ({
+      week: s.snapshotDate,
+      km: s.weeklyKm
+    }));
+
+    // Get maintenance status
+    const sortedMaintenance = [...maintenanceRecords].sort((a, b) => 
+      new Date(b.serviceDate).getTime() - new Date(a.serviceDate).getTime()
+    );
+    const lastMaintenance = sortedMaintenance[0];
+
+    const upcomingMaintenance = forecasts.filter(f => f.status === 'upcoming' || f.status === 'due');
+    const overdueItems = forecasts.filter(f => f.status === 'overdue');
+
+    // Calculate days/km to next service
+    let daysToNextService: number | null = null;
+    let kmToNextService: number | null = null;
+    if (upcomingMaintenance.length > 0) {
+      const nextItem = upcomingMaintenance.sort((a, b) => a.remainingKm - b.remainingKm)[0];
+      kmToNextService = nextItem.remainingKm;
+      daysToNextService = nextItem.remainingDays;
+    }
+
+    // Generate recommendations
+    const recommendations = forecasts.map(f => ({
+      id: f.id,
+      maintenanceType: f.maintenanceType,
+      priority: f.severity as 'low' | 'medium' | 'high' | 'critical',
+      recommendation: f.recommendation || `Schedule ${f.maintenanceType.replace('_', ' ')}`,
+      estimatedDueDate: f.estimatedDueDate,
+      estimatedDueKm: f.dueMileage,
+      reason: `${f.remainingKm.toFixed(0)} km remaining until service`
+    }));
+
+    // Generate alerts
+    const alerts = [];
+    
+    for (const forecast of overdueItems) {
+      alerts.push({
+        id: randomUUID(),
+        type: 'maintenance_overdue' as const,
+        severity: 'critical' as const,
+        title: `${forecast.maintenanceType.replace('_', ' ')} Overdue`,
+        message: `Service was due ${Math.abs(forecast.remainingKm).toFixed(0)} km ago`,
+        createdAt: new Date(),
+        isRead: false
+      });
+    }
+
+    for (const forecast of upcomingMaintenance) {
+      if (forecast.remainingKm < 500 || (forecast.remainingDays && forecast.remainingDays < 7)) {
+        alerts.push({
+          id: randomUUID(),
+          type: 'maintenance_approaching' as const,
+          severity: 'warning' as const,
+          title: `${forecast.maintenanceType.replace('_', ' ')} Due Soon`,
+          message: `Only ${forecast.remainingKm.toFixed(0)} km remaining`,
+          createdAt: new Date(),
+          isRead: false
+        });
+      }
+    }
+
+    if (avgDailyKm > fleetAvgDailyKm * 1.5) {
+      alerts.push({
+        id: randomUUID(),
+        type: 'usage_anomaly' as const,
+        severity: 'info' as const,
+        title: 'High Usage Detected',
+        message: `Vehicle usage is ${((avgDailyKm / fleetAvgDailyKm) * 100 - 100).toFixed(0)}% above fleet average`,
+        createdAt: new Date(),
+        isRead: false
+      });
+    }
+
+    return {
+      overview: {
+        vehicleId: vehicle.id,
+        plateNumber: vehicle.plateNumber,
+        model: vehicle.model,
+        year: vehicle.year,
+        assignedRepId: vehicle.assignedRepId,
+        assignedRepName: assignedRep?.name || null,
+        currentMileage: vehicle.currentMileage,
+        lifetimeKm,
+        monthlyKm,
+        quarterlyKm,
+        status: vehicle.status
+      },
+      usage: {
+        avgDailyKm,
+        routeIntensity,
+        fleetAvgDailyKm,
+        comparedToFleet,
+        dailyKmHistory,
+        weeklyKmHistory
+      },
+      maintenance: {
+        lastMaintenanceDate: lastMaintenance?.serviceDate || null,
+        lastMaintenanceType: lastMaintenance?.maintenanceType || null,
+        lastMaintenanceKm: lastMaintenance?.mileageAtService || null,
+        upcomingMaintenance,
+        overdueItems,
+        daysToNextService,
+        kmToNextService
+      },
+      recommendations,
+      alerts
+    };
+  }
+
   async clearAll(): Promise<void> {
     this.outlets.clear();
     this.reps.clear();
     this.schedules.clear();
     this.optimizationRuns.clear();
+    this.maintenanceForecasts.clear();
+    this.vehicleMileageSnapshots.clear();
   }
 }
 

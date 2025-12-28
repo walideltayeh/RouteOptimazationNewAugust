@@ -1,0 +1,119 @@
+Vehicle Intelligence & Maintenance Analytics (Replit Specification)
+
+After all required vehicle information is entered, the system must automatically generate a future maintenance analysis for each vehicle.
+
+Core Logic
+
+Each vehicle’s maintenance forecast is driven by total kilometers traveled, calculated primarily from the assigned Sales Rep’s route activity.
+
+The system must continuously aggregate:
+
+Daily route KM
+
+Weekly / Monthly cumulative KM
+
+Total lifetime KM per vehicle
+
+Rep–Vehicle Assignment Behavior
+
+As soon as a Rep is assigned to a vehicle, the system must:
+
+Link the Rep’s route data to that vehicle
+
+Begin real-time KM accumulation
+
+Trigger a full vehicle performance and condition analysis
+
+Maintenance Analysis Engine
+
+Based on total and projected KM, the system should:
+
+Estimate wear & tear levels
+
+Predict upcoming maintenance needs
+
+Flag critical maintenance thresholds
+
+Example outputs:
+
+Next oil change (KM & estimated date)
+
+Tire replacement window
+
+Brake service forecast
+
+General service intervals
+
+Risk indicators for overdue maintenance
+
+Predictive Forecasting
+
+Use historical route data + future route scheduling to:
+
+Predict KM growth rate
+
+Estimate when each maintenance event will be due
+
+Provide early warnings before thresholds are reached
+
+Vehicle Dashboard (Mandatory)
+
+Each vehicle must have its own dedicated dashboard, showing:
+
+1. Vehicle Overview
+
+Vehicle ID / Plate
+
+Assigned Rep
+
+Current odometer
+
+Total KM (lifetime)
+
+KM this month / quarter
+
+2. Usage & Performance
+
+Average KM per day
+
+Route intensity (light / medium / heavy usage)
+
+Comparison vs fleet average
+
+3. Maintenance Status
+
+Last maintenance date & KM
+
+Upcoming maintenance items
+
+Days / KM remaining to next service
+
+Overdue alerts (if any)
+
+4. System Recommendations
+
+Clear maintenance recommendations
+
+Priority level (Low / Medium / High)
+
+Suggested maintenance timeline
+
+5. Alerts & Notifications
+
+Automatic alerts when:
+
+Maintenance thresholds are approaching
+
+Critical limits are exceeded
+
+Usage deviates significantly from normal patterns
+
+Output & UX Requirements
+
+Dashboard must update automatically
+
+Visual indicators (green / amber / red)
+
+Exportable maintenance summary per vehicle
+
+Scalable to support fleet-level analytics later

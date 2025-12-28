@@ -197,3 +197,92 @@ export function generateScheduleExcel(reps: Rep[], schedules: Schedule[], outlet
   const buffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'buffer' });
   return Buffer.from(buffer);
 }
+
+interface VehicleSummaryData {
+  vehicle: {
+    plateNumber: string;
+    model: string;
+    year: number;
+    currentMileage: number;
+    startingMileage: number;
+    status: string;
+    assignedRepName?: string;
+  };
+  usage: {
+    dailyKm: number;
+    weeklyKm: number;
+    monthlyKm: number;
+    lifetimeKm: number;
+    avgDailyKm: number;
+    routeIntensity: string;
+  };
+  forecasts: Array<{
+    maintenanceType: string;
+    dueMileage: number;
+    remainingKm: number;
+    status: string;
+    severity: string;
+    recommendation: string;
+  }>;
+  maintenanceHistory: Array<{
+    serviceDate: string;
+    maintenanceType: string;
+    mileageAtService: number;
+    cost?: number;
+    notes?: string;
+  }>;
+}
+
+export function generateVehicleSummaryExcel(data: VehicleSummaryData): Buffer {
+  const workbook = XLSX.utils.book_new();
+  
+  // Vehicle Overview sheet
+  const overviewData = [
+    { 'Property': 'Plate Number', 'Value': data.vehicle.plateNumber },
+    { 'Property': 'Model', 'Value': data.vehicle.model },
+    { 'Property': 'Year', 'Value': data.vehicle.year.toString() },
+    { 'Property': 'Current Mileage (km)', 'Value': data.vehicle.currentMileage.toLocaleString() },
+    { 'Property': 'Starting Mileage (km)', 'Value': data.vehicle.startingMileage.toLocaleString() },
+    { 'Property': 'Status', 'Value': data.vehicle.status },
+    { 'Property': 'Assigned Rep', 'Value': data.vehicle.assignedRepName || 'Unassigned' },
+    { 'Property': '', 'Value': '' },
+    { 'Property': 'Average Daily KM', 'Value': data.usage.avgDailyKm.toFixed(1) },
+    { 'Property': 'Weekly KM', 'Value': data.usage.weeklyKm.toLocaleString() },
+    { 'Property': 'Monthly KM', 'Value': data.usage.monthlyKm.toLocaleString() },
+    { 'Property': 'Lifetime KM', 'Value': data.usage.lifetimeKm.toLocaleString() },
+    { 'Property': 'Route Intensity', 'Value': data.usage.routeIntensity },
+  ];
+  const overviewSheet = XLSX.utils.json_to_sheet(overviewData);
+  XLSX.utils.book_append_sheet(workbook, overviewSheet, 'Vehicle Overview');
+
+  // Maintenance Forecasts sheet
+  if (data.forecasts.length > 0) {
+    const forecastsData = data.forecasts.map(f => ({
+      'Maintenance Type': f.maintenanceType.replace('_', ' '),
+      'Due At (km)': f.dueMileage.toLocaleString(),
+      'Remaining (km)': f.remainingKm.toFixed(0),
+      'Status': f.status,
+      'Severity': f.severity,
+      'Recommendation': f.recommendation
+    }));
+    const forecastsSheet = XLSX.utils.json_to_sheet(forecastsData);
+    XLSX.utils.book_append_sheet(workbook, forecastsSheet, 'Maintenance Forecasts');
+  }
+
+  // Maintenance History sheet
+  if (data.maintenanceHistory.length > 0) {
+    const historyData = data.maintenanceHistory.map(h => ({
+      'Date': new Date(h.serviceDate).toLocaleDateString(),
+      'Type': h.maintenanceType.replace('_', ' '),
+      'Mileage (km)': h.mileageAtService.toLocaleString(),
+      'Cost': h.cost ? `$${h.cost.toFixed(2)}` : 'N/A',
+      'Notes': h.notes || ''
+    }));
+    const historySheet = XLSX.utils.json_to_sheet(historyData);
+    XLSX.utils.book_append_sheet(workbook, historySheet, 'Maintenance History');
+  }
+
+  // Generate buffer
+  const buffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'buffer' });
+  return Buffer.from(buffer);
+}
