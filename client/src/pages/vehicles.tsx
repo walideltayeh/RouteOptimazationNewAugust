@@ -51,6 +51,10 @@ export default function VehiclesPage() {
     queryKey: ["/api/reps"],
   });
 
+  // Filter out reps that are already assigned to vehicles
+  const assignedRepIds = new Set(vehicles.filter(v => v.assignedRepId).map(v => v.assignedRepId));
+  const availableReps = reps.filter(rep => !assignedRepIds.has(rep.id));
+
   const createVehicleMutation = useMutation({
     mutationFn: async (data: any) => {
       return apiRequest("POST", "/api/vehicles", data);
@@ -184,13 +188,13 @@ export default function VehiclesPage() {
                       <Input id="startingMileage" name="startingMileage" type="number" required data-testid="input-mileage" />
                     </div>
                     <div className="col-span-2">
-                      <Label htmlFor="assignedRepId">Assign to Rep (optional)</Label>
+                      <Label htmlFor="assignedRepId">Assign to Rep ({availableReps.length} available)</Label>
                       <Select name="assignedRepId">
                         <SelectTrigger data-testid="select-rep">
                           <SelectValue placeholder="Select a rep" />
                         </SelectTrigger>
                         <SelectContent>
-                          {reps.map(rep => (
+                          {availableReps.map(rep => (
                             <SelectItem key={rep.id} value={rep.id}>{rep.name}</SelectItem>
                           ))}
                         </SelectContent>

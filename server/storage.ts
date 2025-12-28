@@ -788,7 +788,7 @@ export class MemStorage implements IStorage {
         weeklyKmByWeek[schedule.week] = (weeklyKmByWeek[schedule.week] || 0) + routeDistance;
       }
 
-      // Calculate average weekly KM across all scheduled weeks, then multiply by 4 for monthly
+      // Calculate average weekly KM across all scheduled weeks
       const weeks = Object.keys(weeklyKmByWeek);
       const avgWeeklyKm = weeks.length > 0 
         ? Object.values(weeklyKmByWeek).reduce((sum, km) => sum + km, 0) / weeks.length 
@@ -799,32 +799,64 @@ export class MemStorage implements IStorage {
     // Calculate lifetime KM
     const lifetimeKm = vehicle.currentMileage - vehicle.startingMileage;
 
-    // Calculate monthly and quarterly KM from usage records
     const now = new Date();
-    const oneMonthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-    const threeMonthsAgo = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
     
-    const monthlyKm = usageRecords
-      .filter(r => new Date(r.tripDate) >= oneMonthAgo)
-      .reduce((sum, r) => sum + r.distance, 0);
+    // Calculate "Actual This Month" based on schedule: 
+    // How many working days have passed this month * daily avg from schedule
+    const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const dayOfMonth = now.getDate();
+    const workingDaysThisMonth = Math.round(dayOfMonth * 5 / 7); // Approx working days elapsed
+    const avgWeeklyKmFromSchedule = projectedMonthlyKmFromRoutes / 4;
+    const avgDailyKmFromSchedule = avgWeeklyKmFromSchedule / 5; // 5 working days
+    const actualThisMonthKm = Math.round(workingDaysThisMonth * avgDailyKmFromSchedule);
     
-    const quarterlyKm = usageRecords
-      .filter(r => new Date(r.tripDate) >= threeMonthsAgo)
-      .reduce((sum, r) => sum + r.distance, 0);
+    // Quarterly = 3 months of projected schedule KM (approximation based on schedule)
+    const quarterlyKm = Math.round(projectedMonthlyKmFromRoutes * 3);
 
-    // Calculate usage metrics
-    const totalDays = Math.max(1, Math.ceil((now.getTime() - new Date(vehicle.createdAt || now).getTime()) / (24 * 60 * 60 * 1000)));
-    const avgDailyKm = lifetimeKm / totalDays;
+    // Calculate usage metrics based on schedule, not historical records
+    const avgDailyKm = avgDailyKmFromSchedule;
     
-    // Calculate fleet average
-    const fleetTotalKm = allVehicles.reduce((sum, v) => sum + (v.currentMileage - v.startingMileage), 0);
-    const fleetDays = allVehicles.reduce((sum, v) => {
-      const days = Math.ceil((now.getTime() - new Date(v.createdAt || now).getTime()) / (24 * 60 * 60 * 1000));
-      return sum + Math.max(1, days);
-    }, 0);
-    const fleetAvgDailyKm = fleetTotalKm / fleetDays;
+    // Calculate fleet average from all vehicles with assigned reps
+    let fleetAvgDailyKm = 0;
+    let totalFleetDailyKm = 0;
+    let vehiclesWithSchedules = 0;
+    
+    for (const v of allVehicles) {
+      if (v.assignedRepId) {
+        const vRep = reps.find(r => r.id === v.assignedRepId);
+        if (vRep) {
+          const vSchedules = await this.getSchedulesByRepId(vRep.id);
+          const vWeeklyKmByWeek: Record<number, number> = {};
+          
+          for (const schedule of vSchedules) {
+            const outletIds = schedule.outletIds as string[];
+            const scheduleOutlets = outletIds
+              .map(id => allOutlets.find(o => o.id === id))
+              .filter(Boolean);
+            
+            let routeDistance = 0;
+            for (let i = 0; i < scheduleOutlets.length - 1; i++) {
+              const from = scheduleOutlets[i];
+              const to = scheduleOutlets[i + 1];
+              if (from?.latitude && from?.longitude && to?.latitude && to?.longitude) {
+                routeDistance += this.haversineDistance(from.latitude, from.longitude, to.latitude, to.longitude);
+              }
+            }
+            vWeeklyKmByWeek[schedule.week] = (vWeeklyKmByWeek[schedule.week] || 0) + routeDistance;
+          }
+          
+          const vWeeks = Object.keys(vWeeklyKmByWeek);
+          if (vWeeks.length > 0) {
+            const vAvgWeeklyKm = Object.values(vWeeklyKmByWeek).reduce((sum, km) => sum + km, 0) / vWeeks.length;
+            totalFleetDailyKm += vAvgWeeklyKm / 5;
+            vehiclesWithSchedules++;
+          }
+        }
+      }
+    }
+    fleetAvgDailyKm = vehiclesWithSchedules > 0 ? totalFleetDailyKm / vehiclesWithSchedules : 50;
 
-    // Determine route intensity
+    // Determine route intensity based on schedule-derived KM
     let routeIntensity: 'light' | 'medium' | 'heavy' = 'light';
     if (avgDailyKm > 150) routeIntensity = 'heavy';
     else if (avgDailyKm > 75) routeIntensity = 'medium';
@@ -1011,7 +1043,7 @@ export class MemStorage implements IStorage {
         assignedRepName: assignedRep?.name || null,
         currentMileage: vehicle.currentMileage,
         lifetimeKm,
-        monthlyKm,
+        monthlyKm: actualThisMonthKm,
         quarterlyKm,
         projectedMonthlyKm: Math.round(projectedMonthlyKmFromRoutes),
         status: vehicle.status
