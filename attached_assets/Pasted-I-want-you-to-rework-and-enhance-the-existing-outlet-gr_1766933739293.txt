@@ -1,0 +1,99 @@
+I want you to rework and enhance the existing outlet grouping and scheduling algorithm in a robust, production-grade way. The current grouping logic is good, but the scheduling and optimization must be redesigned based on the following requirements:
+
+1. Advanced Scheduling Based on Visit Frequency (VF)
+
+I will upload a file containing outlets tagged with a Visit Frequency (VF):
+
+VF4 = visit 4 times per month
+
+VF2 = visit 2 times per month
+
+VF1 = visit 1 time per month
+
+Outlets are already geographically grouped (zones/clusters).
+
+When a group contains a mix of VF1, VF2, and VF4 outlets (e.g., 30 outlets total), the scheduling algorithm must:
+
+Respect each outlet’s required monthly visit frequency
+
+Distribute visits evenly across the working days of the month
+
+Maintain the same minimum and maximum visits per day
+
+Avoid visit overloads on specific days
+
+Ensure VF4 outlets are spread consistently (e.g., weekly)
+
+Ensure VF2 outlets are spaced reasonably (e.g., bi-weekly)
+
+Ensure VF1 outlets are scheduled once, without clustering all VF1 visits on the same day
+
+⚠️ Accuracy of the schedule is critical. The logic must be deterministic, balanced, and mathematically correct.
+
+2. Interactive Map Editing With Full Re-Optimization
+
+The app must allow manual outlet reassignment directly on the map:
+
+Drag or move an outlet from one zone to another
+
+Edit zone assignments visually
+
+When the user clicks “Apply”:
+
+The system must fully re-run optimization
+
+Recalculate zone balance
+
+Recalculate routing (if applicable)
+
+Rebuild the entire schedule based on updated VF constraints
+
+No partial updates — the result must be a clean, fully re-optimized plan
+
+3. State-of-the-Art Admin Vehicle Maintenance & Usage Module
+
+Add a full Admin vehicle management module, including:
+
+Vehicle Profile
+
+Starting mileage (current odometer)
+
+Vehicle model, year, plate number
+
+Maintenance Tracking
+
+Last oil change date
+
+Oil type
+
+Last tire change date
+
+Tire type
+
+Service history log
+
+Usage Tracking
+
+Mileage accumulation based on routes/schedules
+
+Alerts for:
+
+Upcoming oil change
+
+Tire replacement
+
+Periodic servicing
+
+Admin dashboard view for all vehicles
+
+This module should be scalable, cleanly designed, and enterprise-grade, suitable for managing multiple vehicles and users.
+
+Overall Expectations
+
+Use best-practice algorithms and clean architecture
+
+Ensure scheduling fairness, correctness, and flexibility
+
+Design with future scalability in mind
+
+Treat this as a production-ready system, not a prototype
