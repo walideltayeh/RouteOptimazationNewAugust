@@ -1389,12 +1389,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const outlets = [];
       for (const row of data) {
         try {
+          // Parse time per visit (default 30 minutes if not provided)
+          const timePerVisit = parseInt(
+            row.time_per_visit || row.timePerVisit || row["Time Per Visit"] || 
+            row.time || row.Time || row.duration || row.Duration || "30"
+          );
+
           const outlet: typeof insertOutletSchema._type = {
             name: row.outletname || row.name || row.Name || row.outlet_name || row["Outlet Name"] || `Outlet ${outlets.length + 1}`,
             address: `${row.District || ''} - ${row.Region || ''} - ${row.Area || ''}`.replace(/^- |- $|^-$/, '').trim() || row.address || row.Address || "",
             latitude: parseFloat(row.latitude || row.Latitude || row.lat || row.Lat || "0"),
             longitude: parseFloat(row.longitude || row.Longitude || row.lng || row.Lng || row.lon || row.Lon || "0"),
             visitFrequency: parseInt(row.vf || row.VF || row.visit_frequency || row["Visit Frequency"] || "2"),
+            timePerVisit: isNaN(timePerVisit) ? 30 : Math.max(5, Math.min(120, timePerVisit)),
             territory: row.District || row.territory || row.Territory || row.zone || row.Zone || null,
             repId: null,
             cluster: null
@@ -1406,7 +1413,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
             continue;
           }
 
-          if (![2, 4].includes(outlet.visitFrequency)) {
+          // Support VF1 (monthly), VF2 (bi-weekly), VF4 (weekly)
+          if (![1, 2, 4].includes(outlet.visitFrequency)) {
             outlet.visitFrequency = 2; // Default to VF2
           }
 
@@ -1424,8 +1432,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       await storage.createOutlets(outlets);
 
       // Calculate analysis
+      const vf1Count = outlets.filter(o => o.visitFrequency === 1).length;
       const vf2Count = outlets.filter(o => o.visitFrequency === 2).length;
       const vf4Count = outlets.filter(o => o.visitFrequency === 4).length;
+      const avgTimePerVisit = Math.round(
+        outlets.reduce((sum, o) => sum + (o.timePerVisit || 30), 0) / outlets.length
+      );
       
       // Initial rough estimate - will be refined after optimization
       // Assuming ~25 outlets per zone and 10 zones per rep
@@ -1435,13 +1447,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const optimizationRun = await storage.createOptimizationRun({
         fileName: originalname,
         totalOutlets: outlets.length,
+        vf1Outlets: vf1Count,
         vf2Outlets: vf2Count,
         vf4Outlets: vf4Count,
         recommendedReps,
         settings: {
           minVisitsPerDay: 15,
           maxVisitsPerDay: 25,
-          workingDaysPerWeek: 5
+          workingDaysPerWeek: 5,
+          calculationMode: 'manual'
         },
         status: "completed",
         results: {
@@ -1456,8 +1470,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         runId: optimizationRun.id,
         analysis: {
           outlets: outlets.length,
+          vf1: vf1Count,
           vf2: vf2Count,
           vf4: vf4Count,
+          avgTimePerVisit,
           recommendedReps
         }
       });
@@ -1660,8 +1676,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       // Set default values for rep constraints (use body params if provided)
       const workingDaysPerWeek = req.body.workingDaysPerWeek || 5; // Monday to Friday
-      const minVisitsPerDay = req.body.minVisitsPerDay || 25;   // Minimum visits per day per rep
-      const maxVisitsPerDay = req.body.maxVisitsPerDay || 27;   // Maximum visits per day per rep
+      const calculationMode = req.body.calculationMode || 'manual'; // 'manual' or 'time-based'
+      const maxTimePerOutlet = req.body.maxTimePerOutlet || 45; // minutes
+      const maxWorkingHoursPerDay = req.body.maxWorkingHoursPerDay || 8; // hours
+      
+      // Calculate min/max visits based on mode
+      let minVisitsPerDay: number;
+      let maxVisitsPerDay: number;
+      
+      if (calculationMode === 'time-based') {
+        // Calculate based on time constraints
+        const maxWorkingMinutes = maxWorkingHoursPerDay * 60;
+        
+        // Get average time per visit from outlets
+        const avgTimePerVisit = outlets.length > 0
+          ? outlets.reduce((sum, o) => sum + (o.timePerVisit || 30), 0) / outlets.length
+          : maxTimePerOutlet;
+        
+        // Estimate average travel time between outlets (assume ~10 min avg travel)
+        const avgTravelTime = 10;
+        
+        // Calculate max outlets: working hours / (time per outlet + travel time)
+        const effectiveTimePerOutlet = Math.min(avgTimePerVisit, maxTimePerOutlet) + avgTravelTime;
+        maxVisitsPerDay = Math.floor(maxWorkingMinutes / effectiveTimePerOutlet);
+        minVisitsPerDay = Math.max(1, Math.floor(maxVisitsPerDay * 0.8));
+        
+        console.log(`Time-based calculation: ${maxWorkingMinutes} min / ${effectiveTimePerOutlet.toFixed(1)} min per outlet = ${maxVisitsPerDay} max outlets/day`);
+      } else {
+        // Manual mode - use provided values
+        minVisitsPerDay = req.body.minVisitsPerDay || 25;
+        maxVisitsPerDay = req.body.maxVisitsPerDay || 27;
+      }
+      
+      console.log(`Optimization using ${calculationMode} mode: min=${minVisitsPerDay}, max=${maxVisitsPerDay} visits/day`);
       
       // Calculate required reps based on daily visit constraints
       // Formula: Weekly visits / (working days * max visits per day)

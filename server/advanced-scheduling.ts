@@ -17,6 +17,50 @@ interface SchedulingSettings {
   maxVisitsPerDay: number;
   workingDaysPerWeek: number;
   weeksInMonth: number;
+  // Time-based calculation mode
+  calculationMode?: 'manual' | 'time-based';
+  maxTimePerOutlet?: number; // max minutes per outlet
+  maxWorkingHoursPerDay?: number; // max working hours per day
+}
+
+function calculateOutletsPerDay(
+  outlets: Outlet[],
+  settings: SchedulingSettings
+): { minVisits: number; maxVisits: number } {
+  if (settings.calculationMode === 'time-based' && 
+      settings.maxTimePerOutlet && 
+      settings.maxWorkingHoursPerDay) {
+    // Calculate based on time constraints
+    const maxWorkingMinutes = settings.maxWorkingHoursPerDay * 60;
+    
+    // Get average time per visit from outlets, or use maxTimePerOutlet
+    const avgTimePerVisit = outlets.length > 0
+      ? outlets.reduce((sum, o) => sum + (o.timePerVisit || 30), 0) / outlets.length
+      : settings.maxTimePerOutlet;
+    
+    // Estimate average travel time between outlets (assume ~10 min avg travel)
+    const avgTravelTime = 10;
+    
+    // Calculate max outlets: working hours / (time per outlet + travel time)
+    const effectiveTimePerOutlet = Math.min(avgTimePerVisit, settings.maxTimePerOutlet) + avgTravelTime;
+    const calculatedMax = Math.floor(maxWorkingMinutes / effectiveTimePerOutlet);
+    
+    // Min is typically 80% of max for flexibility
+    const calculatedMin = Math.max(1, Math.floor(calculatedMax * 0.8));
+    
+    console.log(`Time-based calculation: ${maxWorkingMinutes} min / ${effectiveTimePerOutlet} min per outlet = ${calculatedMax} max outlets/day`);
+    
+    return {
+      minVisits: calculatedMin,
+      maxVisits: calculatedMax
+    };
+  }
+  
+  // Manual mode - use provided values
+  return {
+    minVisits: settings.minVisitsPerDay,
+    maxVisits: settings.maxVisitsPerDay
+  };
 }
 
 function calculateDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
@@ -131,8 +175,19 @@ export function generateAdvancedSchedule(
   territory: string,
   settings: SchedulingSettings
 ): InsertSchedule[] {
-  const { minVisitsPerDay, maxVisitsPerDay, workingDaysPerWeek, weeksInMonth } = settings;
+  // Calculate effective min/max visits based on mode
+  const { minVisits, maxVisits } = calculateOutletsPerDay(outlets, settings);
+  const effectiveMinVisits = minVisits;
+  const effectiveMaxVisits = maxVisits;
+  
+  const { workingDaysPerWeek, weeksInMonth } = settings;
   const totalDaysInMonth = workingDaysPerWeek * weeksInMonth;
+  
+  // Use calculated values instead of raw settings
+  const minVisitsPerDay = effectiveMinVisits;
+  const maxVisitsPerDay = effectiveMaxVisits;
+  
+  console.log(`Using ${settings.calculationMode || 'manual'} mode: min=${minVisitsPerDay}, max=${maxVisitsPerDay} visits/day`);
   
   // Initialize day slots
   const daySlots: DaySlot[] = [];

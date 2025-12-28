@@ -10,6 +10,7 @@ export const outlets = pgTable("outlets", {
   latitude: real("latitude").notNull(),
   longitude: real("longitude").notNull(),
   visitFrequency: integer("visit_frequency").notNull(), // 1, 2, or 4 (VF1, VF2, VF4)
+  timePerVisit: integer("time_per_visit").notNull().default(30), // minutes per visit
   territory: text("territory"),
   repId: varchar("rep_id"),
   cluster: integer("cluster"),
@@ -476,6 +477,10 @@ export interface OptimizationSettings {
   minVisitsPerDay: number;
   maxVisitsPerDay: number;
   workingDaysPerWeek: number;
+  // Time-based calculation mode
+  calculationMode: 'manual' | 'time-based';
+  maxTimePerOutlet?: number; // max minutes per outlet (for time-based mode)
+  maxWorkingHoursPerDay?: number; // max working hours per day (for time-based mode)
 }
 
 // Vehicle alert types
