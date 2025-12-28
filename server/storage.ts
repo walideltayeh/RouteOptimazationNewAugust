@@ -813,48 +813,12 @@ export class MemStorage implements IStorage {
     // Quarterly = 3 months of projected schedule KM (approximation based on schedule)
     const quarterlyKm = Math.round(projectedMonthlyKmFromRoutes * 3);
 
-    // Calculate usage metrics based on schedule, not historical records
+    // Calculate usage metrics based on schedule
     const avgDailyKm = avgDailyKmFromSchedule;
     
-    // Calculate fleet average from all vehicles with assigned reps
-    let fleetAvgDailyKm = 0;
-    let totalFleetDailyKm = 0;
-    let vehiclesWithSchedules = 0;
-    
-    for (const v of allVehicles) {
-      if (v.assignedRepId) {
-        const vRep = reps.find(r => r.id === v.assignedRepId);
-        if (vRep) {
-          const vSchedules = await this.getSchedulesByRepId(vRep.id);
-          const vWeeklyKmByWeek: Record<number, number> = {};
-          
-          for (const schedule of vSchedules) {
-            const outletIds = schedule.outletIds as string[];
-            const scheduleOutlets = outletIds
-              .map(id => allOutlets.find(o => o.id === id))
-              .filter(Boolean);
-            
-            let routeDistance = 0;
-            for (let i = 0; i < scheduleOutlets.length - 1; i++) {
-              const from = scheduleOutlets[i];
-              const to = scheduleOutlets[i + 1];
-              if (from?.latitude && from?.longitude && to?.latitude && to?.longitude) {
-                routeDistance += this.haversineDistance(from.latitude, from.longitude, to.latitude, to.longitude);
-              }
-            }
-            vWeeklyKmByWeek[schedule.week] = (vWeeklyKmByWeek[schedule.week] || 0) + routeDistance;
-          }
-          
-          const vWeeks = Object.keys(vWeeklyKmByWeek);
-          if (vWeeks.length > 0) {
-            const vAvgWeeklyKm = Object.values(vWeeklyKmByWeek).reduce((sum, km) => sum + km, 0) / vWeeks.length;
-            totalFleetDailyKm += vAvgWeeklyKm / 5;
-            vehiclesWithSchedules++;
-          }
-        }
-      }
-    }
-    fleetAvgDailyKm = vehiclesWithSchedules > 0 ? totalFleetDailyKm / vehiclesWithSchedules : 50;
+    // Calculate fleet average: use this vehicle's schedule average as baseline
+    // For simplicity, use 50 km/day as fleet default if no schedule data
+    const fleetAvgDailyKm = avgDailyKm > 0 ? avgDailyKm : 50;
 
     // Determine route intensity based on schedule-derived KM
     let routeIntensity: 'light' | 'medium' | 'heavy' = 'light';
