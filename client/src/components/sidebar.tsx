@@ -6,13 +6,15 @@ import {
   Calendar, 
   Map, 
   FileText,
-  Route
+  Route,
+  Car
 } from "lucide-react";
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: BarChart3 },
   { name: "Territory Map", href: "/territories", icon: Map },
   { name: "Rep Map", href: "/rep-map", icon: Route },
+  { name: "Vehicles", href: "/vehicles", icon: Car },
 ];
 
 export default function Sidebar() {

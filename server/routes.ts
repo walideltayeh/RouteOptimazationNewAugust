@@ -1,13 +1,24 @@
 import type { Express, Request } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertOptimizationRunSchema, insertOutletSchema, insertRepSchema, insertScheduleSchema, type InsertSchedule, type Rep, type Outlet } from "@shared/schema";
+import { 
+  insertOptimizationRunSchema, 
+  insertOutletSchema, 
+  insertRepSchema, 
+  insertScheduleSchema, 
+  insertVehicleSchema,
+  insertVehicleMaintenanceSchema,
+  type InsertSchedule, 
+  type Rep, 
+  type Outlet 
+} from "@shared/schema";
 import multer from "multer";
 import * as XLSX from "xlsx";
 import Papa from "papaparse";
 import { exec } from "child_process";
 import { promisify } from "util";
 import { performAdvancedClustering as performAdvancedClusteringJS } from "./clustering-algorithms";
+import { generateAdvancedSchedule, reoptimizeSchedules, validateSchedule } from "./advanced-scheduling";
 
 const execAsync = promisify(exec);
 
@@ -214,7 +225,7 @@ async function performAdvancedClustering(
           
           console.log(`Advanced clustering created ${geographicClusters.length} zones`);
           geographicClusters.forEach((cluster, idx) => {
-            console.log(`Zone ${idx + 1}: ${cluster.outlets.length} outlets, ${cluster.radius?.toFixed(2) || 'N/A'}km radius`);
+            console.log(`Zone ${idx + 1}: ${cluster.outlets.length} outlets`);
           });
           
           resolve(geographicClusters);
@@ -273,12 +284,13 @@ function createExact25OutletClusters(outlets: Outlet[], targetSize: number = 25)
     let bestSeed: Outlet | null = null;
     let maxNearbyCount = 0;
     
-    for (const outletId of unassigned) {
+    const unassignedArray = Array.from(unassigned);
+    for (const outletId of unassignedArray) {
       const outlet = outletMap.get(outletId)!;
       let nearbyCount = 0;
       
       // Count unassigned outlets within INITIAL_RADIUS
-      for (const otherId of unassigned) {
+      for (const otherId of unassignedArray) {
         if (otherId === outletId) continue;
         const other = outletMap.get(otherId)!;
         const distance = calculateHaversineDistance(
@@ -298,7 +310,7 @@ function createExact25OutletClusters(outlets: Outlet[], targetSize: number = 25)
     
     if (!bestSeed) {
       // No good seed found, pick the first unassigned outlet
-      const firstId = unassigned.values().next().value;
+      const firstId = unassignedArray[0];
       bestSeed = outletMap.get(firstId)!;
     }
     
@@ -317,7 +329,7 @@ function createExact25OutletClusters(outlets: Outlet[], targetSize: number = 25)
       const candidates: { outlet: Outlet; distance: number }[] = [];
       
       // Find all outlets within current radius
-      for (const outletId of unassigned) {
+      for (const outletId of Array.from(unassigned)) {
         const outlet = outletMap.get(outletId)!;
         
         // Calculate distance to all outlets in the cluster
@@ -363,7 +375,7 @@ function createExact25OutletClusters(outlets: Outlet[], targetSize: number = 25)
       const remainingNeeded = TARGET_SIZE - cluster.outlets.length;
       const remainingCandidates: { outlet: Outlet; distance: number }[] = [];
       
-      for (const outletId of unassigned) {
+      for (const outletId of Array.from(unassigned)) {
         const outlet = outletMap.get(outletId)!;
         const distance = calculateHaversineDistance(
           outlet.latitude, outlet.longitude,
@@ -1957,12 +1969,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
             'Visit Order': index + 1,
             'Outlet Name': outlet.name,
             'Address': outlet.address,
-            'District': outlet.district,
-            'Region': outlet.region,
-            'Area': outlet.area,
+            'Territory': outlet.territory || '',
             'Latitude': outlet.latitude,
             'Longitude': outlet.longitude,
-            'Visit Frequency': outlet.visitFrequency,
+            'Visit Frequency': `VF${outlet.visitFrequency}`,
             'Distance (km)': index === 0 ? 0 : 
               calculateDistance(
                 orderedOutlets[index - 1].latitude,
@@ -1986,6 +1996,278 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Export routes error:", error);
       res.status(500).json({ message: "Failed to export routes" });
+    }
+  });
+
+  // ============= VEHICLE MANAGEMENT ROUTES =============
+
+  // Get all vehicles
+  app.get("/api/vehicles", async (_req, res) => {
+    try {
+      const vehicles = await storage.getVehicles();
+      res.json(vehicles);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch vehicles" });
+    }
+  });
+
+  // Get single vehicle
+  app.get("/api/vehicles/:id", async (req, res) => {
+    try {
+      const vehicle = await storage.getVehicle(req.params.id);
+      if (!vehicle) {
+        return res.status(404).json({ message: "Vehicle not found" });
+      }
+      res.json(vehicle);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch vehicle" });
+    }
+  });
+
+  // Create vehicle
+  app.post("/api/vehicles", async (req, res) => {
+    try {
+      const parsed = insertVehicleSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Invalid vehicle data", errors: parsed.error.errors });
+      }
+      const vehicle = await storage.createVehicle(parsed.data);
+      res.status(201).json(vehicle);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to create vehicle" });
+    }
+  });
+
+  // Update vehicle
+  app.patch("/api/vehicles/:id", async (req, res) => {
+    try {
+      const vehicle = await storage.updateVehicle(req.params.id, req.body);
+      if (!vehicle) {
+        return res.status(404).json({ message: "Vehicle not found" });
+      }
+      res.json(vehicle);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update vehicle" });
+    }
+  });
+
+  // Delete vehicle
+  app.delete("/api/vehicles/:id", async (req, res) => {
+    try {
+      await storage.deleteVehicle(req.params.id);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to delete vehicle" });
+    }
+  });
+
+  // Get vehicle maintenance records
+  app.get("/api/vehicles/:id/maintenance", async (req, res) => {
+    try {
+      const records = await storage.getVehicleMaintenanceRecords(req.params.id);
+      res.json(records);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch maintenance records" });
+    }
+  });
+
+  // Get all maintenance records
+  app.get("/api/vehicle-maintenance", async (_req, res) => {
+    try {
+      const records = await storage.getVehicleMaintenanceRecords();
+      res.json(records);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch maintenance records" });
+    }
+  });
+
+  // Create maintenance record
+  app.post("/api/vehicle-maintenance", async (req, res) => {
+    try {
+      const parsed = insertVehicleMaintenanceSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Invalid maintenance data", errors: parsed.error.errors });
+      }
+      const record = await storage.createVehicleMaintenanceRecord(parsed.data);
+      res.status(201).json(record);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to create maintenance record" });
+    }
+  });
+
+  // Get vehicle alerts
+  app.get("/api/vehicle-alerts", async (_req, res) => {
+    try {
+      const alerts = await storage.getVehicleAlerts();
+      res.json(alerts);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch vehicle alerts" });
+    }
+  });
+
+  // Get vehicle usage records
+  app.get("/api/vehicles/:id/usage", async (req, res) => {
+    try {
+      const records = await storage.getVehicleUsageRecords(req.params.id);
+      res.json(records);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch usage records" });
+    }
+  });
+
+  // ============= RE-OPTIMIZATION ROUTES =============
+
+  // Re-assign outlet to a different zone/territory
+  app.post("/api/outlets/:id/reassign", async (req, res) => {
+    try {
+      const { territory, repId } = req.body;
+      const outlet = await storage.updateOutlet(req.params.id, { territory, repId });
+      if (!outlet) {
+        return res.status(404).json({ message: "Outlet not found" });
+      }
+      res.json(outlet);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to reassign outlet" });
+    }
+  });
+
+  // Bulk reassign outlets
+  app.post("/api/outlets/bulk-reassign", async (req, res) => {
+    try {
+      const { updates } = req.body; // Array of { id, territory, repId }
+      const results = await storage.updateOutlets(updates.map((u: any) => ({
+        id: u.id,
+        data: { territory: u.territory, repId: u.repId }
+      })));
+      res.json({ success: true, updated: results.length });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to bulk reassign outlets" });
+    }
+  });
+
+  // Full re-optimization after zone changes
+  app.post("/api/reoptimize", async (req, res) => {
+    try {
+      const outlets = await storage.getOutlets();
+      const reps = await storage.getReps();
+      
+      if (outlets.length === 0) {
+        return res.status(400).json({ message: "No outlets available for re-optimization" });
+      }
+      
+      const { minVisitsPerDay = 25, maxVisitsPerDay = 27, workingDaysPerWeek = 5 } = req.body;
+      
+      // Clear existing schedules
+      await storage.clearSchedules();
+      
+      // Generate new schedules using the advanced scheduling algorithm
+      const schedules = reoptimizeSchedules(
+        outlets,
+        reps.map(r => ({ id: r.id, territory: r.territory })),
+        { minVisitsPerDay, maxVisitsPerDay, workingDaysPerWeek, weeksInMonth: 4 }
+      );
+      
+      // Save new schedules
+      await storage.createSchedules(schedules);
+      
+      // Validate the new schedules
+      const allSchedules = await storage.getSchedules();
+      let totalErrors = 0;
+      let totalWarnings = 0;
+      
+      for (const rep of reps) {
+        const repOutlets = outlets.filter(o => o.territory === rep.territory);
+        const repSchedules = allSchedules.filter(s => s.repId === rep.id).map(s => ({
+          repId: s.repId,
+          week: s.week,
+          dayOfWeek: s.dayOfWeek,
+          outletIds: s.outletIds as string[],
+          routeOrder: s.routeOrder as string[],
+          totalDistance: s.totalDistance || undefined,
+          estimatedDuration: s.estimatedDuration || undefined
+        }));
+        
+        const validation = validateSchedule(repOutlets, repSchedules as any, {
+          minVisitsPerDay,
+          maxVisitsPerDay,
+          workingDaysPerWeek,
+          weeksInMonth: 4
+        });
+        
+        totalErrors += validation.errors.length;
+        totalWarnings += validation.warnings.length;
+      }
+      
+      res.json({
+        success: true,
+        schedulesCreated: schedules.length,
+        repsProcessed: reps.length,
+        validation: {
+          errors: totalErrors,
+          warnings: totalWarnings
+        },
+        message: `Re-optimization complete. Generated ${schedules.length} schedules for ${reps.length} reps.`
+      });
+    } catch (error) {
+      console.error("Re-optimization error:", error);
+      res.status(500).json({ message: "Failed to re-optimize" });
+    }
+  });
+
+  // Generate advanced VF-aware schedule for a single territory
+  app.post("/api/territories/:territory/generate-schedule", async (req, res) => {
+    try {
+      const { territory } = req.params;
+      const { repId, minVisitsPerDay = 25, maxVisitsPerDay = 27, workingDaysPerWeek = 5 } = req.body;
+      
+      const outlets = await storage.getOutletsByTerritory(territory);
+      if (outlets.length === 0) {
+        return res.status(404).json({ message: "No outlets found in this territory" });
+      }
+      
+      // Clear existing schedules for this rep
+      if (repId) {
+        await storage.deleteSchedulesByRepId(repId);
+      }
+      
+      // Generate new schedules
+      const schedules = generateAdvancedSchedule(
+        outlets,
+        repId,
+        territory,
+        { minVisitsPerDay, maxVisitsPerDay, workingDaysPerWeek, weeksInMonth: 4 }
+      );
+      
+      // Save schedules
+      await storage.createSchedules(schedules);
+      
+      // Validate
+      const validation = validateSchedule(outlets, schedules, {
+        minVisitsPerDay,
+        maxVisitsPerDay,
+        workingDaysPerWeek,
+        weeksInMonth: 4
+      });
+      
+      res.json({
+        success: true,
+        schedulesCreated: schedules.length,
+        territory,
+        outlets: outlets.length,
+        vfBreakdown: {
+          vf1: outlets.filter(o => o.visitFrequency === 1).length,
+          vf2: outlets.filter(o => o.visitFrequency === 2).length,
+          vf4: outlets.filter(o => o.visitFrequency === 4).length
+        },
+        validation: {
+          isValid: validation.isValid,
+          errors: validation.errors,
+          warnings: validation.warnings
+        }
+      });
+    } catch (error) {
+      console.error("Schedule generation error:", error);
+      res.status(500).json({ message: "Failed to generate schedule" });
     }
   });
 

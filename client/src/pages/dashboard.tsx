@@ -207,20 +207,26 @@ export default function Dashboard() {
                   <CardTitle>Step 2: File Analysis Complete</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <div className="grid grid-cols-3 gap-4">
+                  <div className="grid grid-cols-4 gap-4">
                     <div className="text-center p-4 bg-gray-50 rounded-lg">
                       <p className="text-sm text-gray-600">Total Outlets</p>
                       <p className="text-2xl font-bold text-gray-900">{outlets.length}</p>
                     </div>
-                    <div className="text-center p-4 bg-gray-50 rounded-lg">
-                      <p className="text-sm text-gray-600">VF2 Outlets</p>
-                      <p className="text-2xl font-bold text-gray-900">
+                    <div className="text-center p-4 bg-blue-50 rounded-lg border border-blue-200">
+                      <p className="text-sm text-blue-600">VF1 (Monthly)</p>
+                      <p className="text-2xl font-bold text-blue-700">
+                        {outlets.filter(o => o.visitFrequency === 1).length}
+                      </p>
+                    </div>
+                    <div className="text-center p-4 bg-yellow-50 rounded-lg border border-yellow-200">
+                      <p className="text-sm text-yellow-600">VF2 (Bi-weekly)</p>
+                      <p className="text-2xl font-bold text-yellow-700">
                         {outlets.filter(o => o.visitFrequency === 2).length}
                       </p>
                     </div>
-                    <div className="text-center p-4 bg-gray-50 rounded-lg">
-                      <p className="text-sm text-gray-600">VF4 Outlets</p>
-                      <p className="text-2xl font-bold text-gray-900">
+                    <div className="text-center p-4 bg-green-50 rounded-lg border border-green-200">
+                      <p className="text-sm text-green-600">VF4 (Weekly)</p>
+                      <p className="text-2xl font-bold text-green-700">
                         {outlets.filter(o => o.visitFrequency === 4).length}
                       </p>
                     </div>

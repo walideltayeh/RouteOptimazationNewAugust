@@ -7,6 +7,7 @@ import Sidebar from "@/components/sidebar";
 import Dashboard from "@/pages/dashboard";
 import TerritoriesPage from "@/pages/territories";
 import RepMapPage from "@/pages/rep-map";
+import VehiclesPage from "@/pages/vehicles";
 import NotFound from "@/pages/not-found";
 
 function AppContent() {
@@ -18,6 +19,7 @@ function AppContent() {
           <Route path="/" component={Dashboard} />
           <Route path="/territories" component={TerritoriesPage} />
           <Route path="/rep-map" component={RepMapPage} />
+          <Route path="/vehicles" component={VehiclesPage} />
           <Route component={NotFound} />
         </Switch>
       </main>

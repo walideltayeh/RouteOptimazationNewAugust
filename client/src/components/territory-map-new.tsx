@@ -1,13 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem } from '@/components/ui/command';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { MapPin, Users, Navigation, Layers, Grid3X3, Check, ChevronsUpDown } from 'lucide-react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { MapPin, Users, Navigation, Layers, Grid3X3, Check, ChevronsUpDown, RefreshCw, Edit2, AlertCircle } from 'lucide-react';
+import { useToast } from '@/hooks/use-toast';
+import { apiRequest } from '@/lib/queryClient';
 import type { Outlet, Rep } from '@shared/schema';
 
 // Set a default token or use environment variable
@@ -36,6 +40,12 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   const [viewMode, setViewMode] = useState<'cluster' | 'individual'>('cluster');
   const [selectedZones, setSelectedZones] = useState<string[]>([]);
   const [open, setOpen] = useState(false);
+  const [editingOutlet, setEditingOutlet] = useState<{id: string, name: string, territory: string} | null>(null);
+  const [newTerritory, setNewTerritory] = useState<string>('');
+  const [pendingChanges, setPendingChanges] = useState<Array<{id: string, name: string, oldTerritory: string, newTerritory: string}>>([]);
+  const [showReoptimizeDialog, setShowReoptimizeDialog] = useState(false);
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
 
   const { data: outlets = [] } = useQuery<Outlet[]>({
     queryKey: ['/api/outlets'],
@@ -44,6 +54,71 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   const { data: reps = [] } = useQuery<Rep[]>({
     queryKey: ['/api/reps'],
   });
+
+  const reassignMutation = useMutation({
+    mutationFn: async (updates: Array<{id: string, territory: string, repId?: string, outletData: {name: string, oldTerritory: string}}>) => {
+      const apiUpdates = updates.map(u => ({ id: u.id, territory: u.territory, repId: u.repId }));
+      await apiRequest("POST", "/api/outlets/bulk-reassign", { updates: apiUpdates });
+      return updates; // Return the full data for onSuccess
+    },
+    onSuccess: (updates) => {
+      queryClient.invalidateQueries({ queryKey: ['/api/outlets'] });
+      // Only add to pending changes after successful mutation
+      updates.forEach(update => {
+        setPendingChanges(prev => [...prev, {
+          id: update.id,
+          name: update.outletData.name,
+          oldTerritory: update.outletData.oldTerritory,
+          newTerritory: update.territory
+        }]);
+      });
+      toast({ title: "Success", description: "Outlets reassigned successfully" });
+    },
+    onError: () => {
+      toast({ title: "Error", description: "Failed to reassign outlets", variant: "destructive" });
+    }
+  });
+
+  const reoptimizeMutation = useMutation({
+    mutationFn: async () => {
+      return apiRequest("POST", "/api/reoptimize", {});
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/outlets'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/schedules'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/reps'] });
+      setPendingChanges([]);
+      setShowReoptimizeDialog(false);
+      toast({ 
+        title: "Re-optimization complete", 
+        description: "All schedules have been regenerated with the new zone assignments" 
+      });
+    },
+    onError: () => {
+      toast({ title: "Error", description: "Failed to re-optimize schedules", variant: "destructive" });
+    }
+  });
+
+  const handleReassignOutlet = () => {
+    if (!editingOutlet || !newTerritory) return;
+    
+    const rep = reps.find(r => r.territory === newTerritory);
+    const updates = [{ 
+      id: editingOutlet.id, 
+      territory: newTerritory, 
+      repId: rep?.id,
+      outletData: { name: editingOutlet.name, oldTerritory: editingOutlet.territory }
+    }];
+    
+    // Pending changes are now added in onSuccess callback
+    reassignMutation.mutate(updates);
+    setEditingOutlet(null);
+    setNewTerritory('');
+  };
+
+  const handleApplyReoptimization = () => {
+    reoptimizeMutation.mutate();
+  };
 
   // Group outlets by territory/rep for clustering
   const territoryGroups = outlets.reduce((acc, outlet) => {
@@ -221,12 +296,22 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
         }
       });
 
-      // Add click handler for clusters
+      // Add click handler for clusters - using safe data attributes to avoid XSS
       map.current!.on('click', 'territory-clusters', (e) => {
         if (e.features && e.features[0]) {
           const feature = e.features[0];
           const properties = feature.properties as any;
           const { territory, count, outlets } = properties;
+          
+          // Escape HTML special characters for display
+          const escapeHtml = (str: string) => str
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+          
+          const safeTerritory = escapeHtml(territory || '');
           
           setSelectedZones(prev => {
             if (prev.includes(territory)) {
@@ -236,26 +321,49 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
             }
           });
           
+          // Parse outlets and escape their names
+          let outletsList: any[] = [];
+          try {
+            outletsList = JSON.parse(outlets);
+          } catch (e) {
+            outletsList = [];
+          }
+          
           // Show popup with territory info and button to view individual outlets
-          new mapboxgl.Popup()
+          const popup = new mapboxgl.Popup()
             .setLngLat(e.lngLat)
             .setHTML(`
               <div class="p-3">
-                <h3 class="font-bold mb-2">${territory}</h3>
+                <h3 class="font-bold mb-2">${safeTerritory}</h3>
                 <p class="text-sm text-gray-600 mb-2">${count} outlets</p>
                 <div class="mb-3 max-h-32 overflow-y-auto">
-                  ${JSON.parse(outlets).map((o: any) => 
-                    `<div class="text-xs text-gray-700">${o.name}</div>`
+                  ${outletsList.map((o: any) => 
+                    `<div class="text-xs text-gray-700">${escapeHtml(o.name || '')}</div>`
                   ).join('')}
                   ${count > 10 ? `<div class="text-xs text-gray-500">...and ${count - 10} more</div>` : ''}
                 </div>
-                <button onclick="window.showIndividualOutlets('${territory}')" 
-                        class="w-full px-3 py-1 bg-blue-500 text-white text-xs rounded hover:bg-blue-600">
+                <button 
+                  data-territory="${safeTerritory}"
+                  class="view-territory-btn w-full px-3 py-1 bg-blue-500 text-white text-xs rounded hover:bg-blue-600 cursor-pointer">
                   View Individual Outlets
                 </button>
               </div>
             `)
             .addTo(map.current!);
+          
+          // Attach click handler after popup is added
+          setTimeout(() => {
+            const btn = document.querySelector('.view-territory-btn');
+            if (btn) {
+              btn.addEventListener('click', (evt) => {
+                const target = evt.target as HTMLElement;
+                const territoryName = target.dataset.territory || '';
+                setSelectedZones([territoryName]);
+                setViewMode('individual');
+                popup.remove();
+              });
+            }
+          }, 0);
         }
       });
 
@@ -322,23 +430,57 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
         }
       });
 
-      // Add click handler for individual outlets
+      // Add click handler for individual outlets - using safe data attributes to avoid XSS
       map.current!.on('click', 'individual-markers', (e) => {
         if (e.features && e.features[0]) {
           const feature = e.features[0];
           const properties = feature.properties as any;
-          const { name, territory, visitFrequency } = properties;
+          const { id, name, territory, visitFrequency } = properties;
           
-          new mapboxgl.Popup()
+          // Escape HTML special characters for display
+          const escapeHtml = (str: string) => str
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+          
+          const safeName = escapeHtml(name || '');
+          const safeTerritory = escapeHtml(territory || '');
+          
+          // Use data attributes instead of inline onclick to prevent XSS
+          const popup = new mapboxgl.Popup()
             .setLngLat(e.lngLat)
             .setHTML(`
               <div class="p-2">
-                <h3 class="font-bold">${name}</h3>
-                <p class="text-sm text-gray-600">Territory: ${territory}</p>
+                <h3 class="font-bold">${safeName}</h3>
+                <p class="text-sm text-gray-600">Territory: ${safeTerritory}</p>
                 <p class="text-sm text-gray-600">Visit Frequency: VF${visitFrequency}</p>
+                <button 
+                  data-outlet-id="${escapeHtml(id || '')}"
+                  data-outlet-name="${safeName}"
+                  data-outlet-territory="${safeTerritory}"
+                  class="edit-outlet-btn mt-2 w-full px-3 py-1 bg-blue-500 text-white text-xs rounded hover:bg-blue-600 cursor-pointer">
+                  Reassign to Different Zone
+                </button>
               </div>
             `)
             .addTo(map.current!);
+          
+          // Attach click handler after popup is added
+          setTimeout(() => {
+            const btn = document.querySelector('.edit-outlet-btn');
+            if (btn) {
+              btn.addEventListener('click', (evt) => {
+                const target = evt.target as HTMLElement;
+                const outletId = target.dataset.outletId || '';
+                const outletName = target.dataset.outletName || '';
+                const outletTerritory = target.dataset.outletTerritory || '';
+                setEditingOutlet({ id: outletId, name: outletName, territory: outletTerritory });
+                popup.remove();
+              });
+            }
+          }, 0);
         }
       });
 
@@ -360,13 +502,8 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     }
   };
 
-  // Global function to switch to individual view for a specific zone
-  useEffect(() => {
-    (window as any).showIndividualOutlets = (territory: string) => {
-      setSelectedZones([territory]);
-      setViewMode('individual');
-    };
-  }, []);
+  // Note: Individual outlet view switching is now handled via data attributes and event delegation
+  // to prevent XSS vulnerabilities with user-supplied territory names
 
   if (mapError) {
     return (
@@ -441,6 +578,19 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                   {reps.length} Reps
                 </div>
               </div>
+
+              {/* Re-optimize button */}
+              {pendingChanges.length > 0 && (
+                <Button 
+                  variant="default" 
+                  className="bg-orange-500 hover:bg-orange-600"
+                  onClick={() => setShowReoptimizeDialog(true)}
+                  data-testid="button-reoptimize"
+                >
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                  Re-optimize ({pendingChanges.length} changes)
+                </Button>
+              )}
             </div>
           </div>
         </CardHeader>
@@ -590,6 +740,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                   {selectedZones.map(territory => {
                     const territoryOutlets = territoryGroups[territory];
                     const rep = getRepForTerritory(territory);
+                    const vf1Count = territoryOutlets?.filter(o => o.visitFrequency === 1).length || 0;
                     const vf2Count = territoryOutlets?.filter(o => o.visitFrequency === 2).length || 0;
                     const vf4Count = territoryOutlets?.filter(o => o.visitFrequency === 4).length || 0;
 
@@ -605,10 +756,25 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                         {rep && (
                           <p className="text-xs text-gray-600 mb-1">{rep.name}</p>
                         )}
-                        <div className="text-xs text-gray-500">
-                          <span className="font-medium">{territoryOutlets?.length || 0}</span> outlets • 
-                          VF2: <span className="font-medium">{vf2Count}</span> • 
-                          VF4: <span className="font-medium">{vf4Count}</span>
+                        <div className="text-xs text-gray-500 space-y-1">
+                          <div><span className="font-medium">{territoryOutlets?.length || 0}</span> outlets total</div>
+                          <div className="flex flex-wrap gap-1">
+                            {vf1Count > 0 && (
+                              <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200 text-xs">
+                                VF1: {vf1Count}
+                              </Badge>
+                            )}
+                            {vf2Count > 0 && (
+                              <Badge variant="outline" className="bg-yellow-50 text-yellow-700 border-yellow-200 text-xs">
+                                VF2: {vf2Count}
+                              </Badge>
+                            )}
+                            {vf4Count > 0 && (
+                              <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200 text-xs">
+                                VF4: {vf4Count}
+                              </Badge>
+                            )}
+                          </div>
                         </div>
                       </div>
                     );
@@ -625,6 +791,102 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
           </Card>
         </div>
       </div>
+
+      {/* Outlet Reassignment Dialog */}
+      <Dialog open={!!editingOutlet} onOpenChange={(open) => !open && setEditingOutlet(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center">
+              <Edit2 className="mr-2 h-5 w-5" />
+              Reassign Outlet
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <p className="text-sm text-gray-600">Outlet:</p>
+              <p className="font-medium">{editingOutlet?.name}</p>
+            </div>
+            <div>
+              <p className="text-sm text-gray-600">Current Zone:</p>
+              <Badge variant="outline">{editingOutlet?.territory}</Badge>
+            </div>
+            <div>
+              <p className="text-sm text-gray-600 mb-2">New Zone:</p>
+              <Select value={newTerritory} onValueChange={setNewTerritory}>
+                <SelectTrigger data-testid="select-new-territory">
+                  <SelectValue placeholder="Select new territory" />
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.keys(territoryGroups).filter(t => t !== editingOutlet?.territory).map(territory => (
+                    <SelectItem key={territory} value={territory}>{territory}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditingOutlet(null)}>Cancel</Button>
+            <Button 
+              onClick={handleReassignOutlet} 
+              disabled={!newTerritory || reassignMutation.isPending}
+              data-testid="button-confirm-reassign"
+            >
+              {reassignMutation.isPending ? "Reassigning..." : "Reassign"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Re-optimization Confirmation Dialog */}
+      <Dialog open={showReoptimizeDialog} onOpenChange={setShowReoptimizeDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center">
+              <AlertCircle className="mr-2 h-5 w-5 text-orange-500" />
+              Apply Re-optimization
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-sm text-gray-600">
+              You have made {pendingChanges.length} zone reassignment(s). Re-optimizing will regenerate all schedules with the VF-aware algorithm.
+            </p>
+            <div className="bg-gray-50 rounded-lg p-3 max-h-48 overflow-y-auto">
+              <p className="text-xs font-medium text-gray-700 mb-2">Changes to apply:</p>
+              {pendingChanges.map((change, idx) => (
+                <div key={idx} className="text-xs text-gray-600 py-1 border-b border-gray-200 last:border-0">
+                  <span className="font-medium">{change.name}</span>: {change.oldTerritory} → {change.newTerritory}
+                </div>
+              ))}
+            </div>
+            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+              <p className="text-sm text-yellow-800">
+                This will regenerate all rep schedules. The process ensures VF4 outlets are visited weekly, VF2 bi-weekly, and VF1 monthly.
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowReoptimizeDialog(false)}>Cancel</Button>
+            <Button 
+              onClick={handleApplyReoptimization}
+              disabled={reoptimizeMutation.isPending}
+              className="bg-orange-500 hover:bg-orange-600"
+              data-testid="button-apply-reoptimize"
+            >
+              {reoptimizeMutation.isPending ? (
+                <>
+                  <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                  Re-optimizing...
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                  Apply Re-optimization
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
