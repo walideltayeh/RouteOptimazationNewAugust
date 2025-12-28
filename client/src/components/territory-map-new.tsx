@@ -44,6 +44,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   const [newTerritory, setNewTerritory] = useState<string>('');
   const [pendingChanges, setPendingChanges] = useState<Array<{id: string, name: string, oldTerritory: string, newTerritory: string}>>([]);
   const [showReoptimizeDialog, setShowReoptimizeDialog] = useState(false);
+  const [vfFilters, setVfFilters] = useState<{vf1: boolean, vf2: boolean, vf4: boolean}>({vf1: true, vf2: true, vf4: true});
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -222,7 +223,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     }
 
     setIsRenderingMarkers(false);
-  }, [outlets, reps, isMapLoaded, viewMode, selectedZones]);
+  }, [outlets, reps, isMapLoaded, viewMode, selectedZones, vfFilters]);
 
   const renderClusterView = () => {
     // Create territory cluster data
@@ -387,9 +388,18 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
 
   const renderIndividualView = () => {
     // Filter outlets by selected zones if any
-    const outletsToShow = selectedZones.length > 0
+    let outletsToShow = selectedZones.length > 0
       ? selectedZones.flatMap(zone => territoryGroups[zone] || [])
       : outlets.length > 500 ? outlets.slice(0, 500) : outlets; // Limit for very large datasets
+    
+    // Apply VF filters (visualization only, doesn't affect scheduling)
+    outletsToShow = outletsToShow.filter(outlet => {
+      const vf = outlet.visitFrequency;
+      if (vf === 1 && !vfFilters.vf1) return false;
+      if (vf === 2 && !vfFilters.vf2) return false;
+      if (vf === 4 && !vfFilters.vf4) return false;
+      return true;
+    });
 
     const outletFeatures = outletsToShow.map((outlet, index) => ({
       type: 'Feature' as const,
@@ -448,14 +458,32 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
           const safeName = escapeHtml(name || '');
           const safeTerritory = escapeHtml(territory || '');
           
+          // Get VF badge color based on visit frequency
+          const getVfBadgeStyle = (vf: number) => {
+            switch (vf) {
+              case 1: return 'background-color: #dcfce7; color: #15803d; border: 1px solid #86efac;'; // Green
+              case 2: return 'background-color: #ffedd5; color: #c2410c; border: 1px solid #fdba74;'; // Orange
+              case 4: return 'background-color: #fee2e2; color: #b91c1c; border: 1px solid #fca5a5;'; // Red
+              default: return 'background-color: #f3f4f6; color: #374151; border: 1px solid #d1d5db;';
+            }
+          };
+          
+          const vfLabel = visitFrequency === 1 ? 'VF1 (Monthly)' : visitFrequency === 2 ? 'VF2 (Bi-weekly)' : 'VF4 (Weekly)';
+          
           // Use data attributes instead of inline onclick to prevent XSS
           const popup = new mapboxgl.Popup()
             .setLngLat(e.lngLat)
             .setHTML(`
-              <div class="p-2">
-                <h3 class="font-bold">${safeName}</h3>
-                <p class="text-sm text-gray-600">Territory: ${safeTerritory}</p>
-                <p class="text-sm text-gray-600">Visit Frequency: VF${visitFrequency}</p>
+              <div class="p-3" style="min-width: 220px;">
+                <h3 class="font-bold text-base mb-2">${safeName}</h3>
+                <div style="font-size: 12px; color: #6b7280; margin-bottom: 8px;">
+                  <div style="margin-bottom: 4px;"><strong>Code:</strong> ${escapeHtml(id || '')}</div>
+                  <div style="margin-bottom: 4px;"><strong>Zone:</strong> ${safeTerritory}</div>
+                  <div style="margin-bottom: 4px;"><strong>Visit Frequency:</strong></div>
+                  <span style="display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; ${getVfBadgeStyle(visitFrequency)}">
+                    ${vfLabel}
+                  </span>
+                </div>
                 <button 
                   data-outlet-id="${escapeHtml(id || '')}"
                   data-outlet-name="${safeName}"
@@ -649,6 +677,47 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                 </div>
               </div>
             )}
+            
+            {/* VF Legend and Filter */}
+            <div className="absolute bottom-4 left-4 bg-white rounded-lg shadow-lg p-3">
+              <h4 className="font-semibold text-sm mb-2">Visit Frequency Legend</h4>
+              <div className="space-y-2">
+                <label className="flex items-center space-x-2 cursor-pointer">
+                  <input 
+                    type="checkbox" 
+                    checked={vfFilters.vf1} 
+                    onChange={(e) => setVfFilters(prev => ({...prev, vf1: e.target.checked}))}
+                    className="rounded border-gray-300"
+                  />
+                  <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800 border border-green-200">
+                    VF1 - Monthly
+                  </span>
+                </label>
+                <label className="flex items-center space-x-2 cursor-pointer">
+                  <input 
+                    type="checkbox" 
+                    checked={vfFilters.vf2} 
+                    onChange={(e) => setVfFilters(prev => ({...prev, vf2: e.target.checked}))}
+                    className="rounded border-gray-300"
+                  />
+                  <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800 border border-orange-200">
+                    VF2 - Bi-weekly
+                  </span>
+                </label>
+                <label className="flex items-center space-x-2 cursor-pointer">
+                  <input 
+                    type="checkbox" 
+                    checked={vfFilters.vf4} 
+                    onChange={(e) => setVfFilters(prev => ({...prev, vf4: e.target.checked}))}
+                    className="rounded border-gray-300"
+                  />
+                  <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800 border border-red-200">
+                    VF4 - Weekly
+                  </span>
+                </label>
+              </div>
+              <p className="text-xs text-gray-500 mt-2">Toggle to filter outlets on map</p>
+            </div>
           </CardContent>
         </Card>
 
@@ -760,17 +829,17 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                           <div><span className="font-medium">{territoryOutlets?.length || 0}</span> outlets total</div>
                           <div className="flex flex-wrap gap-1">
                             {vf1Count > 0 && (
-                              <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200 text-xs">
+                              <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200 text-xs">
                                 VF1: {vf1Count}
                               </Badge>
                             )}
                             {vf2Count > 0 && (
-                              <Badge variant="outline" className="bg-yellow-50 text-yellow-700 border-yellow-200 text-xs">
+                              <Badge variant="outline" className="bg-orange-50 text-orange-700 border-orange-200 text-xs">
                                 VF2: {vf2Count}
                               </Badge>
                             )}
                             {vf4Count > 0 && (
-                              <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200 text-xs">
+                              <Badge variant="outline" className="bg-red-50 text-red-700 border-red-200 text-xs">
                                 VF4: {vf4Count}
                               </Badge>
                             )}

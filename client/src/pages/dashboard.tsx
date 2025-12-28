@@ -212,21 +212,21 @@ export default function Dashboard() {
                       <p className="text-sm text-gray-600">Total Outlets</p>
                       <p className="text-2xl font-bold text-gray-900">{outlets.length}</p>
                     </div>
-                    <div className="text-center p-4 bg-blue-50 rounded-lg border border-blue-200">
-                      <p className="text-sm text-blue-600">VF1 (Monthly)</p>
-                      <p className="text-2xl font-bold text-blue-700">
+                    <div className="text-center p-4 bg-green-50 rounded-lg border border-green-200">
+                      <p className="text-sm text-green-600">VF1 (Monthly)</p>
+                      <p className="text-2xl font-bold text-green-700">
                         {outlets.filter(o => o.visitFrequency === 1).length}
                       </p>
                     </div>
-                    <div className="text-center p-4 bg-yellow-50 rounded-lg border border-yellow-200">
-                      <p className="text-sm text-yellow-600">VF2 (Bi-weekly)</p>
-                      <p className="text-2xl font-bold text-yellow-700">
+                    <div className="text-center p-4 bg-orange-50 rounded-lg border border-orange-200">
+                      <p className="text-sm text-orange-600">VF2 (Bi-weekly)</p>
+                      <p className="text-2xl font-bold text-orange-700">
                         {outlets.filter(o => o.visitFrequency === 2).length}
                       </p>
                     </div>
-                    <div className="text-center p-4 bg-green-50 rounded-lg border border-green-200">
-                      <p className="text-sm text-green-600">VF4 (Weekly)</p>
-                      <p className="text-2xl font-bold text-green-700">
+                    <div className="text-center p-4 bg-red-50 rounded-lg border border-red-200">
+                      <p className="text-sm text-red-600">VF4 (Weekly)</p>
+                      <p className="text-2xl font-bold text-red-700">
                         {outlets.filter(o => o.visitFrequency === 4).length}
                       </p>
                     </div>

@@ -1,0 +1,114 @@
+1. Unique Outlet Ownership
+
+Each outlet must be assigned to one and only one Sales Rep.
+
+An outlet must never appear in the schedules of multiple reps.
+
+Outlet ownership is enforced by Zone → Rep hierarchy.
+
+2. Zone-Based Rep Scheduling
+
+Scheduling must be executed per Rep within each Zone.
+
+Outlets cannot be shared across zones or reps.
+
+Once an outlet is assigned to a rep, it remains locked to that rep for the full cycle.
+
+3. Visit Frequency Logic (VF1, VF2, VF4)
+
+Visit Frequency determines how often an outlet must be visited per cycle:
+
+VF1 → 1 visit
+
+VF2 → 2 visits
+
+VF4 → 4 visits
+
+Visits must be:
+
+Evenly distributed across the rep’s working days
+
+Respect daily minimum and maximum visit limits
+
+Rules:
+
+VF4 visits must be spread across multiple days
+
+VF2 visits should avoid consecutive days when possible
+
+No clustering if redistribution is feasible
+
+4. Balanced Daily Workload
+
+For each rep:
+
+Daily visit count must remain within min / max limits
+
+Load balancing is mandatory before finalizing the schedule
+
+5. Map Visualization Requirements (New)
+5.1 Outlet Map Tab
+
+Each outlet must have a dedicated “Outlet Details” tab or panel on the map.
+
+When clicking or tapping an outlet pin, the system must display:
+
+Outlet Name
+
+Outlet Code
+
+Zone
+
+Assigned Rep
+
+Visit Frequency (VF1 / VF2 / VF4)
+
+5.2 Visual VF Indicator
+
+The Visit Frequency must be clearly visible at a glance on the map using at least one of the following:
+
+Colored badge (recommended)
+
+VF1 → Green
+
+VF2 → Orange
+
+VF4 → Red
+
+Or labeled tag (e.g. “VF4”)
+
+VF indicators must be consistent across:
+
+Map view
+
+Outlet details panel
+
+Schedule export
+
+5.3 Filtering & Legend
+
+Map must include:
+
+A VF filter toggle (show/hide VF1, VF2, VF4)
+
+A visible legend explaining VF colors or labels
+
+Filtering must not affect scheduling logic, only visualization.
+
+6. Schedule Export Requirements (Calendar Format)
+6.1 Calendar-Style Layout
+
+Schedule export must be vertical, readable, and calendar-like.
+
+One section or file per rep.
+
+6.2 Export Structure (Example)
+
+Rep Name – Zone A
+
+Date	Day	Outlet Name	Outlet Code	Visit Frequency	Zone
+2026-01-05	Monday	Outlet 1	O-001	VF4	Zone A
+		Outlet 2	O-014	VF2	Zone A
+		Outlet 3	O-032	VF1	Zone A
+2026-01-06	Tuesday	Outlet 1	O-001	VF4	Zone A
+		Outlet 4	O-021	VF2	Zone A
