@@ -205,7 +205,8 @@ export class MemStorage implements IStorage {
       createdAt: new Date(),
       repId: insertOutlet.repId || null,
       territory: insertOutlet.territory || null,
-      cluster: insertOutlet.cluster || null
+      cluster: insertOutlet.cluster || null,
+      timePerVisit: insertOutlet.timePerVisit ?? 30
     };
     this.outlets.set(id, outlet);
     return outlet;
@@ -617,11 +618,16 @@ export class MemStorage implements IStorage {
     };
   }
 
-  async getFileAnalysis(): Promise<FileAnalysis> {
+  async getFileAnalysis(): Promise<FileAnalysis & { avgTimePerVisit?: number }> {
     const outlets = await this.getOutlets();
     const vf1 = outlets.filter(o => o.visitFrequency === 1).length;
     const vf2 = outlets.filter(o => o.visitFrequency === 2).length;
     const vf4 = outlets.filter(o => o.visitFrequency === 4).length;
+    
+    // Calculate average time per visit
+    const avgTimePerVisit = outlets.length > 0
+      ? Math.round(outlets.reduce((sum, o) => sum + (o.timePerVisit || 30), 0) / outlets.length)
+      : undefined;
     
     // Total monthly visits
     const totalMonthlyVisits = (vf1 * 1) + (vf2 * 2) + (vf4 * 4);
@@ -633,7 +639,8 @@ export class MemStorage implements IStorage {
       vf1,
       vf2,
       vf4,
-      recommendedReps
+      recommendedReps,
+      avgTimePerVisit
     };
   }
 

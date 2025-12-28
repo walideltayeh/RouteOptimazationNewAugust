@@ -1698,14 +1698,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
         
         // Calculate max outlets: working hours / (time per outlet + travel time)
         const effectiveTimePerOutlet = Math.min(avgTimePerVisit, maxTimePerOutlet) + avgTravelTime;
-        maxVisitsPerDay = Math.floor(maxWorkingMinutes / effectiveTimePerOutlet);
+        const calculatedMax = Math.floor(maxWorkingMinutes / effectiveTimePerOutlet);
+        
+        // Guard against zero or negative values - fall back to reasonable defaults
+        maxVisitsPerDay = Math.max(5, calculatedMax); // At least 5 outlets per day
         minVisitsPerDay = Math.max(1, Math.floor(maxVisitsPerDay * 0.8));
         
-        console.log(`Time-based calculation: ${maxWorkingMinutes} min / ${effectiveTimePerOutlet.toFixed(1)} min per outlet = ${maxVisitsPerDay} max outlets/day`);
+        // Ensure min < max
+        if (minVisitsPerDay >= maxVisitsPerDay) {
+          minVisitsPerDay = Math.max(1, maxVisitsPerDay - 2);
+        }
+        
+        console.log(`Time-based calculation: ${maxWorkingMinutes} min / ${effectiveTimePerOutlet.toFixed(1)} min per outlet = ${maxVisitsPerDay} max outlets/day (min=${minVisitsPerDay})`);
       } else {
         // Manual mode - use provided values
-        minVisitsPerDay = req.body.minVisitsPerDay || 25;
-        maxVisitsPerDay = req.body.maxVisitsPerDay || 27;
+        minVisitsPerDay = Math.max(1, req.body.minVisitsPerDay || 25);
+        maxVisitsPerDay = Math.max(minVisitsPerDay + 1, req.body.maxVisitsPerDay || 27);
       }
       
       console.log(`Optimization using ${calculationMode} mode: min=${minVisitsPerDay}, max=${maxVisitsPerDay} visits/day`);
