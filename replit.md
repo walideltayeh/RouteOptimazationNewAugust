@@ -161,4 +161,15 @@ Preferred communication style: Simple, everyday language.
   - Ensures no outlets are lost and all clusters respect user-defined bounds
   - Creates additional clusters when needed to prevent exceeding max capacity
 
+## Recent Changes (December 2025)
+
+✓ **Enhanced VF Color Scheme**: Updated visit frequency colors - VF1=Green (monthly), VF2=Orange (bi-weekly), VF4=Red (weekly)
+✓ **Enhanced Outlet Details Panel**: Map popup now shows outlet code, zone, assigned rep, and VF badge with color coding
+✓ **Added VF Filter & Legend**: Interactive toggles to filter outlets by VF type on the map with a visible color-coded legend
+✓ **Implemented Calendar-Style Schedule Export**: Excel export now produces per-rep sheets with Date, Day, Outlet Name, Outlet Code, Visit Frequency, Zone columns
+✓ **Verified Scheduling Algorithm**: Unique outlet ownership (per-territory scheduling) and balanced workload distribution confirmed
+✓ **Added Vehicle Management Module**: Complete fleet tracking with CRUD API, maintenance history, and color-coded alerts
+✓ **Interactive Outlet Reassignment**: Click outlet on map to reassign to different zone with full re-optimization capability
+✓ **Fixed XSS Vulnerabilities**: All map popups now use HTML escaping and data attributes instead of inline onclick handlers
+
 The application follows a monorepo structure with clear separation between client, server, and shared code, enabling efficient development and maintainable architecture for scaling route optimization operations with advanced AI capabilities.
