@@ -190,7 +190,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   useEffect(() => {
     if (!map.current || !isMapLoaded || outlets.length === 0) return;
 
-    console.log(`Rendering ${outlets.length} outlets in ${viewMode} mode`);
+    console.log(`Rendering ${outlets.length} outlets in ${viewMode} mode, VF filters: VF1=${vfFilters.vf1}, VF2=${vfFilters.vf2}, VF4=${vfFilters.vf4}`);
     setIsRenderingMarkers(true);
     
     // For very large datasets, use optimized rendering
@@ -201,29 +201,169 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
       return;
     }
     
-    // Clear existing sources and layers
+    // Clear existing sources and layers properly
+    const mapInstance = map.current;
     try {
-      if (map.current.getSource('territories')) {
-        map.current.removeLayer('territory-clusters');
-        map.current.removeLayer('territory-labels');
-        map.current.removeSource('territories');
-      }
-      if (map.current.getSource('individual-outlets')) {
-        map.current.removeLayer('individual-markers');
-        map.current.removeSource('individual-outlets');
-      }
+      if (mapInstance.getLayer('territory-clusters')) mapInstance.removeLayer('territory-clusters');
+      if (mapInstance.getLayer('territory-labels')) mapInstance.removeLayer('territory-labels');
+      if (mapInstance.getSource('territories')) mapInstance.removeSource('territories');
+      if (mapInstance.getLayer('individual-markers')) mapInstance.removeLayer('individual-markers');
+      if (mapInstance.getSource('individual-outlets')) mapInstance.removeSource('individual-outlets');
     } catch (error) {
       console.log('Source/layer cleanup:', error);
     }
 
+    // Capture current filter state for use in render functions
+    const currentVfFilters = { ...vfFilters };
+    const currentSelectedZones = [...selectedZones];
+
     if (viewMode === 'cluster') {
       renderClusterView();
     } else {
-      renderIndividualView();
+      // Inline rendering for individual view to ensure fresh filter state
+      let outletsToShow = currentSelectedZones.length > 0
+        ? currentSelectedZones.flatMap(zone => territoryGroups[zone] || [])
+        : outlets.length > 500 ? outlets.slice(0, 500) : outlets;
+      
+      // Apply VF filters with current state
+      outletsToShow = outletsToShow.filter(outlet => {
+        const vf = outlet.visitFrequency;
+        if (vf === 1 && !currentVfFilters.vf1) return false;
+        if (vf === 2 && !currentVfFilters.vf2) return false;
+        if (vf === 4 && !currentVfFilters.vf4) return false;
+        return true;
+      });
+      
+      console.log(`Filtered to ${outletsToShow.length} outlets after VF filter`);
+
+      const outletFeatures = outletsToShow.map((outlet) => ({
+        type: 'Feature' as const,
+        properties: {
+          id: outlet.id,
+          name: outlet.name,
+          territory: outlet.territory,
+          visitFrequency: outlet.visitFrequency,
+          color: getTerritoryColor(outlet.territory || outlet.repId || 'unassigned')
+        },
+        geometry: {
+          type: 'Point' as const,
+          coordinates: [outlet.longitude, outlet.latitude]
+        }
+      }));
+
+      try {
+        mapInstance.addSource('individual-outlets', {
+          type: 'geojson',
+          data: {
+            type: 'FeatureCollection',
+            features: outletFeatures
+          }
+        });
+
+        mapInstance.addLayer({
+          id: 'individual-markers',
+          type: 'circle',
+          source: 'individual-outlets',
+          paint: {
+            'circle-radius': 8,
+            'circle-color': ['get', 'color'],
+            'circle-opacity': 0.8,
+            'circle-stroke-width': 2,
+            'circle-stroke-color': '#ffffff'
+          }
+        });
+
+        // Attach click handler inline
+        attachIndividualMarkerClickHandler();
+
+        if (outletFeatures.length > 0) {
+          const coordinates = outletFeatures.map(f => f.geometry.coordinates);
+          const bounds = coordinates.reduce((bounds, coord) => {
+            return bounds.extend(coord as [number, number]);
+          }, new mapboxgl.LngLatBounds(coordinates[0] as [number, number], coordinates[0] as [number, number]));
+          mapInstance.fitBounds(bounds, { padding: 50 });
+        }
+        
+        console.log(`Successfully rendered ${outletFeatures.length} individual markers`);
+      } catch (error) {
+        console.error('Error adding individual markers:', error);
+      }
     }
 
     setIsRenderingMarkers(false);
   }, [outlets, reps, isMapLoaded, viewMode, selectedZones, vfFilters]);
+
+  // Helper function to attach click handler for individual markers
+  const attachIndividualMarkerClickHandler = () => {
+    if (!map.current) return;
+    
+    map.current.on('click', 'individual-markers', (e) => {
+      if (e.features && e.features[0]) {
+        const feature = e.features[0];
+        const properties = feature.properties as any;
+        const { id, name, territory, visitFrequency } = properties;
+        
+        const escapeHtml = (str: string) => str
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#039;');
+        
+        const safeName = escapeHtml(name || '');
+        const safeTerritory = escapeHtml(territory || '');
+        
+        const getVfBadgeStyle = (vf: number) => {
+          switch (vf) {
+            case 1: return 'background-color: #dcfce7; color: #15803d; border: 1px solid #86efac;';
+            case 2: return 'background-color: #ffedd5; color: #c2410c; border: 1px solid #fdba74;';
+            case 4: return 'background-color: #fee2e2; color: #b91c1c; border: 1px solid #fca5a5;';
+            default: return 'background-color: #f3f4f6; color: #374151; border: 1px solid #d1d5db;';
+          }
+        };
+        
+        const vfLabel = visitFrequency === 1 ? 'VF1 (Monthly)' : visitFrequency === 2 ? 'VF2 (Bi-weekly)' : 'VF4 (Weekly)';
+        
+        const popup = new mapboxgl.Popup()
+          .setLngLat(e.lngLat)
+          .setHTML(`
+            <div class="p-3" style="min-width: 220px;">
+              <h3 class="font-bold text-base mb-2">${safeName}</h3>
+              <div style="font-size: 12px; color: #6b7280; margin-bottom: 8px;">
+                <div style="margin-bottom: 4px;"><strong>Code:</strong> ${escapeHtml(id || '')}</div>
+                <div style="margin-bottom: 4px;"><strong>Zone:</strong> ${safeTerritory}</div>
+                <div style="margin-bottom: 4px;"><strong>Visit Frequency:</strong></div>
+                <span style="display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; ${getVfBadgeStyle(visitFrequency)}">
+                  ${vfLabel}
+                </span>
+              </div>
+              <button 
+                data-outlet-id="${escapeHtml(id || '')}"
+                data-outlet-name="${safeName}"
+                data-outlet-territory="${safeTerritory}"
+                class="edit-outlet-btn mt-2 w-full px-3 py-1 bg-blue-500 text-white text-xs rounded hover:bg-blue-600 cursor-pointer">
+                Reassign to Different Zone
+              </button>
+            </div>
+          `)
+          .addTo(map.current!);
+        
+        setTimeout(() => {
+          const btn = document.querySelector('.edit-outlet-btn');
+          if (btn) {
+            btn.addEventListener('click', (evt) => {
+              const target = evt.target as HTMLElement;
+              const outletId = target.dataset.outletId || '';
+              const outletName = target.dataset.outletName || '';
+              const outletTerritory = target.dataset.outletTerritory || '';
+              setEditingOutlet({ id: outletId, name: outletName, territory: outletTerritory });
+              popup.remove();
+            });
+          }
+        }, 0);
+      }
+    });
+  };
 
   const renderClusterView = () => {
     // Create territory cluster data

@@ -140,49 +140,54 @@ export function generateScheduleExcel(reps: Rep[], schedules: Schedule[], outlet
   const vfSheet = XLSX.utils.json_to_sheet(vfSummaryData);
   XLSX.utils.book_append_sheet(workbook, vfSheet, 'VF Legend');
   
-  // Create zones summary sheet
+  // Create zones summary sheet - show all weeks and all reps
   const zonesData: any[] = [];
-  const processedZones = new Set<string>();
   
-  schedules.forEach(schedule => {
-    if (schedule.week <= 2) {
+  // Group schedules by rep, week, day for proper summary
+  reps.forEach(rep => {
+    const repSchedules = schedules.filter(s => s.repId === rep.id);
+    
+    // Sort by week then day
+    repSchedules.sort((a, b) => {
+      if (a.week !== b.week) return a.week - b.week;
+      return a.dayOfWeek - b.dayOfWeek;
+    });
+    
+    repSchedules.forEach(schedule => {
       const outletIds = schedule.outletIds as string[];
       if (outletIds && outletIds.length > 0) {
-        const zoneKey = `week${schedule.week}-day${schedule.dayOfWeek}`;
-        if (!processedZones.has(zoneKey)) {
-          processedZones.add(zoneKey);
-          
-          const rep = reps.find(r => r.id === schedule.repId);
-          const outletNames = outletIds.map((id: string) => {
-            const outlet = outlets.find(o => o.id === id);
-            return outlet ? outlet.name : 'Unknown';
-          });
-          
-          const vf1Count = outletIds.filter((id: string) => {
-            const o = outlets.find(outlet => outlet.id === id);
-            return o?.visitFrequency === 1;
-          }).length;
-          const vf2Count = outletIds.filter((id: string) => {
-            const o = outlets.find(outlet => outlet.id === id);
-            return o?.visitFrequency === 2;
-          }).length;
-          const vf4Count = outletIds.filter((id: string) => {
-            const o = outlets.find(outlet => outlet.id === id);
-            return o?.visitFrequency === 4;
-          }).length;
-          
-          zonesData.push({
-            'Zone': `Week ${schedule.week} - Day ${schedule.dayOfWeek + 1}`,
-            'Rep': rep ? rep.name : 'Unknown',
-            'Total Outlets': outletIds.length,
-            'VF1 (Monthly)': vf1Count,
-            'VF2 (Bi-weekly)': vf2Count,
-            'VF4 (Weekly)': vf4Count,
-            'Outlets': outletNames.slice(0, 10).join(', ') + (outletNames.length > 10 ? '...' : '')
-          });
-        }
+        const outletNames = outletIds.map((id: string) => {
+          const outlet = outlets.find(o => o.id === id);
+          return outlet ? outlet.name : 'Unknown';
+        });
+        
+        const vf1Count = outletIds.filter((id: string) => {
+          const o = outlets.find(outlet => outlet.id === id);
+          return o?.visitFrequency === 1;
+        }).length;
+        const vf2Count = outletIds.filter((id: string) => {
+          const o = outlets.find(outlet => outlet.id === id);
+          return o?.visitFrequency === 2;
+        }).length;
+        const vf4Count = outletIds.filter((id: string) => {
+          const o = outlets.find(outlet => outlet.id === id);
+          return o?.visitFrequency === 4;
+        }).length;
+        
+        const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+        
+        zonesData.push({
+          'Rep': rep.name,
+          'Week': schedule.week,
+          'Day': days[schedule.dayOfWeek] || `Day ${schedule.dayOfWeek + 1}`,
+          'Total Outlets': outletIds.length,
+          'VF1 (Monthly)': vf1Count,
+          'VF2 (Bi-weekly)': vf2Count,
+          'VF4 (Weekly)': vf4Count,
+          'Outlets': outletNames.slice(0, 10).join(', ') + (outletNames.length > 10 ? '...' : '')
+        });
       }
-    }
+    });
   });
   
   const zonesSheet = XLSX.utils.json_to_sheet(zonesData);
