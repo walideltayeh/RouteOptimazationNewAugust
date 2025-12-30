@@ -48,7 +48,7 @@ export function RepMap() {
   const [open, setOpen] = useState(false);
   const [selectedDays, setSelectedDays] = useState<number[]>([1, 2, 3, 4, 5]); // Default to weekdays
   const [selectedWeeks, setSelectedWeeks] = useState<number[]>([1]); // Default to week 1
-  const [selectedRole, setSelectedRole] = useState<string>('rep'); // Default to Sales Rep
+  const [selectedRoles, setSelectedRoles] = useState<string[]>(['rep']); // Default to Sales Rep, now multi-select
   const [showAllLinkedRoles, setShowAllLinkedRoles] = useState(false); // Show rep + all linked role routes
   const [isMapLoaded, setIsMapLoaded] = useState(false);
   const [isOptimizing, setIsOptimizing] = useState(false);
@@ -116,89 +116,83 @@ export function RepMap() {
     return Array.from(roleMap.values());
   }, [roleHierarchies, roleSchedules]);
 
-  // Get the current role's color
-  const getCurrentRoleColor = () => {
-    const roleInfo = availableRoles.find(r => r.role === selectedRole);
+  // Get color for a specific role
+  const getRoleColor = (role: string) => {
+    const roleInfo = availableRoles.find(r => r.role === role);
     return roleInfo?.colorHex || '#3B82F6';
   };
 
-  // Filter schedules for selected reps, days, weeks, and role
+  // Filter schedules for selected reps, days, weeks, and roles (now multi-select)
   const filteredSchedules = useMemo(() => {
-    // For Sales Rep, use regular schedules
-    if (selectedRole === 'rep') {
-      // Base schedules only store weeks 1-2, so we need to map weeks 3-4 to 1-2
-      const filtered = schedules.filter(schedule => {
+    const allSchedules: (Schedule & { _role?: string })[] = [];
+    
+    // If Sales Rep is selected, include regular schedules
+    if (selectedRoles.includes('rep')) {
+      const repSchedulesFiltered = schedules.filter(schedule => {
         if (!selectedReps.includes(schedule.repId)) return false;
         if (!selectedDays.includes(schedule.dayOfWeek)) return false;
         
-        // Check if any selected week matches (accounting for mirroring)
         const matchingWeeks = selectedWeeks.some(selectedWeek => {
           const sourceWeek = selectedWeek <= 2 ? selectedWeek : selectedWeek - 2;
           return schedule.week === sourceWeek;
         });
         return matchingWeeks;
       });
-      return filtered;
+      allSchedules.push(...repSchedulesFiltered.map(s => ({ ...s, _role: 'rep' })));
     }
     
-    // For other roles, use role schedules filtered by role field directly
-    // Role schedules have the role field stored, so we can filter by that instead of hierarchyId
-    console.log('Role filtering - Selected role:', selectedRole, 'Selected reps:', selectedReps, 'Total role schedules:', roleSchedules.length);
-    
-    // Filter role schedules by role, repId, day, and week
-    // Role schedules may have actual week 3/4 values when offset pushes them there
-    // But we also need to handle week mirroring for base weeks 1-2
-    const filteredRoleSchedules = roleSchedules.filter(rs => {
-      // Filter by role field directly
-      if (rs.role !== selectedRole) return false;
-      // Filter by selected reps
-      if (!selectedReps.includes(rs.repId)) return false;
-      // Filter by selected days
-      if (!selectedDays.includes(rs.dayOfWeek)) return false;
+    // Include other selected roles from role schedules
+    const otherRoles = selectedRoles.filter(r => r !== 'rep');
+    if (otherRoles.length > 0) {
+      console.log('Role filtering - Selected roles:', otherRoles, 'Selected reps:', selectedReps, 'Total role schedules:', roleSchedules.length);
       
-      // Check if any selected week matches (direct match or via mirroring)
-      const matchingWeeks = selectedWeeks.some(selectedWeek => {
-        // Direct match
-        if (rs.week === selectedWeek) return true;
-        // Mirror match for weeks 3-4 -> weeks 1-2
-        if (selectedWeek > 2) {
-          const mirrorWeek = selectedWeek - 2;
-          return rs.week === mirrorWeek;
-        }
-        return false;
+      const filteredRoleSchedules = roleSchedules.filter(rs => {
+        if (!otherRoles.includes(rs.role)) return false;
+        if (!selectedReps.includes(rs.repId)) return false;
+        if (!selectedDays.includes(rs.dayOfWeek)) return false;
+        
+        const matchingWeeks = selectedWeeks.some(selectedWeek => {
+          if (rs.week === selectedWeek) return true;
+          if (selectedWeek > 2) {
+            const mirrorWeek = selectedWeek - 2;
+            return rs.week === mirrorWeek;
+          }
+          return false;
+        });
+        return matchingWeeks;
       });
-      return matchingWeeks;
-    });
+      
+      console.log('Filtered role schedules:', filteredRoleSchedules.length);
+      
+      allSchedules.push(...filteredRoleSchedules.map(rs => ({
+        id: rs.id,
+        repId: rs.repId,
+        week: rs.week,
+        dayOfWeek: rs.dayOfWeek,
+        outletIds: rs.outletIds,
+        routeOrder: rs.routeOrder,
+        totalDistance: rs.totalDistance,
+        estimatedDuration: rs.estimatedDuration,
+        createdAt: rs.createdAt,
+        _role: rs.role
+      } as Schedule & { _role?: string })));
+    }
     
-    console.log('Filtered role schedules:', filteredRoleSchedules.length, 'Sample:', filteredRoleSchedules.slice(0, 2));
-    
-    // Convert role schedules to Schedule-like objects for compatibility
-    return filteredRoleSchedules.map(rs => ({
-      id: rs.id,
-      repId: rs.repId,
-      week: rs.week,
-      dayOfWeek: rs.dayOfWeek,
-      outletIds: rs.outletIds,
-      routeOrder: rs.routeOrder, // Preserve the stored route order
-      totalDistance: rs.totalDistance,
-      estimatedDuration: rs.estimatedDuration,
-      createdAt: rs.createdAt
-    } as Schedule));
-  }, [schedules, roleSchedules, roleHierarchies, selectedReps, selectedDays, selectedWeeks, selectedRole]);
+    return allSchedules;
+  }, [schedules, roleSchedules, roleHierarchies, selectedReps, selectedDays, selectedWeeks, selectedRoles]);
 
-  // Filter all linked role schedules for "Show All Linked Roles" mode
+  // Filter all linked role schedules for "Show All Linked Roles" mode (when only 'rep' selected)
   const linkedRoleSchedules = useMemo(() => {
-    if (!showAllLinkedRoles || selectedRole !== 'rep') {
+    // Only show linked roles when exclusively 'rep' is selected and checkbox is checked
+    if (!showAllLinkedRoles || selectedRoles.length !== 1 || !selectedRoles.includes('rep')) {
       return [];
     }
     
-    // Get all role schedules for selected reps (excluding rep role itself)
     return roleSchedules.filter(rs => {
       if (rs.role === 'rep') return false;
       if (!selectedReps.includes(rs.repId)) return false;
       if (!selectedDays.includes(rs.dayOfWeek)) return false;
       
-      // Check if any selected week matches (direct match or via mirroring)
       const matchingWeeks = selectedWeeks.some(selectedWeek => {
         if (rs.week === selectedWeek) return true;
         if (selectedWeek > 2) {
@@ -209,7 +203,7 @@ export function RepMap() {
       });
       return matchingWeeks;
     });
-  }, [roleSchedules, selectedReps, selectedDays, selectedWeeks, showAllLinkedRoles, selectedRole]);
+  }, [roleSchedules, selectedReps, selectedDays, selectedWeeks, showAllLinkedRoles, selectedRoles]);
 
   // Group outlets by rep, day, and week for the selected days
   const repDayOutlets = useMemo(() => {
@@ -229,18 +223,17 @@ export function RepMap() {
       return result;
     }
     
-    // For role schedules, check if we have any role schedules
-    if (selectedRole !== 'rep' && roleSchedules.length === 0) {
+    // Check if we have any relevant data
+    const hasRepRole = selectedRoles.includes('rep');
+    const hasOtherRoles = selectedRoles.some(r => r !== 'rep');
+    
+    if (hasOtherRoles && roleSchedules.length === 0 && !hasRepRole) {
       return result;
     }
     
-    // For rep schedules, check if we have schedules
-    if (selectedRole === 'rep' && schedules.length === 0) {
+    if (hasRepRole && schedules.length === 0 && !hasOtherRoles) {
       return result;
     }
-    
-    const roleColor = getCurrentRoleColor();
-    const roleInfo = availableRoles.find(r => r.role === selectedRole);
     
     filteredSchedules.forEach(schedule => {
       const rep = reps.find(r => r.id === schedule.repId);
@@ -269,13 +262,17 @@ export function RepMap() {
         };
       }
 
-      // Create a unique key for each day-week combination
-      const scheduleKey = `${schedule.dayOfWeek}-${schedule.week}`;
+      // Get role from extended schedule object
+      const scheduleRole = (schedule as Schedule & { _role?: string })._role || 'rep';
+      const roleInfo = availableRoles.find(r => r.role === scheduleRole);
       
-      // Use role-specific color or day color based on mode
-      const displayColor = selectedRole === 'rep' 
+      // Create a unique key for each day-week-role combination
+      const scheduleKey = `${schedule.dayOfWeek}-${schedule.week}-${scheduleRole}`;
+      
+      // Use role-specific color or day color based on role
+      const displayColor = scheduleRole === 'rep' 
         ? DAY_COLORS[(schedule.dayOfWeek - 1) % DAY_COLORS.length]
-        : roleColor;
+        : getRoleColor(scheduleRole);
       
       result[rep.id].daySchedules[scheduleKey] = {
         outlets: scheduleOutlets,
@@ -287,8 +284,8 @@ export function RepMap() {
       };
     });
 
-    // If showing all linked roles, also add those schedules
-    if (showAllLinkedRoles && selectedRole === 'rep') {
+    // If showing all linked roles, also add those schedules (only when exclusively rep is selected)
+    if (showAllLinkedRoles && selectedRoles.length === 1 && selectedRoles.includes('rep')) {
       linkedRoleSchedules.forEach(roleSchedule => {
         const rep = reps.find(r => r.id === roleSchedule.repId);
         if (!rep) return;
@@ -338,7 +335,7 @@ export function RepMap() {
     }
 
     return result;
-  }, [filteredSchedules, reps, outlets, selectedRole, availableRoles, roleSchedules, schedules, schedulesLoading, showAllLinkedRoles, linkedRoleSchedules]);
+  }, [filteredSchedules, reps, outlets, selectedRoles, availableRoles, roleSchedules, schedules, schedulesLoading, showAllLinkedRoles, linkedRoleSchedules, getRoleColor]);
 
   // Initialize map
   useEffect(() => {
@@ -763,35 +760,41 @@ export function RepMap() {
           </Popover>
 
           <div className="space-y-2">
-            <label className="text-sm font-medium">Select Role</label>
-            <div className="flex flex-wrap gap-2">
+            <label className="text-sm font-medium">Select Roles</label>
+            <div className="grid grid-cols-2 gap-2">
               {availableRoles.map((role) => (
-                <button
-                  key={role.role}
-                  onClick={() => {
-                    setSelectedRole(role.role);
-                    // Disable show all linked roles when switching away from rep
-                    if (role.role !== 'rep') {
-                      setShowAllLinkedRoles(false);
-                    }
-                  }}
-                  className={`
-                    px-3 py-1.5 rounded-full text-sm font-medium transition-all
-                    ${selectedRole === role.role 
-                      ? 'text-white shadow-sm' 
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                    }
-                  `}
-                  style={{ 
-                    backgroundColor: selectedRole === role.role ? role.colorHex : undefined,
-                  }}
-                  data-testid={`button-role-${role.role}`}
-                >
-                  {role.roleName}
-                </button>
+                <label key={role.role} className="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    checked={selectedRoles.includes(role.role)}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setSelectedRoles([...selectedRoles, role.role]);
+                      } else {
+                        // Don't allow deselecting if it's the last role
+                        if (selectedRoles.length > 1) {
+                          setSelectedRoles(selectedRoles.filter(r => r !== role.role));
+                        }
+                      }
+                      // Disable show all linked roles when selecting multiple roles
+                      if (selectedRoles.length > 1 || !selectedRoles.includes('rep')) {
+                        setShowAllLinkedRoles(false);
+                      }
+                    }}
+                    className="rounded border-gray-300"
+                    data-testid={`checkbox-role-${role.role}`}
+                  />
+                  <div className="flex items-center gap-1">
+                    <div 
+                      className="w-3 h-3 rounded-full" 
+                      style={{ backgroundColor: role.colorHex }}
+                    />
+                    <span className="text-sm">{role.roleName}</span>
+                  </div>
+                </label>
               ))}
             </div>
-            {selectedRole === 'rep' && availableRoles.length > 1 && (
+            {selectedRoles.length === 1 && selectedRoles.includes('rep') && availableRoles.length > 1 && (
               <label className="flex items-center space-x-2 mt-2">
                 <input
                   type="checkbox"
