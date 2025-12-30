@@ -1693,7 +1693,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Create workbook with multiple sheets
       const workbook = XLSX.utils.book_new();
-      const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+      const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
       // For each rep, create a sheet with all roles
       const targetReps = repId ? reps.filter(r => r.id === repId) : reps;
