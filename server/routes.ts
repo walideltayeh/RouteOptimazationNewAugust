@@ -3364,11 +3364,55 @@ export async function registerRoutes(app: Express): Promise<Server> {
         templates.push(created);
       }
       
+      // After saving templates, regenerate role schedules for all reps based on the new template
+      const allReps = await storage.getReps();
+      const allSchedules = await storage.getSchedules();
+      let totalSchedulesGenerated = 0;
+      
+      // Create hierarchies for each rep based on template and regenerate their role schedules
+      for (const rep of allReps) {
+        const repSchedules = allSchedules.filter(s => s.repId === rep.id);
+        if (repSchedules.length === 0) continue;
+        
+        // Get or create hierarchies for this rep based on template
+        // Check if this rep should use the template (global mode applies to all, custom mode applies to selected)
+        const shouldApply = mode === 'global' || selectedRepIds.includes(rep.id);
+        if (!shouldApply) continue;
+        
+        // Delete existing role-specific hierarchies for this rep
+        await storage.deleteRoleHierarchiesByRepId(rep.id);
+        
+        // Create new hierarchies for this rep from template
+        const repHierarchies = [];
+        for (let i = 0; i < roles.length; i++) {
+          const roleData = roles[i];
+          const created = await storage.createRoleHierarchy({
+            repId: rep.id,
+            role: roleData.role,
+            roleName: roleData.roleName,
+            offsetDays: roleData.offsetDays || 0,
+            colorHex: roleData.colorHex || '#3B82F6',
+            isActive: roleData.isActive !== false,
+            sortOrder: i
+          });
+          repHierarchies.push(created);
+        }
+        
+        // Generate role schedules for this rep
+        if (repHierarchies.length > 0) {
+          const generated = await generateRoleSchedulesForRep(rep.id, repSchedules, repHierarchies);
+          totalSchedulesGenerated += generated.length;
+        }
+      }
+      
+      console.log(`Generated ${totalSchedulesGenerated} role schedules for ${allReps.length} reps`);
+      
       res.json({
         success: true,
         templates,
         mode,
-        message: `Saved ${templates.length - 1} role hierarchy templates in ${mode} mode`
+        schedulesGenerated: totalSchedulesGenerated,
+        message: `Saved ${templates.length - 1} role hierarchy templates in ${mode} mode and generated ${totalSchedulesGenerated} role schedules`
       });
     } catch (error) {
       console.error("Error saving role hierarchy template:", error);
