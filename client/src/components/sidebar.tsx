@@ -7,13 +7,15 @@ import {
   Map, 
   FileText,
   Route,
-  Car
+  Car,
+  Users
 } from "lucide-react";
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: BarChart3 },
   { name: "Territory Map", href: "/territories", icon: Map },
   { name: "Rep Map", href: "/rep-map", icon: Route },
+  { name: "Role Hierarchy", href: "/role-hierarchy", icon: Users },
   { name: "Vehicles", href: "/vehicles", icon: Car },
 ];
 

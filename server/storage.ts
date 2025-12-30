@@ -22,7 +22,11 @@ import {
   type DashboardMetrics,
   type FileAnalysis,
   type VehicleAlert,
-  type VehicleFullDashboard
+  type VehicleFullDashboard,
+  type RoleHierarchy,
+  type InsertRoleHierarchy,
+  type RoleSchedule,
+  type InsertRoleSchedule
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 
@@ -102,6 +106,26 @@ export interface IStorage {
   // Analytics
   getDashboardMetrics(): Promise<DashboardMetrics>;
   getFileAnalysis(): Promise<FileAnalysis>;
+
+  // Role Hierarchies
+  getRoleHierarchies(): Promise<RoleHierarchy[]>;
+  getRoleHierarchiesByRepId(repId: string): Promise<RoleHierarchy[]>;
+  getRoleHierarchy(id: string): Promise<RoleHierarchy | undefined>;
+  createRoleHierarchy(hierarchy: InsertRoleHierarchy): Promise<RoleHierarchy>;
+  createRoleHierarchies(hierarchies: InsertRoleHierarchy[]): Promise<RoleHierarchy[]>;
+  updateRoleHierarchy(id: string, update: Partial<InsertRoleHierarchy>): Promise<RoleHierarchy | undefined>;
+  deleteRoleHierarchy(id: string): Promise<void>;
+  deleteRoleHierarchiesByRepId(repId: string): Promise<void>;
+
+  // Role Schedules
+  getRoleSchedules(): Promise<RoleSchedule[]>;
+  getRoleSchedulesByRepId(repId: string): Promise<RoleSchedule[]>;
+  getRoleSchedulesByRole(role: string): Promise<RoleSchedule[]>;
+  createRoleSchedule(schedule: InsertRoleSchedule): Promise<RoleSchedule>;
+  createRoleSchedules(schedules: InsertRoleSchedule[]): Promise<RoleSchedule[]>;
+  deleteRoleSchedulesByRepId(repId: string): Promise<void>;
+  deleteRoleSchedulesByHierarchyId(hierarchyId: string): Promise<void>;
+  clearRoleSchedules(): Promise<void>;
   
   // Clear all data
   clearAll(): Promise<void>;
@@ -118,11 +142,15 @@ export class MemStorage implements IStorage {
   private maintenancePolicies: Map<string, MaintenancePolicy>;
   private maintenanceForecasts: Map<string, MaintenanceForecast>;
   private vehicleMileageSnapshots: Map<string, VehicleMileageSnapshot>;
+  private roleHierarchies: Map<string, RoleHierarchy>;
+  private roleSchedules: Map<string, RoleSchedule>;
 
   constructor() {
     this.outlets = new Map();
     this.reps = new Map();
     this.schedules = new Map();
+    this.roleHierarchies = new Map();
+    this.roleSchedules = new Map();
     this.optimizationRuns = new Map();
     this.vehicles = new Map();
     this.vehicleMaintenanceRecords = new Map();
@@ -1043,6 +1071,131 @@ export class MemStorage implements IStorage {
     };
   }
 
+  // Role Hierarchies
+  async getRoleHierarchies(): Promise<RoleHierarchy[]> {
+    return Array.from(this.roleHierarchies.values());
+  }
+
+  async getRoleHierarchiesByRepId(repId: string): Promise<RoleHierarchy[]> {
+    return Array.from(this.roleHierarchies.values())
+      .filter(h => h.repId === repId)
+      .sort((a, b) => a.sortOrder - b.sortOrder);
+  }
+
+  async getRoleHierarchy(id: string): Promise<RoleHierarchy | undefined> {
+    return this.roleHierarchies.get(id);
+  }
+
+  async createRoleHierarchy(hierarchy: InsertRoleHierarchy): Promise<RoleHierarchy> {
+    const id = randomUUID();
+    const roleHierarchy: RoleHierarchy = {
+      ...hierarchy,
+      id,
+      offsetDays: hierarchy.offsetDays ?? 0,
+      colorHex: hierarchy.colorHex ?? '#3B82F6',
+      isActive: hierarchy.isActive ?? true,
+      sortOrder: hierarchy.sortOrder ?? 0,
+      createdAt: new Date()
+    };
+    this.roleHierarchies.set(id, roleHierarchy);
+    return roleHierarchy;
+  }
+
+  async createRoleHierarchies(hierarchies: InsertRoleHierarchy[]): Promise<RoleHierarchy[]> {
+    const results: RoleHierarchy[] = [];
+    for (const hierarchy of hierarchies) {
+      const created = await this.createRoleHierarchy(hierarchy);
+      results.push(created);
+    }
+    return results;
+  }
+
+  async updateRoleHierarchy(id: string, update: Partial<InsertRoleHierarchy>): Promise<RoleHierarchy | undefined> {
+    const hierarchy = this.roleHierarchies.get(id);
+    if (!hierarchy) return undefined;
+    const updated = { ...hierarchy, ...update };
+    this.roleHierarchies.set(id, updated);
+    return updated;
+  }
+
+  async deleteRoleHierarchy(id: string): Promise<void> {
+    this.roleHierarchies.delete(id);
+    // Also delete associated role schedules
+    const scheduleEntries = Array.from(this.roleSchedules.entries());
+    for (const [scheduleId, schedule] of scheduleEntries) {
+      if (schedule.hierarchyId === id) {
+        this.roleSchedules.delete(scheduleId);
+      }
+    }
+  }
+
+  async deleteRoleHierarchiesByRepId(repId: string): Promise<void> {
+    const hierarchyEntries = Array.from(this.roleHierarchies.entries());
+    for (const [id, hierarchy] of hierarchyEntries) {
+      if (hierarchy.repId === repId) {
+        await this.deleteRoleHierarchy(id);
+      }
+    }
+  }
+
+  // Role Schedules
+  async getRoleSchedules(): Promise<RoleSchedule[]> {
+    return Array.from(this.roleSchedules.values());
+  }
+
+  async getRoleSchedulesByRepId(repId: string): Promise<RoleSchedule[]> {
+    return Array.from(this.roleSchedules.values()).filter(s => s.repId === repId);
+  }
+
+  async getRoleSchedulesByRole(role: string): Promise<RoleSchedule[]> {
+    return Array.from(this.roleSchedules.values()).filter(s => s.role === role);
+  }
+
+  async createRoleSchedule(schedule: InsertRoleSchedule): Promise<RoleSchedule> {
+    const id = randomUUID();
+    const roleSchedule: RoleSchedule = {
+      ...schedule,
+      id,
+      offsetDays: schedule.offsetDays ?? 0,
+      totalDistance: schedule.totalDistance ?? null,
+      estimatedDuration: schedule.estimatedDuration ?? null,
+      createdAt: new Date()
+    };
+    this.roleSchedules.set(id, roleSchedule);
+    return roleSchedule;
+  }
+
+  async createRoleSchedules(schedules: InsertRoleSchedule[]): Promise<RoleSchedule[]> {
+    const results: RoleSchedule[] = [];
+    for (const schedule of schedules) {
+      const created = await this.createRoleSchedule(schedule);
+      results.push(created);
+    }
+    return results;
+  }
+
+  async deleteRoleSchedulesByRepId(repId: string): Promise<void> {
+    const entries = Array.from(this.roleSchedules.entries());
+    for (const [id, schedule] of entries) {
+      if (schedule.repId === repId) {
+        this.roleSchedules.delete(id);
+      }
+    }
+  }
+
+  async deleteRoleSchedulesByHierarchyId(hierarchyId: string): Promise<void> {
+    const entries = Array.from(this.roleSchedules.entries());
+    for (const [id, schedule] of entries) {
+      if (schedule.hierarchyId === hierarchyId) {
+        this.roleSchedules.delete(id);
+      }
+    }
+  }
+
+  async clearRoleSchedules(): Promise<void> {
+    this.roleSchedules.clear();
+  }
+
   async clearAll(): Promise<void> {
     this.outlets.clear();
     this.reps.clear();
@@ -1050,6 +1203,8 @@ export class MemStorage implements IStorage {
     this.optimizationRuns.clear();
     this.maintenanceForecasts.clear();
     this.vehicleMileageSnapshots.clear();
+    this.roleHierarchies.clear();
+    this.roleSchedules.clear();
   }
 
   private haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {

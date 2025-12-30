@@ -32,6 +32,7 @@ Preferred communication style: Simple, everyday language.
 - **Vehicle Management**: CRUD API for fleet tracking, maintenance history, and a predictive maintenance forecasting system based on mileage and configurable thresholds. Includes a detailed Vehicle Detail Dashboard and export functionality.
 - **Interactive Reassignment**: Manual drag-and-drop or "Move to Zone" functionality for reassigning outlets with automatic schedule regeneration.
 - **Dynamic Zone Sizing**: Clustering algorithms respect user-defined min/max outlet parameters.
+- **Hierarchy-Based Visit Follow-Up**: Role hierarchy system where Merchandisers and Collection Agents automatically follow Sales Rep routes with configurable day offsets (e.g., Rep Day 0, Merchandiser Day +1, Collection Agent Day +2). Preserves outlet order and route sequence across all roles with automatic cascade regeneration when Rep schedule changes.
 
 ### Technical Implementations
 - **Monorepo Structure**: Clear separation between client, server, and shared code.

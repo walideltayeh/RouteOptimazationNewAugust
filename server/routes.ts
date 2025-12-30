@@ -8,9 +8,13 @@ import {
   insertScheduleSchema, 
   insertVehicleSchema,
   insertVehicleMaintenanceSchema,
+  insertRoleHierarchySchema,
+  ROLE_PRESETS,
   type InsertSchedule, 
+  type InsertRoleSchedule,
   type Rep, 
-  type Outlet 
+  type Outlet,
+  type Schedule
 } from "@shared/schema";
 import multer from "multer";
 import * as XLSX from "xlsx";
@@ -1663,6 +1667,125 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Export role schedules to Excel (includes all roles with their day offsets)
+  app.get("/api/export/role-schedules", async (req, res) => {
+    try {
+      const { repId } = req.query;
+      const reps = await storage.getReps();
+      const outlets = await storage.getOutlets();
+      
+      // Get regular schedules
+      const schedules = repId 
+        ? await storage.getSchedulesByRepId(repId as string)
+        : await storage.getSchedules();
+      
+      // Get role schedules
+      const roleSchedules = repId
+        ? await storage.getRoleSchedulesByRepId(repId as string)
+        : await storage.getRoleSchedules();
+      
+      // Get role hierarchies
+      const hierarchies = await storage.getRoleHierarchies();
+      
+      if (schedules.length === 0) {
+        return res.status(400).json({ message: "No schedules available to export" });
+      }
+
+      // Create workbook with multiple sheets
+      const workbook = XLSX.utils.book_new();
+      const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+
+      // For each rep, create a sheet with all roles
+      const targetReps = repId ? reps.filter(r => r.id === repId) : reps;
+
+      for (const rep of targetReps) {
+        const repSchedules = schedules.filter(s => s.repId === rep.id);
+        const repRoleSchedules = roleSchedules.filter(rs => rs.repId === rep.id);
+        const repHierarchies = hierarchies.filter(h => h.repId === rep.id);
+
+        // Create vertical format data
+        const data: (string | number)[][] = [];
+        
+        // Header
+        data.push(['Rep Name', rep.name]);
+        data.push(['Territory', rep.territory]);
+        data.push(['']);
+        
+        // Sales Rep Schedule (base schedule)
+        data.push(['=== SALES REP SCHEDULE ===']);
+        data.push(['Week', 'Day', 'Day Name', 'Outlets Count', 'Outlet Names']);
+        
+        for (let week = 1; week <= 4; week++) {
+          for (let day = 1; day <= 5; day++) {
+            const schedule = repSchedules.find(s => s.week === week && s.dayOfWeek === day);
+            if (schedule) {
+              const outletIds = Array.isArray(schedule.outletIds) 
+                ? schedule.outletIds 
+                : JSON.parse(String(schedule.outletIds) || '[]');
+              const outletNames = outletIds
+                .map((id: string) => outlets.find(o => o.id === id)?.name || id)
+                .join(', ');
+              data.push([week, day, daysOfWeek[day - 1], outletIds.length, outletNames]);
+            }
+          }
+        }
+        
+        data.push(['']);
+        
+        // Role Schedules (follower roles)
+        for (const hierarchy of repHierarchies) {
+          if (hierarchy.role === 'rep') continue; // Skip base rep role
+          
+          data.push([`=== ${hierarchy.roleName.toUpperCase()} SCHEDULE (Day +${hierarchy.offsetDays}) ===`]);
+          data.push(['Week', 'Day', 'Day Name', 'Original Rep Day', 'Outlets Count', 'Outlet Names']);
+          
+          const roleSchedulesForHierarchy = repRoleSchedules.filter(rs => rs.hierarchyId === hierarchy.id);
+          
+          for (let week = 1; week <= 4; week++) {
+            for (let day = 1; day <= 5; day++) {
+              const schedule = roleSchedulesForHierarchy.find(s => s.week === week && s.dayOfWeek === day);
+              if (schedule) {
+                const outletIds = Array.isArray(schedule.outletIds) 
+                  ? schedule.outletIds 
+                  : JSON.parse(String(schedule.outletIds) || '[]');
+                const outletNames = outletIds
+                  .map((id: string) => outlets.find(o => o.id === id)?.name || id)
+                  .join(', ');
+                data.push([week, day, daysOfWeek[day - 1], daysOfWeek[schedule.originalDayOfWeek - 1], outletIds.length, outletNames]);
+              }
+            }
+          }
+          
+          data.push(['']);
+        }
+
+        const worksheet = XLSX.utils.aoa_to_sheet(data);
+        
+        // Set column widths
+        worksheet['!cols'] = [
+          { wch: 10 },  // Week
+          { wch: 8 },   // Day
+          { wch: 12 },  // Day Name
+          { wch: 15 },  // Original Day
+          { wch: 12 },  // Outlets Count
+          { wch: 80 },  // Outlet Names
+        ];
+        
+        const sheetName = rep.name.substring(0, 31).replace(/[:\\/*?[\]]/g, '');
+        XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+      }
+
+      const excelBuffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+      
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename=role_schedules_${new Date().toISOString().split('T')[0]}.xlsx`);
+      res.send(excelBuffer);
+    } catch (error) {
+      console.error("Error exporting role schedules:", error);
+      res.status(500).json({ message: "Failed to export role schedules" });
+    }
+  });
+
   // Route optimization
   app.post("/api/optimize", async (req, res) => {
     try {
@@ -2915,6 +3038,212 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({ message: "Failed to adjust odometer" });
     }
   });
+
+  // ============================================
+  // ROLE HIERARCHY MANAGEMENT
+  // ============================================
+
+  // Get role presets
+  app.get("/api/role-presets", async (_req, res) => {
+    res.json(ROLE_PRESETS);
+  });
+
+  // Get all role hierarchies
+  app.get("/api/role-hierarchies", async (_req, res) => {
+    try {
+      const hierarchies = await storage.getRoleHierarchies();
+      res.json(hierarchies);
+    } catch (error) {
+      console.error("Error fetching role hierarchies:", error);
+      res.status(500).json({ message: "Failed to fetch role hierarchies" });
+    }
+  });
+
+  // Get role hierarchies for a specific rep
+  app.get("/api/reps/:repId/hierarchies", async (req, res) => {
+    try {
+      const { repId } = req.params;
+      const hierarchies = await storage.getRoleHierarchiesByRepId(repId);
+      res.json(hierarchies);
+    } catch (error) {
+      console.error("Error fetching rep hierarchies:", error);
+      res.status(500).json({ message: "Failed to fetch rep hierarchies" });
+    }
+  });
+
+  // Create/Update role hierarchies for a rep (bulk operation)
+  app.post("/api/reps/:repId/hierarchies", async (req, res) => {
+    try {
+      const { repId } = req.params;
+      const { roles } = req.body; // Array of { role, roleName, offsetDays, colorHex, isActive }
+
+      // Verify rep exists
+      const rep = await storage.getRep(repId);
+      if (!rep) {
+        return res.status(404).json({ message: "Rep not found" });
+      }
+
+      // Delete existing hierarchies for this rep
+      await storage.deleteRoleHierarchiesByRepId(repId);
+
+      // Create new hierarchies
+      const hierarchies = [];
+      for (let i = 0; i < roles.length; i++) {
+        const roleData = roles[i];
+        const validated = insertRoleHierarchySchema.parse({
+          repId,
+          role: roleData.role,
+          roleName: roleData.roleName,
+          offsetDays: roleData.offsetDays || 0,
+          colorHex: roleData.colorHex || '#3B82F6',
+          isActive: roleData.isActive !== false,
+          sortOrder: i
+        });
+        const created = await storage.createRoleHierarchy(validated);
+        hierarchies.push(created);
+      }
+
+      // Generate role schedules if there are active schedules for this rep
+      const repSchedules = await storage.getSchedulesByRepId(repId);
+      if (repSchedules.length > 0) {
+        await generateRoleSchedulesForRep(repId, repSchedules, hierarchies);
+      }
+
+      res.json({
+        success: true,
+        hierarchies,
+        message: `Created ${hierarchies.length} role hierarchies for rep ${rep.name}`
+      });
+    } catch (error) {
+      console.error("Error saving role hierarchies:", error);
+      res.status(500).json({ message: "Failed to save role hierarchies" });
+    }
+  });
+
+  // Delete a specific role hierarchy
+  app.delete("/api/role-hierarchies/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      await storage.deleteRoleHierarchy(id);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting role hierarchy:", error);
+      res.status(500).json({ message: "Failed to delete role hierarchy" });
+    }
+  });
+
+  // Get all role schedules
+  app.get("/api/role-schedules", async (_req, res) => {
+    try {
+      const schedules = await storage.getRoleSchedules();
+      res.json(schedules);
+    } catch (error) {
+      console.error("Error fetching role schedules:", error);
+      res.status(500).json({ message: "Failed to fetch role schedules" });
+    }
+  });
+
+  // Get role schedules for a specific rep
+  app.get("/api/reps/:repId/role-schedules", async (req, res) => {
+    try {
+      const { repId } = req.params;
+      const schedules = await storage.getRoleSchedulesByRepId(repId);
+      res.json(schedules);
+    } catch (error) {
+      console.error("Error fetching rep role schedules:", error);
+      res.status(500).json({ message: "Failed to fetch rep role schedules" });
+    }
+  });
+
+  // Regenerate role schedules for a rep (called when rep schedule changes)
+  app.post("/api/reps/:repId/regenerate-role-schedules", async (req, res) => {
+    try {
+      const { repId } = req.params;
+      
+      const rep = await storage.getRep(repId);
+      if (!rep) {
+        return res.status(404).json({ message: "Rep not found" });
+      }
+
+      const repSchedules = await storage.getSchedulesByRepId(repId);
+      const hierarchies = await storage.getRoleHierarchiesByRepId(repId);
+
+      if (hierarchies.length === 0) {
+        return res.json({ success: true, message: "No hierarchies configured for this rep", schedulesGenerated: 0 });
+      }
+
+      const generatedSchedules = await generateRoleSchedulesForRep(repId, repSchedules, hierarchies);
+
+      res.json({
+        success: true,
+        schedulesGenerated: generatedSchedules.length,
+        message: `Generated ${generatedSchedules.length} role schedules for ${rep.name}`
+      });
+    } catch (error) {
+      console.error("Error regenerating role schedules:", error);
+      res.status(500).json({ message: "Failed to regenerate role schedules" });
+    }
+  });
+
+  // Helper function to generate role schedules for a rep
+  async function generateRoleSchedulesForRep(
+    repId: string,
+    repSchedules: Schedule[],
+    hierarchies: { id: string; role: string; roleName: string; offsetDays: number; colorHex: string; isActive: boolean }[]
+  ) {
+    // Delete existing role schedules for this rep
+    await storage.deleteRoleSchedulesByRepId(repId);
+
+    const roleSchedules: InsertRoleSchedule[] = [];
+    const workingDaysPerWeek = 5; // Configurable
+    const weeksInMonth = 4;
+
+    // For each hierarchy (except the Rep role which uses the base schedule)
+    for (const hierarchy of hierarchies) {
+      if (!hierarchy.isActive) continue;
+      if (hierarchy.role === 'rep') continue; // Rep uses the main schedule, not role schedules
+
+      // For each rep schedule entry, create a corresponding role schedule with shifted day
+      for (const schedule of repSchedules) {
+        // Calculate the new day with offset
+        let newDayOfWeek = schedule.dayOfWeek + hierarchy.offsetDays;
+        let newWeek = schedule.week;
+
+        // Handle week overflow
+        while (newDayOfWeek > workingDaysPerWeek) {
+          newDayOfWeek -= workingDaysPerWeek;
+          newWeek++;
+        }
+
+        // Handle month overflow (wrap to next week/day)
+        if (newWeek > weeksInMonth) {
+          newWeek = ((newWeek - 1) % weeksInMonth) + 1;
+        }
+
+        roleSchedules.push({
+          hierarchyId: hierarchy.id,
+          repId,
+          role: hierarchy.role,
+          roleName: hierarchy.roleName,
+          week: newWeek,
+          dayOfWeek: newDayOfWeek,
+          originalDayOfWeek: schedule.dayOfWeek,
+          outletIds: schedule.outletIds as string[],
+          routeOrder: schedule.routeOrder as string[],
+          totalDistance: schedule.totalDistance,
+          estimatedDuration: schedule.estimatedDuration,
+          offsetDays: hierarchy.offsetDays
+        });
+      }
+    }
+
+    // Create all role schedules
+    if (roleSchedules.length > 0) {
+      return await storage.createRoleSchedules(roleSchedules);
+    }
+
+    return [];
+  }
 
   const httpServer = createServer(app);
   return httpServer;

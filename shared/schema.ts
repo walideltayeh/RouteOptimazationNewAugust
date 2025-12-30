@@ -212,6 +212,37 @@ export const vehicleReassignmentHistory = pgTable("vehicle_reassignment_history"
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+// Role Hierarchy - defines follow-up roles for Sales Reps
+export const roleHierarchies = pgTable("role_hierarchies", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  repId: varchar("rep_id").notNull(), // The Sales Rep this hierarchy is linked to
+  role: text("role").notNull(), // rep, merchandiser, collection_agent, etc.
+  roleName: text("role_name").notNull(), // Display name: "Sales Rep", "Merchandiser", "Collection Agent"
+  offsetDays: integer("offset_days").notNull().default(0), // Days after Rep visit (0 = same day as Rep)
+  colorHex: text("color_hex").notNull().default("#3B82F6"), // Color for map/UI differentiation
+  isActive: boolean("is_active").notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(0), // Display order in hierarchy
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// Role Schedules - schedules generated for each role based on Rep's schedule
+export const roleSchedules = pgTable("role_schedules", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  hierarchyId: varchar("hierarchy_id").notNull(), // References roleHierarchies
+  repId: varchar("rep_id").notNull(), // Original Sales Rep
+  role: text("role").notNull(), // Role type: rep, merchandiser, collection_agent
+  roleName: text("role_name").notNull(), // Display name
+  week: integer("week").notNull(), // 1, 2, 3, 4
+  dayOfWeek: integer("day_of_week").notNull(), // 1-7 (shifted by offsetDays)
+  originalDayOfWeek: integer("original_day_of_week").notNull(), // Rep's original day
+  outletIds: jsonb("outlet_ids").notNull(), // Same outlets as Rep
+  routeOrder: jsonb("route_order").notNull(), // Same route order as Rep
+  totalDistance: real("total_distance"),
+  estimatedDuration: integer("estimated_duration"),
+  offsetDays: integer("offset_days").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
 // Insert schemas
 export const insertOutletSchema = createInsertSchema(outlets).omit({
   id: true,
@@ -290,6 +321,16 @@ export const insertVehicleReassignmentHistorySchema = createInsertSchema(vehicle
   createdAt: true,
 });
 
+export const insertRoleHierarchySchema = createInsertSchema(roleHierarchies).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertRoleScheduleSchema = createInsertSchema(roleSchedules).omit({
+  id: true,
+  createdAt: true,
+});
+
 // Types
 export type InsertOutlet = z.infer<typeof insertOutletSchema>;
 export type Outlet = typeof outlets.$inferSelect;
@@ -335,6 +376,21 @@ export type MonthlyMaintenancePlan = typeof monthlyMaintenancePlans.$inferSelect
 
 export type InsertVehicleReassignmentHistory = z.infer<typeof insertVehicleReassignmentHistorySchema>;
 export type VehicleReassignmentHistory = typeof vehicleReassignmentHistory.$inferSelect;
+
+export type InsertRoleHierarchy = z.infer<typeof insertRoleHierarchySchema>;
+export type RoleHierarchy = typeof roleHierarchies.$inferSelect;
+
+export type InsertRoleSchedule = z.infer<typeof insertRoleScheduleSchema>;
+export type RoleSchedule = typeof roleSchedules.$inferSelect;
+
+// Role preset definitions
+export const ROLE_PRESETS = [
+  { role: 'rep', roleName: 'Sales Rep', offsetDays: 0, colorHex: '#3B82F6', sortOrder: 0 },
+  { role: 'merchandiser', roleName: 'Merchandiser', offsetDays: 1, colorHex: '#10B981', sortOrder: 1 },
+  { role: 'collection_agent', roleName: 'Collection Agent', offsetDays: 2, colorHex: '#F59E0B', sortOrder: 2 },
+] as const;
+
+export type RolePreset = typeof ROLE_PRESETS[number];
 
 // Vehicle Dashboard Types
 export interface VehicleDashboardOverview {
