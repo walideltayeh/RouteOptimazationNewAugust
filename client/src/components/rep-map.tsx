@@ -89,11 +89,14 @@ export function RepMap() {
     const roleMap = new Map<string, { role: string; roleName: string; colorHex: string }>();
     roleMap.set('rep', { role: 'rep', roleName: 'Sales Rep', colorHex: '#3B82F6' });
     
-    // First check role hierarchies (for rep-specific hierarchies)
+    // Check role hierarchies - include both template (global) and rep-specific hierarchies
     roleHierarchies.forEach(h => {
-      // Exclude template entries and inactive hierarchies
-      if (h.role !== 'rep' && h.role !== '_config' && h.isActive && h.repId !== 'template') {
-        roleMap.set(h.role, { role: h.role, roleName: h.roleName, colorHex: h.colorHex });
+      // Exclude 'rep' base role and '_config' entries, include all active roles
+      if (h.role !== 'rep' && h.role !== '_config' && h.isActive) {
+        // If already exists, prefer rep-specific over template
+        if (!roleMap.has(h.role) || h.repId !== 'template') {
+          roleMap.set(h.role, { role: h.role, roleName: h.roleName, colorHex: h.colorHex });
+        }
       }
     });
     
