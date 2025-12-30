@@ -55,7 +55,9 @@ export function generateScheduleExcel(reps: Rep[], schedules: Schedule[], outlet
     
     weeks.forEach(week => {
       days.slice(0, rep.workingDaysPerWeek).forEach((day, dayIndex) => {
-        const daySchedule = repSchedules.find(s => s.week === week && s.dayOfWeek === dayIndex);
+        // Schedule uses 1-based dayOfWeek (1=Monday, 2=Tuesday, etc.)
+        const dayOfWeek = dayIndex + 1;
+        const daySchedule = repSchedules.find(s => s.week === week && s.dayOfWeek === dayOfWeek);
         
         if (daySchedule) {
           const outletIds = daySchedule.outletIds as string[];

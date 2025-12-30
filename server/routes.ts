@@ -1695,12 +1695,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const workbook = XLSX.utils.book_new();
       const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
+      // Generate dates for a 4-week cycle starting from next Monday
+      const getNextMonday = () => {
+        const today = new Date();
+        const dayOfWeek = today.getDay();
+        const daysUntilMonday = dayOfWeek === 0 ? 1 : (8 - dayOfWeek);
+        const nextMonday = new Date(today);
+        nextMonday.setDate(today.getDate() + daysUntilMonday);
+        return nextMonday;
+      };
+      const startDate = getNextMonday();
+
       // For each rep, create a sheet with all roles
       const targetReps = repId ? reps.filter(r => r.id === repId) : reps;
 
       for (const rep of targetReps) {
         const repSchedules = schedules.filter(s => s.repId === rep.id);
         const repRoleSchedules = roleSchedules.filter(rs => rs.repId === rep.id);
+        const workingDays = rep.workingDaysPerWeek || 5;
         
         // Get rep-specific hierarchies, fall back to template hierarchies if none exist
         let repHierarchies = hierarchies.filter(h => h.repId === rep.id && h.role !== '_config');
@@ -1714,17 +1726,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // Header
         data.push(['Rep Name', rep.name]);
         data.push(['Territory', rep.territory]);
+        data.push(['Working Days/Week', workingDays]);
         data.push(['']);
         
         // Sales Rep Schedule (base schedule)
         data.push(['=== SALES REP SCHEDULE ===']);
-        data.push(['Week', 'Day', 'Day Name', 'Outlets Count', 'Outlet Names']);
+        data.push(['Week', 'Day', 'Day Name', 'Date', 'Outlets Count', 'Outlet Names']);
         
         for (let week = 1; week <= 4; week++) {
-          for (let day = 1; day <= 5; day++) {
+          for (let day = 1; day <= workingDays; day++) {
             // Week 3 mirrors week 1, week 4 mirrors week 2
             const sourceWeek = week <= 2 ? week : week - 2;
             const schedule = repSchedules.find(s => s.week === sourceWeek && s.dayOfWeek === day);
+            
+            // Calculate date for this day
+            const currentDate = new Date(startDate);
+            currentDate.setDate(startDate.getDate() + ((week - 1) * 7) + (day - 1));
+            const dateStr = currentDate.toISOString().split('T')[0];
+            
             if (schedule) {
               const outletIds = Array.isArray(schedule.outletIds) 
                 ? schedule.outletIds 
@@ -1732,7 +1751,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
               const outletNames = outletIds
                 .map((id: string) => outlets.find(o => o.id === id)?.name || id)
                 .join(', ');
-              data.push([week, day, daysOfWeek[day - 1], outletIds.length, outletNames]);
+              data.push([week, day, daysOfWeek[day - 1], dateStr, outletIds.length, outletNames]);
+            } else {
+              // Show day even if no schedule (for completeness)
+              data.push([week, day, daysOfWeek[day - 1], dateStr, 0, '']);
             }
           }
         }
@@ -1753,12 +1775,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const offsetDays = firstSchedule.offsetDays || 0;
           
           data.push([`=== ${roleName.toUpperCase()} SCHEDULE (Day +${offsetDays}) ===`]);
-          data.push(['Week', 'Day', 'Day Name', 'Original Rep Day', 'Outlets Count', 'Outlet Names']);
+          data.push(['Week', 'Day', 'Day Name', 'Date', 'Original Rep Day', 'Outlets Count', 'Outlet Names']);
           
           // Role schedules store their actual week values (including weeks 3/4 when offset pushes them there)
-          // But we also need to mirror weeks 1-2 as weeks 3-4 for the pattern repeat
+          // Iterate all 7 days to capture any offset-driven spillover (positive or negative)
           for (let week = 1; week <= 4; week++) {
-            for (let day = 1; day <= 5; day++) {
+            for (let day = 1; day <= 7; day++) {
               // First try to find a direct match for this week/day
               let schedule = roleSchedulesForRole.find(s => s.week === week && s.dayOfWeek === day);
               
@@ -1768,6 +1790,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 schedule = roleSchedulesForRole.find(s => s.week === mirrorWeek && s.dayOfWeek === day);
               }
               
+              // Calculate date for this day
+              const currentDate = new Date(startDate);
+              currentDate.setDate(startDate.getDate() + ((week - 1) * 7) + (day - 1));
+              const dateStr = currentDate.toISOString().split('T')[0];
+              
               if (schedule) {
                 const outletIds = Array.isArray(schedule.outletIds) 
                   ? schedule.outletIds 
@@ -1776,7 +1803,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   .map((id: string) => outlets.find(o => o.id === id)?.name || id)
                   .join(', ');
                 const originalRepDay = schedule.originalDayOfWeek <= 5 ? daysOfWeek[schedule.originalDayOfWeek - 1] : `Day ${schedule.originalDayOfWeek}`;
-                data.push([week, day, daysOfWeek[day - 1], originalRepDay, outletIds.length, outletNames]);
+                data.push([week, day, daysOfWeek[day - 1], dateStr, originalRepDay, outletIds.length, outletNames]);
               }
             }
           }
@@ -1785,68 +1812,82 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
         
         // Also include roles from hierarchies that might not have schedules yet
-        // Generate role schedule data from base rep schedule + offset
+        // Generate role schedule data from base rep schedule + offset using FORWARD calculation
         for (const hierarchy of repHierarchies) {
           if (hierarchy.role === 'rep') continue; // Skip base rep role
           if (uniqueRoles.includes(hierarchy.role)) continue; // Already handled above
           
           data.push([`=== ${hierarchy.roleName.toUpperCase()} SCHEDULE (Day +${hierarchy.offsetDays}) ===`]);
-          data.push(['Week', 'Day', 'Day Name', 'Original Rep Day', 'Outlets Count', 'Outlet Names']);
+          data.push(['Week', 'Day', 'Day Name', 'Date', 'Original Rep Day', 'Outlets Count', 'Outlet Names']);
           
-          // Generate role schedule from base rep schedule by applying offset
-          const workingDaysPerWeek = 5;
-          const weeksInMonth = 4;
+          // Forward calculation: For each rep schedule, calculate the role day by adding offset
+          // This is more reliable than reverse calculation
+          const roleScheduleRows: Array<{week: number; day: number; originalDay: number; outletIds: string[]}> = [];
           
-          // Iterate all 7 days to capture weekend spillover from offsets
           for (let week = 1; week <= 4; week++) {
-            for (let day = 1; day <= 7; day++) {
-              // Find the original rep schedule that would map to this role day
-              // Role day = rep day + offset, so rep day = role day - offset
-              // We need to reverse-calculate: given role week/day, what was the rep's original week/day?
-              let originalDay = day - hierarchy.offsetDays;
-              let originalWeek = week;
-              
-              // Handle day underflow (going back to previous week)
-              while (originalDay < 1) {
-                originalDay += 7; // Use 7 days for wrapping
-                originalWeek--;
-              }
-              
-              // Handle day overflow (going forward to next week) - for negative offsets
-              while (originalDay > 7) {
-                originalDay -= 7;
-                originalWeek++;
-              }
-              
-              // Handle week underflow (going back to previous month cycle)
-              while (originalWeek < 1) {
-                originalWeek += weeksInMonth;
-              }
-              
-              // Handle week overflow (going forward to next month cycle)
-              while (originalWeek > weeksInMonth) {
-                originalWeek -= weeksInMonth;
-              }
-              
+            for (let repDay = 1; repDay <= workingDays; repDay++) {
               // Map to source week (weeks 3-4 mirror weeks 1-2 for base schedules)
-              const sourceWeek = originalWeek <= 2 ? originalWeek : originalWeek - 2;
+              const sourceWeek = week <= 2 ? week : week - 2;
+              const schedule = repSchedules.find(s => s.week === sourceWeek && s.dayOfWeek === repDay);
               
-              // Only look for schedules if original day is a working day (1-5)
-              if (originalDay >= 1 && originalDay <= 5) {
-                const schedule = repSchedules.find(s => s.week === sourceWeek && s.dayOfWeek === originalDay);
-                if (schedule) {
-                  const outletIds = Array.isArray(schedule.outletIds) 
-                    ? schedule.outletIds 
-                    : JSON.parse(String(schedule.outletIds) || '[]');
-                  const outletNames = outletIds
-                    .map((id: string) => outlets.find(o => o.id === id)?.name || id)
-                    .join(', ');
-                  const originalRepDayName = originalDay <= 5 ? daysOfWeek[originalDay - 1] : `Day ${originalDay}`;
-                  const roleDayName = day <= 7 ? daysOfWeek[day - 1] : `Day ${day}`;
-                  data.push([week, day, roleDayName, originalRepDayName, outletIds.length, outletNames]);
+              if (schedule) {
+                // Calculate the role day by adding the offset
+                let roleDay = repDay + hierarchy.offsetDays;
+                let roleWeek = week;
+                
+                // Handle day overflow (role day goes into next week)
+                while (roleDay > 7) {
+                  roleDay -= 7;
+                  roleWeek++;
                 }
+                
+                // Handle day underflow (role day goes into previous week)
+                while (roleDay < 1) {
+                  roleDay += 7;
+                  roleWeek--;
+                }
+                
+                // Handle week overflow (wrap around the 4-week cycle)
+                while (roleWeek > 4) {
+                  roleWeek -= 4;
+                }
+                
+                // Handle week underflow (wrap around the 4-week cycle)
+                while (roleWeek < 1) {
+                  roleWeek += 4;
+                }
+                
+                const outletIds = Array.isArray(schedule.outletIds) 
+                  ? schedule.outletIds 
+                  : JSON.parse(String(schedule.outletIds) || '[]');
+                
+                roleScheduleRows.push({
+                  week: roleWeek,
+                  day: roleDay,
+                  originalDay: repDay,
+                  outletIds
+                });
               }
             }
+          }
+          
+          // Sort by week then day for proper ordering
+          roleScheduleRows.sort((a, b) => a.week === b.week ? a.day - b.day : a.week - b.week);
+          
+          // Output the role schedule rows
+          for (const row of roleScheduleRows) {
+            // Calculate date for this role day
+            const currentDate = new Date(startDate);
+            currentDate.setDate(startDate.getDate() + ((row.week - 1) * 7) + (row.day - 1));
+            const dateStr = currentDate.toISOString().split('T')[0];
+            
+            const outletNames = row.outletIds
+              .map((id: string) => outlets.find(o => o.id === id)?.name || id)
+              .join(', ');
+            const originalRepDayName = row.originalDay <= 7 ? daysOfWeek[row.originalDay - 1] : `Day ${row.originalDay}`;
+            const roleDayName = row.day <= 7 ? daysOfWeek[row.day - 1] : `Day ${row.day}`;
+            
+            data.push([row.week, row.day, roleDayName, dateStr, originalRepDayName, row.outletIds.length, outletNames]);
           }
           
           data.push(['']);
@@ -1859,6 +1900,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           { wch: 10 },  // Week
           { wch: 8 },   // Day
           { wch: 12 },  // Day Name
+          { wch: 12 },  // Date
           { wch: 15 },  // Original Day
           { wch: 12 },  // Outlets Count
           { wch: 80 },  // Outlet Names
