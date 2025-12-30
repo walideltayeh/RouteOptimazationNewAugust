@@ -17,9 +17,10 @@ import {
   TableHeader, 
   TableRow 
 } from "@/components/ui/table";
-import { Calendar, MapPin, Save, X, Edit3, Clock } from "lucide-react";
+import { Calendar, MapPin, Save, X, Edit3, Clock, GripVertical } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import RouteOrderEditor from "@/components/route-order-editor";
 import type { Schedule, Outlet, Rep } from "@shared/schema";
 
 interface ScheduleViewModalProps {
@@ -32,6 +33,7 @@ interface ScheduleViewModalProps {
 export default function ScheduleViewModal({ repId, isOpen, onClose, isEditMode }: ScheduleViewModalProps) {
   const { toast } = useToast();
   const [editingSchedule, setEditingSchedule] = useState<Schedule | null>(null);
+  const [reorderingSchedule, setReorderingSchedule] = useState<Schedule | null>(null);
 
   const { data: rep } = useQuery<Rep | undefined>({
     queryKey: ["/api/reps", repId],
@@ -279,13 +281,26 @@ export default function ScheduleViewModal({ repId, isOpen, onClose, isEditMode }
                               </TableCell>
                               {isEditMode && (
                                 <TableCell className="text-center">
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={() => setEditingSchedule(schedule)}
-                                  >
-                                    <Edit3 className="h-4 w-4" />
-                                  </Button>
+                                  <div className="flex items-center justify-center gap-1">
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={() => setReorderingSchedule(schedule)}
+                                      title="Reorder visits"
+                                      data-testid={`button-reorder-${schedule.id}`}
+                                    >
+                                      <GripVertical className="h-4 w-4" />
+                                    </Button>
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={() => setEditingSchedule(schedule)}
+                                      title="Edit schedule"
+                                      data-testid={`button-edit-${schedule.id}`}
+                                    >
+                                      <Edit3 className="h-4 w-4" />
+                                    </Button>
+                                  </div>
                                 </TableCell>
                               )}
                             </TableRow>
@@ -308,6 +323,16 @@ export default function ScheduleViewModal({ repId, isOpen, onClose, isEditMode }
           )}
         </div>
       </DialogContent>
+
+      {reorderingSchedule && (
+        <RouteOrderEditor
+          schedule={reorderingSchedule}
+          outlets={outlets}
+          isOpen={!!reorderingSchedule}
+          onClose={() => setReorderingSchedule(null)}
+          repName={rep?.name}
+        />
+      )}
     </Dialog>
   );
 }

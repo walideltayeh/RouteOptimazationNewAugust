@@ -16,10 +16,11 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { Check, ChevronsUpDown, Zap, Save, Download } from "lucide-react";
+import { Check, ChevronsUpDown, Zap, Save, Download, GripVertical } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import RouteOrderEditor from "@/components/route-order-editor";
 import type { Rep, Outlet, Schedule } from "@shared/schema";
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || import.meta.env.VITE_MAPBOX_PUBLIC_KEY;
@@ -51,6 +52,7 @@ export function RepMap() {
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [editingSchedule, setEditingSchedule] = useState<{ schedule: Schedule; rep: Rep } | null>(null);
   const markersRef = useRef<mapboxgl.Marker[]>([]);
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -662,16 +664,37 @@ export function RepMap() {
                         className="w-3 h-3 rounded-full flex-shrink-0" 
                         style={{ backgroundColor: dayData.color }}
                       />
-                      <span className="text-xs truncate">
+                      <span className="text-xs truncate flex-1">
                         {repData.rep.name} - {daysOfWeek[dayData.dayOfWeek]} (Week {dayData.week}) - {dayData.outlets.length} outlets
                         {dayData.schedule.totalDistance && ` (${dayData.schedule.totalDistance.toFixed(1)}km)`}
                       </span>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6"
+                        onClick={() => setEditingSchedule({ schedule: dayData.schedule, rep: repData.rep })}
+                        title="Edit visit order"
+                        data-testid={`button-edit-route-${dayData.schedule.id}`}
+                      >
+                        <GripVertical className="h-3 w-3" />
+                      </Button>
                     </div>
                   );
                 });
               })}
             </div>
           </div>
+        )}
+
+        {/* Route Order Editor */}
+        {editingSchedule && (
+          <RouteOrderEditor
+            schedule={editingSchedule.schedule}
+            outlets={outlets}
+            isOpen={!!editingSchedule}
+            onClose={() => setEditingSchedule(null)}
+            repName={editingSchedule.rep.name}
+          />
         )}
       </CardContent>
     </Card>
