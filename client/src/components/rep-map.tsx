@@ -83,13 +83,14 @@ export function RepMap() {
     refetchSchedules();
   }, []);
 
-  // Get unique roles from hierarchies for the filter dropdown
+  // Get unique roles from hierarchies for the filter dropdown (exclude template entries)
   const availableRoles = useMemo(() => {
     const roleMap = new Map<string, { role: string; roleName: string; colorHex: string }>();
     roleMap.set('rep', { role: 'rep', roleName: 'Sales Rep', colorHex: '#3B82F6' });
     
     roleHierarchies.forEach(h => {
-      if (h.role !== 'rep' && h.isActive) {
+      // Exclude template entries and inactive hierarchies
+      if (h.role !== 'rep' && h.role !== '_config' && h.isActive && h.repId !== 'template') {
         roleMap.set(h.role, { role: h.role, roleName: h.roleName, colorHex: h.colorHex });
       }
     });
@@ -107,26 +108,51 @@ export function RepMap() {
   const filteredSchedules = useMemo(() => {
     // For Sales Rep, use regular schedules
     if (selectedRole === 'rep') {
-      const filtered = schedules.filter(schedule => 
-        selectedReps.includes(schedule.repId) && 
-        selectedDays.includes(schedule.dayOfWeek) &&
-        selectedWeeks.includes(schedule.week)
-      );
+      // Base schedules only store weeks 1-2, so we need to map weeks 3-4 to 1-2
+      const filtered = schedules.filter(schedule => {
+        if (!selectedReps.includes(schedule.repId)) return false;
+        if (!selectedDays.includes(schedule.dayOfWeek)) return false;
+        
+        // Check if any selected week matches (accounting for mirroring)
+        const matchingWeeks = selectedWeeks.some(selectedWeek => {
+          const sourceWeek = selectedWeek <= 2 ? selectedWeek : selectedWeek - 2;
+          return schedule.week === sourceWeek;
+        });
+        return matchingWeeks;
+      });
       return filtered;
     }
     
     // For other roles, use role schedules
-    // First find hierarchy IDs for the selected role
+    // First find hierarchy IDs for the selected role (exclude templates)
     const hierarchyIdsForRole = roleHierarchies
-      .filter(h => h.role === selectedRole && selectedReps.includes(h.repId))
+      .filter(h => h.role === selectedRole && selectedReps.includes(h.repId) && h.repId !== 'template')
       .map(h => h.id);
     
+    console.log('Role filtering - Selected role:', selectedRole, 'Hierarchy IDs:', hierarchyIdsForRole, 'Total role schedules:', roleSchedules.length);
+    
     // Filter role schedules by hierarchy ID, day, and week
-    const filteredRoleSchedules = roleSchedules.filter(rs =>
-      hierarchyIdsForRole.includes(rs.hierarchyId) &&
-      selectedDays.includes(rs.dayOfWeek) &&
-      selectedWeeks.includes(rs.week)
-    );
+    // Role schedules may have actual week 3/4 values when offset pushes them there
+    // But we also need to handle week mirroring for base weeks 1-2
+    const filteredRoleSchedules = roleSchedules.filter(rs => {
+      if (!hierarchyIdsForRole.includes(rs.hierarchyId)) return false;
+      if (!selectedDays.includes(rs.dayOfWeek)) return false;
+      
+      // Check if any selected week matches (direct match or via mirroring)
+      const matchingWeeks = selectedWeeks.some(selectedWeek => {
+        // Direct match
+        if (rs.week === selectedWeek) return true;
+        // Mirror match for weeks 3-4 -> weeks 1-2
+        if (selectedWeek > 2) {
+          const mirrorWeek = selectedWeek - 2;
+          return rs.week === mirrorWeek;
+        }
+        return false;
+      });
+      return matchingWeeks;
+    });
+    
+    console.log('Filtered role schedules:', filteredRoleSchedules.length);
     
     // Convert role schedules to Schedule-like objects for compatibility
     return filteredRoleSchedules.map(rs => ({

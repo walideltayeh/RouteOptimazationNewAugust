@@ -1717,7 +1717,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         
         for (let week = 1; week <= 4; week++) {
           for (let day = 1; day <= 5; day++) {
-            const schedule = repSchedules.find(s => s.week === week && s.dayOfWeek === day);
+            // Week 3 mirrors week 1, week 4 mirrors week 2
+            const sourceWeek = week <= 2 ? week : week - 2;
+            const schedule = repSchedules.find(s => s.week === sourceWeek && s.dayOfWeek === day);
             if (schedule) {
               const outletIds = Array.isArray(schedule.outletIds) 
                 ? schedule.outletIds 
@@ -1741,9 +1743,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
           
           const roleSchedulesForHierarchy = repRoleSchedules.filter(rs => rs.hierarchyId === hierarchy.id);
           
+          // Role schedules store their actual week values (including weeks 3/4 when offset pushes them there)
+          // But we also need to mirror weeks 1-2 as weeks 3-4 for the pattern repeat
           for (let week = 1; week <= 4; week++) {
             for (let day = 1; day <= 5; day++) {
-              const schedule = roleSchedulesForHierarchy.find(s => s.week === week && s.dayOfWeek === day);
+              // First try to find a direct match for this week/day
+              let schedule = roleSchedulesForHierarchy.find(s => s.week === week && s.dayOfWeek === day);
+              
+              // If no direct match and we're in weeks 3-4, check if we should mirror weeks 1-2
+              if (!schedule && week > 2) {
+                const mirrorWeek = week - 2;
+                schedule = roleSchedulesForHierarchy.find(s => s.week === mirrorWeek && s.dayOfWeek === day);
+              }
+              
               if (schedule) {
                 const outletIds = Array.isArray(schedule.outletIds) 
                   ? schedule.outletIds 
@@ -1751,7 +1763,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 const outletNames = outletIds
                   .map((id: string) => outlets.find(o => o.id === id)?.name || id)
                   .join(', ');
-                data.push([week, day, daysOfWeek[day - 1], daysOfWeek[schedule.originalDayOfWeek - 1], outletIds.length, outletNames]);
+                const originalRepDay = schedule.originalDayOfWeek <= 5 ? daysOfWeek[schedule.originalDayOfWeek - 1] : `Day ${schedule.originalDayOfWeek}`;
+                data.push([week, day, daysOfWeek[day - 1], originalRepDay, outletIds.length, outletNames]);
               }
             }
           }

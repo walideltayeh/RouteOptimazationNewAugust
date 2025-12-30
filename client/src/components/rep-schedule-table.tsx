@@ -54,13 +54,13 @@ export default function RepScheduleTable() {
     queryKey: ["/api/role-schedules"],
   });
 
-  // Get available roles from hierarchies
+  // Get available roles from hierarchies (exclude template and config entries)
   const availableRoles = useMemo(() => {
     const roleMap = new Map<string, { role: string; roleName: string; colorHex: string }>();
     roleMap.set('rep', { role: 'rep', roleName: 'Sales Rep', colorHex: '#3B82F6' });
     
     roleHierarchies.forEach(h => {
-      if (h.role !== 'rep' && h.isActive && h.repId !== 'template') {
+      if (h.role !== 'rep' && h.role !== '_config' && h.isActive && h.repId !== 'template') {
         roleMap.set(h.role, { role: h.role, roleName: h.roleName, colorHex: h.colorHex });
       }
     });
