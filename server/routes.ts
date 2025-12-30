@@ -3172,13 +3172,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Save role hierarchy template (global configuration that will be applied during optimization)
   app.post("/api/role-hierarchies/template", async (req, res) => {
     try {
-      const { roles } = req.body; // Array of { role, roleName, offsetDays, colorHex, isActive }
+      const { roles, mode = 'global' } = req.body; // mode: 'global' | 'custom'
       
       // Store the template in storage (we'll apply it during optimization)
       // For now, store it as a special hierarchy with repId = 'template'
+      // Also store the mode as a special entry with role = '_config'
       await storage.deleteRoleHierarchiesByRepId('template');
       
-      const templates = [];
+      // Store mode configuration
+      const modeConfig = await storage.createRoleHierarchy({
+        repId: 'template',
+        role: '_config',
+        roleName: mode, // Store mode in roleName field for simplicity
+        offsetDays: 0,
+        colorHex: '#000000',
+        isActive: true,
+        sortOrder: -1
+      });
+      
+      const templates = [modeConfig];
       for (let i = 0; i < roles.length; i++) {
         const roleData = roles[i];
         const validated = insertRoleHierarchySchema.parse({
@@ -3197,7 +3209,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({
         success: true,
         templates,
-        message: `Saved ${templates.length} role hierarchy templates`
+        mode,
+        message: `Saved ${templates.length - 1} role hierarchy templates in ${mode} mode`
       });
     } catch (error) {
       console.error("Error saving role hierarchy template:", error);

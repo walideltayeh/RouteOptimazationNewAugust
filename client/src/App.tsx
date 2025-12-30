@@ -7,7 +7,6 @@ import Sidebar from "@/components/sidebar";
 import Dashboard from "@/pages/dashboard";
 import TerritoriesPage from "@/pages/territories";
 import RepMapPage from "@/pages/rep-map";
-import RoleHierarchyPage from "@/pages/role-hierarchy";
 import VehiclesPage from "@/pages/vehicles";
 import VehicleDetailPage from "@/pages/vehicle-detail";
 import NotFound from "@/pages/not-found";
@@ -21,7 +20,6 @@ function AppContent() {
           <Route path="/" component={Dashboard} />
           <Route path="/territories" component={TerritoriesPage} />
           <Route path="/rep-map" component={RepMapPage} />
-          <Route path="/role-hierarchy" component={RoleHierarchyPage} />
           <Route path="/vehicles" component={VehiclesPage} />
           <Route path="/vehicles/:id" component={VehicleDetailPage} />
           <Route component={NotFound} />

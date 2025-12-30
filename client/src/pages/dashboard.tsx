@@ -27,6 +27,8 @@ interface RoleConfig {
   isActive: boolean;
 }
 
+type OffsetMode = 'global' | 'custom';
+
 const DEFAULT_ROLES: RoleConfig[] = [
   { role: 'rep', roleName: 'Sales Rep', offsetDays: 0, colorHex: '#3B82F6', isActive: true },
   { role: 'merchandiser', roleName: 'Merchandiser', offsetDays: 1, colorHex: '#10B981', isActive: true },
@@ -41,6 +43,7 @@ export default function Dashboard() {
   const [roleHierarchyExpanded, setRoleHierarchyExpanded] = useState(false);
   const [roles, setRoles] = useState<RoleConfig[]>(DEFAULT_ROLES);
   const [hierarchySaved, setHierarchySaved] = useState(false);
+  const [offsetMode, setOffsetMode] = useState<OffsetMode>('global');
 
   const { data: metrics, isLoading } = useQuery<DashboardMetrics>({
     queryKey: ["/api/dashboard/metrics"],
@@ -69,8 +72,8 @@ export default function Dashboard() {
 
   // Save role hierarchy configuration mutation
   const saveRoleHierarchyMutation = useMutation({
-    mutationFn: async (roleConfigs: RoleConfig[]) => {
-      const response = await apiRequest("POST", "/api/role-hierarchies/template", { roles: roleConfigs });
+    mutationFn: async (payload: { roles: RoleConfig[], mode: OffsetMode }) => {
+      const response = await apiRequest("POST", "/api/role-hierarchies/template", payload);
       return response.json();
     },
     onSuccess: () => {
@@ -78,7 +81,9 @@ export default function Dashboard() {
       queryClient.invalidateQueries({ queryKey: ["/api/role-hierarchies"] });
       toast({
         title: "Role hierarchy saved",
-        description: "Your role configuration will be applied when you optimize.",
+        description: offsetMode === 'global' 
+          ? "Global day offsets will apply to all roles and reps."
+          : "Custom configuration saved. You can override per rep if needed.",
       });
     },
     onError: (error: Error) => {
@@ -116,7 +121,7 @@ export default function Dashboard() {
   };
 
   const handleSaveRoleHierarchy = () => {
-    saveRoleHierarchyMutation.mutate(roles);
+    saveRoleHierarchyMutation.mutate({ roles, mode: offsetMode });
   };
 
   const clearAllMutation = useMutation({
@@ -319,6 +324,46 @@ export default function Dashboard() {
                       automatically follow the same route on subsequent days based on the day offset you configure.
                     </div>
                     
+                    {/* Mode Selector */}
+                    <div className="p-4 bg-gray-50 rounded-lg border">
+                      <Label className="text-sm font-medium mb-3 block">Configuration Mode</Label>
+                      <div className="flex gap-3">
+                        <button
+                          onClick={() => setOffsetMode('global')}
+                          className={`flex-1 p-3 rounded-lg border-2 transition-all text-left ${
+                            offsetMode === 'global' 
+                              ? 'border-primary bg-primary/5' 
+                              : 'border-gray-200 hover:border-gray-300'
+                          }`}
+                          data-testid="btn-mode-global"
+                        >
+                          <div className="font-medium text-sm">Global (Organization-wide)</div>
+                          <div className="text-xs text-gray-500 mt-1">
+                            Same day offsets apply to all roles and reps uniformly
+                          </div>
+                        </button>
+                        <button
+                          onClick={() => setOffsetMode('custom')}
+                          className={`flex-1 p-3 rounded-lg border-2 transition-all text-left ${
+                            offsetMode === 'custom' 
+                              ? 'border-primary bg-primary/5' 
+                              : 'border-gray-200 hover:border-gray-300'
+                          }`}
+                          data-testid="btn-mode-custom"
+                        >
+                          <div className="font-medium text-sm">Custom (Role/Rep-level)</div>
+                          <div className="text-xs text-gray-500 mt-1">
+                            Individual roles or reps can have custom day offsets
+                          </div>
+                        </button>
+                      </div>
+                      {offsetMode === 'custom' && (
+                        <div className="mt-3 p-2 bg-amber-50 border border-amber-200 rounded text-xs text-amber-800">
+                          Custom mode allows per-rep overrides. Configure defaults below, then adjust individual reps after optimization.
+                        </div>
+                      )}
+                    </div>
+                    
                     <div className="space-y-3">
                       {roles.map((role, index) => (
                         <div key={index}>
@@ -428,6 +473,11 @@ export default function Dashboard() {
                 
                 {!roleHierarchyExpanded && (
                   <CardContent>
+                    <div className="flex items-center gap-3 mb-2">
+                      <Badge variant="outline" className={`${offsetMode === 'global' ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>
+                        {offsetMode === 'global' ? 'Global Mode' : 'Custom Mode'}
+                      </Badge>
+                    </div>
                     <div className="flex flex-wrap gap-2">
                       {roles.filter(r => r.isActive).map((role, index) => (
                         <Badge
