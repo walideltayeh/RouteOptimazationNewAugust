@@ -1953,14 +1953,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let totalRoleSchedules = 0;
       
       if (templateHierarchies.length > 0) {
-        // Apply template to each rep
-        for (const rep of allReps) {
+        // Find config entry to determine mode and selected reps
+        const configEntry = templateHierarchies.find(h => h.role === '_config');
+        const mode = configEntry?.roleName || 'global';
+        let selectedRepIds: string[] = [];
+        
+        if (mode === 'custom' && configEntry?.colorHex) {
+          try {
+            selectedRepIds = JSON.parse(configEntry.colorHex);
+          } catch (e) {
+            selectedRepIds = [];
+          }
+        }
+        
+        // Filter out config entry and get actual role templates
+        const roleTemplates = templateHierarchies.filter(h => h.role !== '_config');
+        
+        // Determine which reps should have role hierarchy applied
+        const repsToApply = mode === 'global' 
+          ? allReps 
+          : allReps.filter(rep => selectedRepIds.includes(rep.id));
+        
+        console.log(`Mode: ${mode}, Applying role hierarchy to ${repsToApply.length} of ${allReps.length} reps`);
+        
+        // Apply template to selected reps
+        for (const rep of repsToApply) {
           // First, copy the template hierarchies for this rep
           await storage.deleteRoleHierarchiesByRepId(rep.id);
           
           const repHierarchies = [];
-          for (let i = 0; i < templateHierarchies.length; i++) {
-            const template = templateHierarchies[i];
+          for (let i = 0; i < roleTemplates.length; i++) {
+            const template = roleTemplates[i];
             const hierarchy = await storage.createRoleHierarchy({
               repId: rep.id,
               role: template.role,
@@ -3172,20 +3195,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Save role hierarchy template (global configuration that will be applied during optimization)
   app.post("/api/role-hierarchies/template", async (req, res) => {
     try {
-      const { roles, mode = 'global' } = req.body; // mode: 'global' | 'custom'
+      const { roles, mode = 'global', selectedRepIds = [] } = req.body; // mode: 'global' | 'custom'
       
       // Store the template in storage (we'll apply it during optimization)
       // For now, store it as a special hierarchy with repId = 'template'
       // Also store the mode as a special entry with role = '_config'
       await storage.deleteRoleHierarchiesByRepId('template');
       
-      // Store mode configuration
+      // Store mode configuration with selected rep IDs in colorHex field (JSON-encoded)
       const modeConfig = await storage.createRoleHierarchy({
         repId: 'template',
         role: '_config',
-        roleName: mode, // Store mode in roleName field for simplicity
+        roleName: mode, // Store mode in roleName field
         offsetDays: 0,
-        colorHex: '#000000',
+        colorHex: JSON.stringify(selectedRepIds), // Store selected rep IDs as JSON
         isActive: true,
         sortOrder: -1
       });

@@ -44,6 +44,7 @@ export default function Dashboard() {
   const [roles, setRoles] = useState<RoleConfig[]>(DEFAULT_ROLES);
   const [hierarchySaved, setHierarchySaved] = useState(false);
   const [offsetMode, setOffsetMode] = useState<OffsetMode>('global');
+  const [selectedRepIds, setSelectedRepIds] = useState<string[]>([]);
 
   const { data: metrics, isLoading } = useQuery<DashboardMetrics>({
     queryKey: ["/api/dashboard/metrics"],
@@ -72,7 +73,7 @@ export default function Dashboard() {
 
   // Save role hierarchy configuration mutation
   const saveRoleHierarchyMutation = useMutation({
-    mutationFn: async (payload: { roles: RoleConfig[], mode: OffsetMode }) => {
+    mutationFn: async (payload: { roles: RoleConfig[], mode: OffsetMode, selectedRepIds?: string[] }) => {
       const response = await apiRequest("POST", "/api/role-hierarchies/template", payload);
       return response.json();
     },
@@ -121,7 +122,11 @@ export default function Dashboard() {
   };
 
   const handleSaveRoleHierarchy = () => {
-    saveRoleHierarchyMutation.mutate({ roles, mode: offsetMode });
+    saveRoleHierarchyMutation.mutate({ 
+      roles, 
+      mode: offsetMode,
+      selectedRepIds: offsetMode === 'custom' ? selectedRepIds : undefined
+    });
   };
 
   const clearAllMutation = useMutation({
@@ -282,8 +287,70 @@ export default function Dashboard() {
           {/* Step 1: File Upload */}
           <FileUpload />
 
-          {/* Step 2: Role Hierarchy Configuration (shown after upload) */}
+          {/* File Analysis Summary (shown after upload) */}
           {hasOutlets && (
+            <div className="animate-in fade-in slide-in-from-bottom-3 duration-500">
+              <Card>
+                <CardHeader>
+                  <CardTitle>File Analysis Summary</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-4 gap-4">
+                    <div className="text-center p-4 bg-gray-50 rounded-lg">
+                      <p className="text-sm text-gray-600">Total Outlets</p>
+                      <p className="text-2xl font-bold text-gray-900">{outlets.length}</p>
+                    </div>
+                    <div className="text-center p-4 bg-green-50 rounded-lg border border-green-200">
+                      <p className="text-sm text-green-600">VF1 (Monthly)</p>
+                      <p className="text-2xl font-bold text-green-700">
+                        {outlets.filter(o => o.visitFrequency === 1).length}
+                      </p>
+                    </div>
+                    <div className="text-center p-4 bg-orange-50 rounded-lg border border-orange-200">
+                      <p className="text-sm text-orange-600">VF2 (Bi-weekly)</p>
+                      <p className="text-2xl font-bold text-orange-700">
+                        {outlets.filter(o => o.visitFrequency === 2).length}
+                      </p>
+                    </div>
+                    <div className="text-center p-4 bg-red-50 rounded-lg border border-red-200">
+                      <p className="text-sm text-red-600">VF4 (Weekly)</p>
+                      <p className="text-2xl font-bold text-red-700">
+                        {outlets.filter(o => o.visitFrequency === 4).length}
+                      </p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          )}
+
+          {/* Step 2: Initial Optimization */}
+          <div className={`${!hasOutlets ? 'opacity-50 pointer-events-none' : 'animate-in fade-in slide-in-from-bottom-3 duration-500'}`}>
+            <OptimizationSettings disabled={!hasOutlets} />
+          </div>
+
+          {/* Initial Optimization Result (shown after optimization) */}
+          {hasOptimization && (
+            <div className="animate-in fade-in slide-in-from-bottom-3 duration-500">
+              <Card className="border-blue-200 bg-blue-50">
+                <CardContent className="p-6">
+                  <div className="flex items-center space-x-4">
+                    <div className="w-12 h-12 bg-blue-100 rounded-xl flex items-center justify-center">
+                      <Users className="h-6 w-6 text-blue-600" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-blue-900">Initial Optimization Complete</p>
+                      <p className="text-3xl font-bold text-blue-700">{reps.length} Sales Reps Required</p>
+                      <p className="text-sm text-blue-600 mt-1">Now configure which reps should have role hierarchy applied</p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          )}
+
+          {/* Step 3: Role Hierarchy Configuration (shown AFTER initial optimization) */}
+          {hasOptimization && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-500">
               <Card>
                 <CardHeader>
@@ -293,7 +360,7 @@ export default function Dashboard() {
                         <UserCog className="h-5 w-5 text-purple-600" />
                       </div>
                       <div>
-                        <CardTitle>Step 2: Configure Role Hierarchy</CardTitle>
+                        <CardTitle>Step 3: Configure Role Hierarchy</CardTitle>
                         <CardDescription>
                           Define how Merchandisers and Collection Agents follow Sales Rep routes
                         </CardDescription>
@@ -343,7 +410,13 @@ export default function Dashboard() {
                           </div>
                         </button>
                         <button
-                          onClick={() => setOffsetMode('custom')}
+                          onClick={() => {
+                            setOffsetMode('custom');
+                            // Pre-select all reps when switching to custom mode
+                            if (selectedRepIds.length === 0 && reps.length > 0) {
+                              setSelectedRepIds(reps.map(r => r.id));
+                            }
+                          }}
                           className={`flex-1 p-3 rounded-lg border-2 transition-all text-left ${
                             offsetMode === 'custom' 
                               ? 'border-primary bg-primary/5' 
@@ -351,15 +424,72 @@ export default function Dashboard() {
                           }`}
                           data-testid="btn-mode-custom"
                         >
-                          <div className="font-medium text-sm">Custom (Role/Rep-level)</div>
+                          <div className="font-medium text-sm">Custom (Selected Reps Only)</div>
                           <div className="text-xs text-gray-500 mt-1">
-                            Individual roles or reps can have custom day offsets
+                            Apply role hierarchy only to selected reps
                           </div>
                         </button>
                       </div>
                       {offsetMode === 'custom' && (
-                        <div className="mt-3 p-2 bg-amber-50 border border-amber-200 rounded text-xs text-amber-800">
-                          Custom mode allows per-rep overrides. Configure defaults below, then adjust individual reps after optimization.
+                        <div className="mt-4 space-y-3">
+                          <div className="p-2 bg-amber-50 border border-amber-200 rounded text-xs text-amber-800">
+                            Select which reps should have the role hierarchy applied. Unselected reps will only have Sales Rep schedules.
+                          </div>
+                          <div className="border rounded-lg p-3 max-h-48 overflow-y-auto">
+                            <div className="flex items-center justify-between mb-2">
+                              <Label className="text-xs text-gray-500">Select Reps</Label>
+                              <div className="flex gap-2">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-6 text-xs"
+                                  onClick={() => setSelectedRepIds(reps.map(r => r.id))}
+                                >
+                                  Select All
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-6 text-xs"
+                                  onClick={() => setSelectedRepIds([])}
+                                >
+                                  Clear
+                                </Button>
+                              </div>
+                            </div>
+                            <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                              {reps.map((rep) => (
+                                <label
+                                  key={rep.id}
+                                  className={`flex items-center gap-2 p-2 rounded border cursor-pointer transition-all ${
+                                    selectedRepIds.includes(rep.id)
+                                      ? 'bg-primary/10 border-primary'
+                                      : 'bg-white border-gray-200 hover:border-gray-300'
+                                  }`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedRepIds.includes(rep.id)}
+                                    onChange={(e) => {
+                                      if (e.target.checked) {
+                                        setSelectedRepIds([...selectedRepIds, rep.id]);
+                                      } else {
+                                        setSelectedRepIds(selectedRepIds.filter(id => id !== rep.id));
+                                      }
+                                    }}
+                                    className="rounded"
+                                    data-testid={`checkbox-rep-${rep.id}`}
+                                  />
+                                  <span className="text-sm truncate">{rep.name}</span>
+                                </label>
+                              ))}
+                            </div>
+                            {reps.length > 0 && (
+                              <p className="text-xs text-gray-500 mt-2">
+                                {selectedRepIds.length} of {reps.length} reps selected
+                              </p>
+                            )}
+                          </div>
                         </div>
                       )}
                     </div>
@@ -499,86 +629,12 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* File Analysis Summary */}
-          {hasOutlets && (
+          {/* Step 4: Territory Maps & Schedules (shown after role hierarchy is configured) */}
+          {hasOptimization && hasRoleHierarchy && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-500">
               <Card>
                 <CardHeader>
-                  <CardTitle>File Analysis Summary</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-4 gap-4">
-                    <div className="text-center p-4 bg-gray-50 rounded-lg">
-                      <p className="text-sm text-gray-600">Total Outlets</p>
-                      <p className="text-2xl font-bold text-gray-900">{outlets.length}</p>
-                    </div>
-                    <div className="text-center p-4 bg-green-50 rounded-lg border border-green-200">
-                      <p className="text-sm text-green-600">VF1 (Monthly)</p>
-                      <p className="text-2xl font-bold text-green-700">
-                        {outlets.filter(o => o.visitFrequency === 1).length}
-                      </p>
-                    </div>
-                    <div className="text-center p-4 bg-orange-50 rounded-lg border border-orange-200">
-                      <p className="text-sm text-orange-600">VF2 (Bi-weekly)</p>
-                      <p className="text-2xl font-bold text-orange-700">
-                        {outlets.filter(o => o.visitFrequency === 2).length}
-                      </p>
-                    </div>
-                    <div className="text-center p-4 bg-red-50 rounded-lg border border-red-200">
-                      <p className="text-sm text-red-600">VF4 (Weekly)</p>
-                      <p className="text-2xl font-bold text-red-700">
-                        {outlets.filter(o => o.visitFrequency === 4).length}
-                      </p>
-                    </div>
-                  </div>
-                  
-                  <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-                    <p className="text-sm font-medium text-blue-900 mb-1">
-                      Initial Estimate
-                    </p>
-                    <p className="text-2xl font-bold text-blue-700">
-                      ~{Math.ceil(outlets.length / 25)} reps
-                    </p>
-                    <p className="text-xs text-blue-600 mt-1">
-                      Based on 25 outlets per zone, 1 zone per rep per day
-                    </p>
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
-          )}
-
-          {/* Step 3: Optimization Settings */}
-          <div className={`${!hasOutlets ? 'opacity-50 pointer-events-none' : 'animate-in fade-in slide-in-from-bottom-3 duration-500'}`}>
-            <OptimizationSettings disabled={!hasOutlets} />
-          </div>
-
-          {/* Final Recommendation (shown after optimization) */}
-          {hasOptimization && (
-            <div className="animate-in fade-in slide-in-from-bottom-3 duration-500">
-              <Card className="border-green-200 bg-green-50">
-                <CardContent className="p-6">
-                  <div className="flex items-center space-x-4">
-                    <div className="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center">
-                      <Users className="h-6 w-6 text-green-600" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-medium text-green-900">Final Recommendation</p>
-                      <p className="text-3xl font-bold text-green-700">{reps.length} reps needed</p>
-                      <p className="text-sm text-green-600 mt-1">Optimized based on your settings</p>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
-          )}
-
-          {/* Step 4: Load Maps (shown after optimization) */}
-          {hasOptimization && (
-            <div className="animate-in fade-in slide-in-from-bottom-3 duration-500">
-              <Card>
-                <CardHeader>
-                  <CardTitle>Step 4: Territory Maps & Schedules</CardTitle>
+                  <CardTitle>Step 4: View Results - Maps, Territories & Schedules</CardTitle>
                 </CardHeader>
                 <CardContent className="p-4">
                   {/* Main Dashboard Tabs */}
