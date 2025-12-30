@@ -80,10 +80,10 @@ export default function RepScheduleTable() {
     setIsScheduleModalOpen(true);
   };
 
-  // Export mutation
+  // Export mutation - includes all roles
   const exportMutation = useMutation({
     mutationFn: async () => {
-      const response = await fetch('/api/export/schedules', {
+      const response = await fetch('/api/export/role-schedules', {
         method: 'GET',
       });
       
@@ -95,7 +95,7 @@ export default function RepScheduleTable() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `schedules_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.download = `all_role_schedules_${new Date().toISOString().split('T')[0]}.xlsx`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -194,14 +194,16 @@ export default function RepScheduleTable() {
                       key={role.role}
                       onClick={() => setSelectedRole(role.role)}
                       className={`
-                        px-3 py-1 rounded-full text-xs font-medium transition-all
+                        px-3 py-1 rounded-full text-xs font-medium transition-all border-2
                         ${selectedRole === role.role 
                           ? 'text-white shadow-sm' 
-                          : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                          : 'hover:opacity-80'
                         }
                       `}
                       style={{ 
-                        backgroundColor: selectedRole === role.role ? role.colorHex : undefined 
+                        backgroundColor: selectedRole === role.role ? role.colorHex : `${role.colorHex}20`,
+                        borderColor: role.colorHex,
+                        color: selectedRole === role.role ? 'white' : role.colorHex
                       }}
                       data-testid={`btn-role-filter-${role.role}`}
                     >
@@ -235,7 +237,7 @@ export default function RepScheduleTable() {
               ) : (
                 <>
                   <Download className="mr-2 h-4 w-4" />
-                  Export Schedules
+                  Export All Roles
                 </>
               )}
             </Button>
