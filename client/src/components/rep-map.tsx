@@ -21,7 +21,7 @@ import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import RouteOrderEditor from "@/components/route-order-editor";
-import type { Rep, Outlet, Schedule } from "@shared/schema";
+import type { Rep, Outlet, Schedule, RoleHierarchy, RoleSchedule } from "@shared/schema";
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || import.meta.env.VITE_MAPBOX_PUBLIC_KEY;
 if (MAPBOX_TOKEN && MAPBOX_TOKEN !== 'demo_token' && !MAPBOX_TOKEN.includes('your_') && MAPBOX_TOKEN.length > 10) {
@@ -48,6 +48,7 @@ export function RepMap() {
   const [open, setOpen] = useState(false);
   const [selectedDays, setSelectedDays] = useState<number[]>([]); // Default to no days selected
   const [selectedWeeks, setSelectedWeeks] = useState<number[]>([]); // Default to no weeks selected
+  const [selectedRole, setSelectedRole] = useState<string>('rep'); // Default to Sales Rep
   const [isMapLoaded, setIsMapLoaded] = useState(false);
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -68,31 +69,78 @@ export function RepMap() {
   const { data: schedules = [], isLoading: schedulesLoading, refetch: refetchSchedules } = useQuery<Schedule[]>({ 
     queryKey: ["/api/schedules"] 
   });
+
+  const { data: roleHierarchies = [] } = useQuery<RoleHierarchy[]>({
+    queryKey: ["/api/role-hierarchies"]
+  });
+
+  const { data: roleSchedules = [] } = useQuery<RoleSchedule[]>({
+    queryKey: ["/api/role-schedules"]
+  });
   
   // Force refetch schedules when component mounts
   useEffect(() => {
     refetchSchedules();
   }, []);
 
-  // Filter schedules for selected reps, days, and weeks
-  const filteredSchedules = useMemo(() => {
-    console.log('Filtering schedules:', {
-      totalSchedules: schedules.length,
-      selectedReps,
-      selectedDays,
-      selectedWeeks,
-      firstSchedule: schedules[0]
+  // Get unique roles from hierarchies for the filter dropdown
+  const availableRoles = useMemo(() => {
+    const roleMap = new Map<string, { role: string; roleName: string; colorHex: string }>();
+    roleMap.set('rep', { role: 'rep', roleName: 'Sales Rep', colorHex: '#3B82F6' });
+    
+    roleHierarchies.forEach(h => {
+      if (h.role !== 'rep' && h.isActive) {
+        roleMap.set(h.role, { role: h.role, roleName: h.roleName, colorHex: h.colorHex });
+      }
     });
     
-    const filtered = schedules.filter(schedule => 
-      selectedReps.includes(schedule.repId) && 
-      selectedDays.includes(schedule.dayOfWeek) &&
-      selectedWeeks.includes(schedule.week)
+    return Array.from(roleMap.values());
+  }, [roleHierarchies]);
+
+  // Get the current role's color
+  const getCurrentRoleColor = () => {
+    const roleInfo = availableRoles.find(r => r.role === selectedRole);
+    return roleInfo?.colorHex || '#3B82F6';
+  };
+
+  // Filter schedules for selected reps, days, weeks, and role
+  const filteredSchedules = useMemo(() => {
+    // For Sales Rep, use regular schedules
+    if (selectedRole === 'rep') {
+      const filtered = schedules.filter(schedule => 
+        selectedReps.includes(schedule.repId) && 
+        selectedDays.includes(schedule.dayOfWeek) &&
+        selectedWeeks.includes(schedule.week)
+      );
+      return filtered;
+    }
+    
+    // For other roles, use role schedules
+    // First find hierarchy IDs for the selected role
+    const hierarchyIdsForRole = roleHierarchies
+      .filter(h => h.role === selectedRole && selectedReps.includes(h.repId))
+      .map(h => h.id);
+    
+    // Filter role schedules by hierarchy ID, day, and week
+    const filteredRoleSchedules = roleSchedules.filter(rs =>
+      hierarchyIdsForRole.includes(rs.hierarchyId) &&
+      selectedDays.includes(rs.dayOfWeek) &&
+      selectedWeeks.includes(rs.week)
     );
     
-    console.log('Filtered schedules:', filtered.length);
-    return filtered;
-  }, [schedules, selectedReps, selectedDays, selectedWeeks]);
+    // Convert role schedules to Schedule-like objects for compatibility
+    return filteredRoleSchedules.map(rs => ({
+      id: rs.id,
+      repId: rs.repId,
+      week: rs.week,
+      dayOfWeek: rs.dayOfWeek,
+      outletIds: rs.outletIds,
+      routeOrder: rs.outletIds, // Use outletIds as routeOrder
+      totalDistance: null,
+      estimatedDuration: null,
+      createdAt: rs.createdAt
+    } as Schedule));
+  }, [schedules, roleSchedules, roleHierarchies, selectedReps, selectedDays, selectedWeeks, selectedRole]);
 
   // Group outlets by rep, day, and week for the selected days
   const repDayOutlets = useMemo(() => {
@@ -104,18 +152,30 @@ export function RepMap() {
         dayOfWeek: number;
         week: number;
         schedule: Schedule;
+        roleName?: string;
       }> 
     }> = {};
     
-    if (schedulesLoading || !outlets.length || !schedules.length) {
-      console.log('Data not ready:', { schedulesLoading, outlets: outlets.length, schedules: schedules.length });
+    if (schedulesLoading || !outlets.length) {
       return result;
     }
+    
+    // For role schedules, check if we have any role schedules
+    if (selectedRole !== 'rep' && roleSchedules.length === 0) {
+      return result;
+    }
+    
+    // For rep schedules, check if we have schedules
+    if (selectedRole === 'rep' && schedules.length === 0) {
+      return result;
+    }
+    
+    const roleColor = getCurrentRoleColor();
+    const roleInfo = availableRoles.find(r => r.role === selectedRole);
     
     filteredSchedules.forEach(schedule => {
       const rep = reps.find(r => r.id === schedule.repId);
       if (!rep) {
-        console.log('Rep not found for ID:', schedule.repId);
         return;
       }
 
@@ -126,25 +186,12 @@ export function RepMap() {
           ? JSON.parse(schedule.outletIds as string)
           : [];
       
-      console.log('Processing schedule:', {
-        scheduleId: schedule.id,
-        repId: schedule.repId,
-        dayOfWeek: schedule.dayOfWeek,
-        outletIds: outletIdArray,
-        totalOutletsAvailable: outlets.length
-      });
-      
       const scheduleOutlets = outletIdArray
         .map((id: string) => {
           const outlet = outlets.find((o: Outlet) => o.id === id);
-          if (!outlet) {
-            console.log('Outlet not found for ID:', id);
-          }
           return outlet;
         })
         .filter((o: Outlet | undefined): o is Outlet => o !== undefined);
-      
-      console.log('Found outlets:', scheduleOutlets.length, 'of', outletIdArray.length);
 
       if (!result[rep.id]) {
         result[rep.id] = {
@@ -156,17 +203,23 @@ export function RepMap() {
       // Create a unique key for each day-week combination
       const scheduleKey = `${schedule.dayOfWeek}-${schedule.week}`;
       
+      // Use role-specific color or day color based on mode
+      const displayColor = selectedRole === 'rep' 
+        ? DAY_COLORS[schedule.dayOfWeek % DAY_COLORS.length]
+        : roleColor;
+      
       result[rep.id].daySchedules[scheduleKey] = {
         outlets: scheduleOutlets,
-        color: DAY_COLORS[schedule.dayOfWeek % DAY_COLORS.length],
+        color: displayColor,
         dayOfWeek: schedule.dayOfWeek,
         week: schedule.week,
-        schedule
+        schedule,
+        roleName: roleInfo?.roleName
       };
     });
 
     return result;
-  }, [filteredSchedules, reps, outlets]);
+  }, [filteredSchedules, reps, outlets, selectedRole, availableRoles, roleSchedules, schedules, schedulesLoading]);
 
   // Initialize map
   useEffect(() => {
@@ -569,6 +622,36 @@ export function RepMap() {
           </Popover>
 
           <div className="space-y-2">
+            <label className="text-sm font-medium">Select Role</label>
+            <div className="flex flex-wrap gap-2">
+              {availableRoles.map((role) => (
+                <button
+                  key={role.role}
+                  onClick={() => setSelectedRole(role.role)}
+                  className={`
+                    px-3 py-1.5 rounded-full text-sm font-medium transition-all
+                    ${selectedRole === role.role 
+                      ? 'text-white shadow-sm' 
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    }
+                  `}
+                  style={{ 
+                    backgroundColor: selectedRole === role.role ? role.colorHex : undefined,
+                  }}
+                  data-testid={`button-role-${role.role}`}
+                >
+                  {role.roleName}
+                </button>
+              ))}
+            </div>
+            {availableRoles.length === 1 && (
+              <p className="text-xs text-muted-foreground">
+                Configure role hierarchies to see other roles
+              </p>
+            )}
+          </div>
+
+          <div className="space-y-2">
             <label className="text-sm font-medium">Select Days</label>
             <div className="grid grid-cols-2 gap-2">
               {daysOfWeek.map((day, index) => (
@@ -665,7 +748,7 @@ export function RepMap() {
                         style={{ backgroundColor: dayData.color }}
                       />
                       <span className="text-xs truncate flex-1">
-                        {repData.rep.name} - {daysOfWeek[dayData.dayOfWeek]} (Week {dayData.week}) - {dayData.outlets.length} outlets
+                        {repData.rep.name} - {dayData.roleName ? `${dayData.roleName} - ` : ''}{daysOfWeek[dayData.dayOfWeek]} (Week {dayData.week}) - {dayData.outlets.length} outlets
                         {dayData.schedule.totalDistance && ` (${dayData.schedule.totalDistance.toFixed(1)}km)`}
                       </span>
                       <Button
