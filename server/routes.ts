@@ -1947,6 +1947,42 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       finalRequiredReps = allReps.length;
 
+      // Generate role schedules for all reps based on template
+      console.log('Generating role schedules based on hierarchy template...');
+      const templateHierarchies = await storage.getRoleHierarchiesByRepId('template');
+      let totalRoleSchedules = 0;
+      
+      if (templateHierarchies.length > 0) {
+        // Apply template to each rep
+        for (const rep of allReps) {
+          // First, copy the template hierarchies for this rep
+          await storage.deleteRoleHierarchiesByRepId(rep.id);
+          
+          const repHierarchies = [];
+          for (let i = 0; i < templateHierarchies.length; i++) {
+            const template = templateHierarchies[i];
+            const hierarchy = await storage.createRoleHierarchy({
+              repId: rep.id,
+              role: template.role,
+              roleName: template.roleName,
+              offsetDays: template.offsetDays,
+              colorHex: template.colorHex,
+              isActive: template.isActive,
+              sortOrder: template.sortOrder
+            });
+            repHierarchies.push(hierarchy);
+          }
+          
+          // Then generate role schedules
+          const repSchedules = await storage.getSchedulesByRepId(rep.id);
+          if (repSchedules.length > 0) {
+            const generatedSchedules = await generateRoleSchedulesForRep(rep.id, repSchedules, repHierarchies);
+            totalRoleSchedules += generatedSchedules.length;
+          }
+        }
+        console.log(`Generated ${totalRoleSchedules} role schedules for ${allReps.length} reps`);
+      }
+
       // Invalidate cache by refreshing data
       const updatedOutlets = await storage.getOutlets();
       const updatedReps = await storage.getReps();
@@ -1958,6 +1994,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         totalWeeklyVisits,
         maxWeeklyCapacityPerRep,
         minWeeklyCapacityPerRep,
+        roleSchedulesGenerated: totalRoleSchedules,
         calculation: {
           totalOutlets: outlets.length,
           totalWeeklyVisits,
@@ -1966,7 +2003,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           maxVisitsPerDay,
           estimatedReps: finalRequiredReps
         },
-        message: `Optimization completed. ${finalRequiredReps} routes created for ${totalWeeklyVisits} weekly visits (${minVisitsPerDay}-${maxVisitsPerDay} visits/day). ${outlets.length} outlets assigned.`
+        message: `Optimization completed. ${finalRequiredReps} routes created for ${totalWeeklyVisits} weekly visits (${minVisitsPerDay}-${maxVisitsPerDay} visits/day). ${outlets.length} outlets assigned.${totalRoleSchedules > 0 ? ` ${totalRoleSchedules} role schedules generated.` : ''}`
       });
 
     } catch (error) {
@@ -3129,6 +3166,42 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error deleting role hierarchy:", error);
       res.status(500).json({ message: "Failed to delete role hierarchy" });
+    }
+  });
+
+  // Save role hierarchy template (global configuration that will be applied during optimization)
+  app.post("/api/role-hierarchies/template", async (req, res) => {
+    try {
+      const { roles } = req.body; // Array of { role, roleName, offsetDays, colorHex, isActive }
+      
+      // Store the template in storage (we'll apply it during optimization)
+      // For now, store it as a special hierarchy with repId = 'template'
+      await storage.deleteRoleHierarchiesByRepId('template');
+      
+      const templates = [];
+      for (let i = 0; i < roles.length; i++) {
+        const roleData = roles[i];
+        const validated = insertRoleHierarchySchema.parse({
+          repId: 'template',
+          role: roleData.role,
+          roleName: roleData.roleName,
+          offsetDays: roleData.offsetDays || 0,
+          colorHex: roleData.colorHex || '#3B82F6',
+          isActive: roleData.isActive !== false,
+          sortOrder: i
+        });
+        const created = await storage.createRoleHierarchy(validated);
+        templates.push(created);
+      }
+      
+      res.json({
+        success: true,
+        templates,
+        message: `Saved ${templates.length} role hierarchy templates`
+      });
+    } catch (error) {
+      console.error("Error saving role hierarchy template:", error);
+      res.status(500).json({ message: "Failed to save role hierarchy template" });
     }
   });
 

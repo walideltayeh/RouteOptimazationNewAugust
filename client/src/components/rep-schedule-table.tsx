@@ -1,14 +1,14 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import React from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Calendar, Download, RefreshCw, Eye, Edit, CheckCircle, Clock, Info } from "lucide-react";
+import { Calendar, Download, RefreshCw, Eye, Edit, CheckCircle, Clock, Info, Users } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import type { Rep, Outlet, Schedule } from "@shared/schema";
+import type { Rep, Outlet, Schedule, RoleHierarchy, RoleSchedule } from "@shared/schema";
 import ScheduleViewModal from "./schedule-view-modal";
 
 // Territory colors for rep avatars
@@ -36,6 +36,7 @@ export default function RepScheduleTable() {
   const [selectedRepId, setSelectedRepId] = useState<string | null>(null);
   const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
   const [isEditMode, setIsEditMode] = useState(false);
+  const [selectedRole, setSelectedRole] = useState<string>('rep');
 
   const { data: reps = [], isLoading } = useQuery<Rep[]>({
     queryKey: ["/api/reps"],
@@ -44,6 +45,28 @@ export default function RepScheduleTable() {
   const { data: outlets = [] } = useQuery<Outlet[]>({
     queryKey: ["/api/outlets"],
   });
+
+  const { data: roleHierarchies = [] } = useQuery<RoleHierarchy[]>({
+    queryKey: ["/api/role-hierarchies"],
+  });
+
+  const { data: roleSchedules = [] } = useQuery<RoleSchedule[]>({
+    queryKey: ["/api/role-schedules"],
+  });
+
+  // Get available roles from hierarchies
+  const availableRoles = useMemo(() => {
+    const roleMap = new Map<string, { role: string; roleName: string; colorHex: string }>();
+    roleMap.set('rep', { role: 'rep', roleName: 'Sales Rep', colorHex: '#3B82F6' });
+    
+    roleHierarchies.forEach(h => {
+      if (h.role !== 'rep' && h.isActive && h.repId !== 'template') {
+        roleMap.set(h.role, { role: h.role, roleName: h.roleName, colorHex: h.colorHex });
+      }
+    });
+    
+    return Array.from(roleMap.values());
+  }, [roleHierarchies]);
 
   const handleViewSchedule = (repId: string) => {
     setSelectedRepId(repId);
@@ -105,22 +128,33 @@ export default function RepScheduleTable() {
     }
   }, [reps.length, refetchSchedules]);
 
-  // Calculate rep statistics
+  // Calculate rep statistics based on selected role
   const repsWithStats = reps.map((rep, index) => {
-    // Count unique zones for this rep based on unique days with schedules
-    const repSchedules = schedules.filter(s => s.repId === rep.id);
+    let totalZones = 0;
+    let weeklyZones = 0;
     
-    // Count schedules in week 1 and week 2 (since week 3=week 1, week 4=week 2)
-    const week1Schedules = repSchedules.filter(s => s.week === 1).length;
-    const week2Schedules = repSchedules.filter(s => s.week === 2).length;
-    const totalZones = week1Schedules + week2Schedules;
-
-
+    if (selectedRole === 'rep') {
+      // Use regular schedules for Sales Rep
+      const repScheduleList = schedules.filter(s => s.repId === rep.id);
+      const week1Schedules = repScheduleList.filter(s => s.week === 1).length;
+      const week2Schedules = repScheduleList.filter(s => s.week === 2).length;
+      totalZones = week1Schedules + week2Schedules;
+      weeklyZones = Math.max(week1Schedules, week2Schedules);
+    } else {
+      // Use role schedules for other roles
+      const roleScheduleList = roleSchedules.filter(
+        rs => rs.repId === rep.id && rs.role === selectedRole
+      );
+      const week1Schedules = roleScheduleList.filter(s => s.week === 1).length;
+      const week2Schedules = roleScheduleList.filter(s => s.week === 2).length;
+      totalZones = week1Schedules + week2Schedules;
+      weeklyZones = Math.max(week1Schedules, week2Schedules);
+    }
 
     return {
       ...rep,
       totalZones: totalZones,
-      weeklyZones: Math.max(week1Schedules, week2Schedules), // Max zones in a single week
+      weeklyZones: weeklyZones,
       avatarColor: territoryColors[index % territoryColors.length],
       initials: rep.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2),
       status: totalZones > 0 ? 'optimized' : 'pending'
@@ -144,10 +178,40 @@ export default function RepScheduleTable() {
     <Card>
       <CardHeader>
         <div className="flex justify-between items-center">
-          <CardTitle className="flex items-center">
-            <Calendar className="mr-2 h-5 w-5 text-primary" />
-            Rep Scheduling Overview
-          </CardTitle>
+          <div className="flex items-center gap-4">
+            <CardTitle className="flex items-center">
+              <Calendar className="mr-2 h-5 w-5 text-primary" />
+              Scheduling Overview
+            </CardTitle>
+            
+            {/* Role Selector */}
+            {availableRoles.length > 1 && (
+              <div className="flex items-center gap-2">
+                <Users className="h-4 w-4 text-gray-500" />
+                <div className="flex gap-1">
+                  {availableRoles.map((role) => (
+                    <button
+                      key={role.role}
+                      onClick={() => setSelectedRole(role.role)}
+                      className={`
+                        px-3 py-1 rounded-full text-xs font-medium transition-all
+                        ${selectedRole === role.role 
+                          ? 'text-white shadow-sm' 
+                          : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                        }
+                      `}
+                      style={{ 
+                        backgroundColor: selectedRole === role.role ? role.colorHex : undefined 
+                      }}
+                      data-testid={`btn-role-filter-${role.role}`}
+                    >
+                      {role.roleName}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
 
           <div className="flex items-center space-x-3">
             {metrics && metrics.activeReps > 0 && (
@@ -194,9 +258,14 @@ export default function RepScheduleTable() {
           <div className="flex items-center">
             <Info className="h-5 w-5 text-primary mr-3" />
             <div>
-              <h4 className="text-sm font-semibold text-primary">Schedule Pattern</h4>
+              <h4 className="text-sm font-semibold text-primary">
+                {selectedRole === 'rep' ? 'Schedule Pattern' : `${availableRoles.find(r => r.role === selectedRole)?.roleName || 'Role'} Schedule`}
+              </h4>
               <p className="text-sm text-primary/80">
-                Week 1 = Week 3, Week 2 = Week 4. Each rep visits one complete zone per day (approximately 25 outlets), visiting 10 unique zones over 2 weeks.
+                {selectedRole === 'rep' 
+                  ? 'Week 1 = Week 3, Week 2 = Week 4. Each rep visits one complete zone per day (approximately 25 outlets), visiting 10 unique zones over 2 weeks.'
+                  : `Follows the Sales Rep route with a day offset. The ${availableRoles.find(r => r.role === selectedRole)?.roleName || 'role'} visits the same outlets in the same order, shifted by the configured day offset.`
+                }
               </p>
             </div>
           </div>

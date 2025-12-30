@@ -7,19 +7,40 @@ import AnalyticsCharts from "@/components/analytics-charts";
 import MLInsights from "@/components/ml-insights";
 import TerritoryMap from "@/components/territory-map-new";
 import TerritoryCustomization from "@/components/territory-customization";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ArrowUp, Store, Users, CalendarCheck, TrendingUp, Download, Plus, Brain, Trash2, Map, Edit3 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import { ArrowUp, Store, Users, CalendarCheck, TrendingUp, Download, Plus, Brain, Trash2, Map, Edit3, ChevronDown, ChevronRight, UserCog, ArrowDown, Save } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
-import type { DashboardMetrics, Rep, Outlet, Schedule } from "@shared/schema";
+import type { DashboardMetrics, Rep, Outlet, Schedule, RoleHierarchy } from "@shared/schema";
+
+interface RoleConfig {
+  role: string;
+  roleName: string;
+  offsetDays: number;
+  colorHex: string;
+  isActive: boolean;
+}
+
+const DEFAULT_ROLES: RoleConfig[] = [
+  { role: 'rep', roleName: 'Sales Rep', offsetDays: 0, colorHex: '#3B82F6', isActive: true },
+  { role: 'merchandiser', roleName: 'Merchandiser', offsetDays: 1, colorHex: '#10B981', isActive: true },
+  { role: 'collection_agent', roleName: 'Collection Agent', offsetDays: 2, colorHex: '#F59E0B', isActive: true },
+];
 
 export default function Dashboard() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [showTerritoryCustomization, setShowTerritoryCustomization] = useState(false);
   const [currentStep, setCurrentStep] = useState(1);
+  const [roleHierarchyExpanded, setRoleHierarchyExpanded] = useState(false);
+  const [roles, setRoles] = useState<RoleConfig[]>(DEFAULT_ROLES);
+  const [hierarchySaved, setHierarchySaved] = useState(false);
 
   const { data: metrics, isLoading } = useQuery<DashboardMetrics>({
     queryKey: ["/api/dashboard/metrics"],
@@ -37,9 +58,66 @@ export default function Dashboard() {
     queryKey: ["/api/schedules"],
   });
 
+  const { data: existingHierarchies = [] } = useQuery<RoleHierarchy[]>({
+    queryKey: ["/api/role-hierarchies"],
+  });
+
   // Determine current step based on data state
   const hasOutlets = outlets.length > 0;
   const hasOptimization = reps.length > 0 && schedules.length > 0;
+  const hasRoleHierarchy = existingHierarchies.length > 0 || hierarchySaved;
+
+  // Save role hierarchy configuration mutation
+  const saveRoleHierarchyMutation = useMutation({
+    mutationFn: async (roleConfigs: RoleConfig[]) => {
+      const response = await apiRequest("POST", "/api/role-hierarchies/template", { roles: roleConfigs });
+      return response.json();
+    },
+    onSuccess: () => {
+      setHierarchySaved(true);
+      queryClient.invalidateQueries({ queryKey: ["/api/role-hierarchies"] });
+      toast({
+        title: "Role hierarchy saved",
+        description: "Your role configuration will be applied when you optimize.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Failed to save",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleRoleChange = (index: number, field: keyof RoleConfig, value: string | number | boolean) => {
+    const newRoles = [...roles];
+    (newRoles[index] as any)[field] = value;
+    setRoles(newRoles);
+  };
+
+  const handleAddRole = () => {
+    setRoles([
+      ...roles,
+      {
+        role: `custom_role_${Date.now()}`,
+        roleName: 'Custom Role',
+        offsetDays: roles.length,
+        colorHex: '#9333EA',
+        isActive: true,
+      },
+    ]);
+  };
+
+  const handleRemoveRole = (index: number) => {
+    if (roles[index].role !== 'rep') {
+      setRoles(roles.filter((_, i) => i !== index));
+    }
+  };
+
+  const handleSaveRoleHierarchy = () => {
+    saveRoleHierarchyMutation.mutate(roles);
+  };
 
   const clearAllMutation = useMutation({
     mutationFn: () => fetch("/api/clear", { method: "DELETE" }).then(res => res.json()),
@@ -199,12 +277,184 @@ export default function Dashboard() {
           {/* Step 1: File Upload */}
           <FileUpload />
 
-          {/* Step 2: File Analysis (shown after upload) */}
+          {/* Step 2: Role Hierarchy Configuration (shown after upload) */}
           {hasOutlets && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-500">
               <Card>
                 <CardHeader>
-                  <CardTitle>Step 2: File Analysis Complete</CardTitle>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 bg-purple-100 rounded-lg flex items-center justify-center">
+                        <UserCog className="h-5 w-5 text-purple-600" />
+                      </div>
+                      <div>
+                        <CardTitle>Step 2: Configure Role Hierarchy</CardTitle>
+                        <CardDescription>
+                          Define how Merchandisers and Collection Agents follow Sales Rep routes
+                        </CardDescription>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {hasRoleHierarchy && (
+                        <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200">
+                          Configured
+                        </Badge>
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setRoleHierarchyExpanded(!roleHierarchyExpanded)}
+                        data-testid="btn-toggle-hierarchy"
+                      >
+                        {roleHierarchyExpanded ? <ChevronDown className="h-5 w-5" /> : <ChevronRight className="h-5 w-5" />}
+                      </Button>
+                    </div>
+                  </div>
+                </CardHeader>
+                
+                {roleHierarchyExpanded && (
+                  <CardContent className="space-y-4">
+                    <div className="p-3 bg-blue-50 rounded-lg border border-blue-200 text-sm text-blue-800">
+                      <strong>How it works:</strong> Sales Reps visit outlets first. Other roles (Merchandiser, Collection Agent) 
+                      automatically follow the same route on subsequent days based on the day offset you configure.
+                    </div>
+                    
+                    <div className="space-y-3">
+                      {roles.map((role, index) => (
+                        <div key={index}>
+                          <div
+                            className="flex items-center gap-4 p-3 rounded-lg border bg-white"
+                            style={{ borderLeftColor: role.colorHex, borderLeftWidth: '4px' }}
+                          >
+                            <div className="flex-1 grid grid-cols-1 md:grid-cols-4 gap-3">
+                              <div>
+                                <Label className="text-xs text-gray-500">Role Name</Label>
+                                <Input
+                                  value={role.roleName}
+                                  onChange={(e) => handleRoleChange(index, 'roleName', e.target.value)}
+                                  disabled={role.role === 'rep'}
+                                  className="h-9"
+                                  data-testid={`input-role-name-${index}`}
+                                />
+                              </div>
+                              <div>
+                                <Label className="text-xs text-gray-500">Day Offset</Label>
+                                <div className="flex items-center gap-2">
+                                  <Input
+                                    type="number"
+                                    value={role.offsetDays}
+                                    onChange={(e) => handleRoleChange(index, 'offsetDays', parseInt(e.target.value) || 0)}
+                                    min={0}
+                                    max={10}
+                                    disabled={role.role === 'rep'}
+                                    className="h-9 w-20"
+                                    data-testid={`input-offset-${index}`}
+                                  />
+                                  <span className="text-xs text-gray-500">
+                                    {role.offsetDays === 0 ? '(Same day)' : `(+${role.offsetDays} day${role.offsetDays > 1 ? 's' : ''})`}
+                                  </span>
+                                </div>
+                              </div>
+                              <div>
+                                <Label className="text-xs text-gray-500">Color</Label>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="color"
+                                    value={role.colorHex}
+                                    onChange={(e) => handleRoleChange(index, 'colorHex', e.target.value)}
+                                    className="w-9 h-9 rounded border cursor-pointer"
+                                    data-testid={`input-color-${index}`}
+                                  />
+                                </div>
+                              </div>
+                              <div className="flex items-end gap-3">
+                                <div className="flex items-center gap-2">
+                                  <Switch
+                                    checked={role.isActive}
+                                    onCheckedChange={(checked) => handleRoleChange(index, 'isActive', checked)}
+                                    disabled={role.role === 'rep'}
+                                    data-testid={`switch-active-${index}`}
+                                  />
+                                  <Label className="text-xs">Active</Label>
+                                </div>
+                                {role.role !== 'rep' && (
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-8 w-8 text-red-500 hover:text-red-700 hover:bg-red-50"
+                                    onClick={() => handleRemoveRole(index)}
+                                    data-testid={`btn-remove-role-${index}`}
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </Button>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                          {index < roles.length - 1 && (
+                            <div className="flex justify-center py-1">
+                              <ArrowDown className="h-4 w-4 text-gray-400" />
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    
+                    <div className="flex justify-between pt-3 border-t">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handleAddRole}
+                        data-testid="btn-add-custom-role"
+                      >
+                        <Plus className="h-4 w-4 mr-2" />
+                        Add Custom Role
+                      </Button>
+                      <Button
+                        onClick={handleSaveRoleHierarchy}
+                        disabled={saveRoleHierarchyMutation.isPending}
+                        data-testid="btn-save-hierarchy"
+                      >
+                        {saveRoleHierarchyMutation.isPending ? (
+                          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2" />
+                        ) : (
+                          <Save className="h-4 w-4 mr-2" />
+                        )}
+                        Save Configuration
+                      </Button>
+                    </div>
+                  </CardContent>
+                )}
+                
+                {!roleHierarchyExpanded && (
+                  <CardContent>
+                    <div className="flex flex-wrap gap-2">
+                      {roles.filter(r => r.isActive).map((role, index) => (
+                        <Badge
+                          key={index}
+                          variant="outline"
+                          className="px-3 py-1"
+                          style={{ backgroundColor: `${role.colorHex}20`, borderColor: role.colorHex, color: role.colorHex }}
+                        >
+                          {role.roleName} (+{role.offsetDays} day{role.offsetDays !== 1 ? 's' : ''})
+                        </Badge>
+                      ))}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-2">
+                      Click to expand and customize role hierarchy
+                    </p>
+                  </CardContent>
+                )}
+              </Card>
+            </div>
+          )}
+
+          {/* File Analysis Summary */}
+          {hasOutlets && (
+            <div className="animate-in fade-in slide-in-from-bottom-3 duration-500">
+              <Card>
+                <CardHeader>
+                  <CardTitle>File Analysis Summary</CardTitle>
                 </CardHeader>
                 <CardContent>
                   <div className="grid grid-cols-4 gap-4">
@@ -232,7 +482,6 @@ export default function Dashboard() {
                     </div>
                   </div>
                   
-                  {/* Estimated Reps Card - Always show estimate until optimization is run */}
                   <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
                     <p className="text-sm font-medium text-blue-900 mb-1">
                       Initial Estimate
@@ -242,13 +491,6 @@ export default function Dashboard() {
                     </p>
                     <p className="text-xs text-blue-600 mt-1">
                       Based on 25 outlets per zone, 1 zone per rep per day
-                    </p>
-                  </div>
-                  
-                  <div className="mt-4 p-4 bg-blue-50 rounded-lg border border-blue-200">
-                    <p className="text-sm text-blue-800">
-                      Based on your file analysis, the system has calculated an initial recommendation.
-                      Please proceed to Step 3 to configure optimization settings.
                     </p>
                   </div>
                 </CardContent>

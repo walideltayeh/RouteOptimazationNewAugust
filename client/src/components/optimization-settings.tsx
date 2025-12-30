@@ -132,6 +132,8 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       queryClient.invalidateQueries({ queryKey: ["/api/outlets"] });
       queryClient.invalidateQueries({ queryKey: ["/api/schedules"] });
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard/metrics"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/role-hierarchies"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/role-schedules"] });
     },
     onError: (error: Error) => {
       toast({
