@@ -135,9 +135,9 @@ export function RepMap() {
       week: rs.week,
       dayOfWeek: rs.dayOfWeek,
       outletIds: rs.outletIds,
-      routeOrder: rs.outletIds, // Use outletIds as routeOrder
-      totalDistance: null,
-      estimatedDuration: null,
+      routeOrder: rs.routeOrder, // Preserve the stored route order
+      totalDistance: rs.totalDistance,
+      estimatedDuration: rs.estimatedDuration,
       createdAt: rs.createdAt
     } as Schedule));
   }, [schedules, roleSchedules, roleHierarchies, selectedReps, selectedDays, selectedWeeks, selectedRole]);
