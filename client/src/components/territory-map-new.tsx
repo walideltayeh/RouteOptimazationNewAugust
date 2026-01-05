@@ -193,12 +193,12 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     console.log(`Rendering ${outlets.length} outlets in ${viewMode} mode, VF filters: VF1=${vfFilters.vf1}, VF2=${vfFilters.vf2}, VF4=${vfFilters.vf4}`);
     setIsRenderingMarkers(true);
     
-    // For very large datasets, use optimized rendering
-    if (outlets.length > 5000) {
-      console.log('Dataset too large for map rendering, showing territory summary only');
-      setMapError(`Dataset has ${outlets.length} outlets. Map display disabled for performance. Use dashboard analytics instead.`);
-      setIsRenderingMarkers(false);
-      return;
+    // For very large datasets, force cluster view and use GeoJSON rendering
+    const isLargeDataset = outlets.length > 5000;
+    if (isLargeDataset && viewMode === 'individual') {
+      console.log('Large dataset detected, forcing cluster view for performance');
+      setViewMode('cluster');
+      return; // Will re-render with cluster mode
     }
     
     // Clear existing sources and layers properly
@@ -884,6 +884,8 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                   size="sm"
                   className="h-8 px-3"
                   onClick={() => setViewMode('individual')}
+                  disabled={outlets.length > 5000}
+                  title={outlets.length > 5000 ? 'Individual view disabled for large datasets (>5000 outlets). Click on a cluster to view its outlets.' : ''}
                 >
                   <Grid3X3 className="mr-1 h-4 w-4" />
                   Individual
@@ -939,6 +941,22 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                       Processing {outlets.length} outlets...
                     </p>
                   )}
+                </div>
+              </div>
+            )}
+            
+            {/* Large Dataset Info */}
+            {outlets.length > 5000 && viewMode === 'cluster' && (
+              <div className="absolute top-4 left-4 right-4 bg-blue-50 border border-blue-200 rounded-lg p-3 z-10">
+                <div className="flex items-start">
+                  <AlertCircle className="h-5 w-5 text-blue-500 mr-2 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-sm font-medium text-blue-800">Large Dataset Mode</p>
+                    <p className="text-xs text-blue-600 mt-1">
+                      Showing {Object.keys(territoryGroups).length} territory clusters for {outlets.length.toLocaleString()} outlets. 
+                      Click on a cluster to view individual outlets in that zone.
+                    </p>
+                  </div>
                 </div>
               </div>
             )}
