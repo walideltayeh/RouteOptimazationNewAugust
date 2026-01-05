@@ -41,6 +41,12 @@ Preferred communication style: Simple, everyday language.
 - **Multi-Day Selection**: Rep map allows viewing multiple days simultaneously.
 - **Export Functionality**: Supports exporting schedules and vehicle summaries to Excel.
 
+### Performance Optimizations (Large Dataset Support: 2000-5000+ outlets)
+- **Spatial Grid Indexing**: SpatialGrid class provides O(1) neighbor lookups instead of O(n) pairwise distance calculations. Uses 2km grid cells to index outlets by geographic location.
+- **Optimized Clustering**: The createExact25OutletClusters function uses the spatial grid for efficient neighbor queries and sample-based seed selection (samples 100 outlets) to reduce complexity from O(n²) to O(n*k).
+- **GeoJSON Map Rendering**: For datasets with 100+ outlets, the map uses Mapbox GL circle and symbol layers instead of individual DOM markers. This reduces DOM node count from thousands to a few layers, dramatically improving rendering performance.
+- **Event Handler Cleanup**: GeoJSON layer event handlers are tracked and properly cleaned up on re-render to prevent memory leaks and duplicate handlers.
+
 ## External Dependencies
 
 ### Database
