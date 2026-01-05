@@ -56,6 +56,8 @@ export function RepMap() {
   const [isExporting, setIsExporting] = useState(false);
   const [editingSchedule, setEditingSchedule] = useState<{ schedule: Schedule; rep: Rep } | null>(null);
   const markersRef = useRef<mapboxgl.Marker[]>([]);
+  // Track GeoJSON layer IDs for cleanup
+  const geoJSONLayersRef = useRef<{ circleLayerId: string; handlers: { click: any; mouseenter: any; mouseleave: any } }[]>([]);
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -380,6 +382,16 @@ export function RepMap() {
     // Clear existing markers
     markersRef.current.forEach(marker => marker.remove());
     markersRef.current = [];
+    
+    // Clean up GeoJSON layer event handlers before removing layers
+    geoJSONLayersRef.current.forEach(({ circleLayerId, handlers }) => {
+      if (map.current && map.current.getLayer(circleLayerId)) {
+        map.current.off('click', circleLayerId, handlers.click);
+        map.current.off('mouseenter', circleLayerId, handlers.mouseenter);
+        map.current.off('mouseleave', circleLayerId, handlers.mouseleave);
+      }
+    });
+    geoJSONLayersRef.current = [];
 
     // Clear existing layers and sources for all reps
     reps.forEach((rep) => {
@@ -397,7 +409,9 @@ export function RepMap() {
     // Clear existing layers and sources for all reps, ALL days (1-7), and ALL weeks (1-4)
     // This ensures stale layers are removed when toggling days/weeks
     // Use a comprehensive list of possible role names to ensure all stale layers are cleared
-    const knownRoleNames = ['merchandiser', 'collection_agent', 'supervisor', 'driver', 'custom'];
+    const knownRoleNames = ['merchandiser', 'collection_agent', 'supervisor', 'driver', 'custom', 'rep'];
+    const allRoleNames = [...knownRoleNames, ...availableRoles.map(r => r.role)];
+    const uniqueRoleNames = Array.from(new Set(allRoleNames));
     
     reps.forEach((rep) => {
       [1, 2, 3, 4, 5, 6, 7].forEach((day) => {
@@ -413,20 +427,35 @@ export function RepMap() {
             map.current!.removeSource(sourceId);
           }
           
-          // Clear role schedule layers using known role names and availableRoles
-          const allRoleNames = [...knownRoleNames, ...availableRoles.map(r => r.role)];
-          const uniqueRoleNames = Array.from(new Set(allRoleNames));
-          
+          // Clear role schedule layers AND GeoJSON point layers
           uniqueRoleNames.forEach((roleName) => {
-            if (roleName === 'rep') return;
-            const roleSourceId = `route-${rep.id}-${day}-${week}-${roleName}`;
-            const roleLayerId = `route-layer-${rep.id}-${day}-${week}-${roleName}`;
-            
-            if (map.current!.getLayer(roleLayerId)) {
-              map.current!.removeLayer(roleLayerId);
+            // Clean up route layers for roles
+            if (roleName !== 'rep') {
+              const roleSourceId = `route-${rep.id}-${day}-${week}-${roleName}`;
+              const roleLayerId = `route-layer-${rep.id}-${day}-${week}-${roleName}`;
+              
+              if (map.current!.getLayer(roleLayerId)) {
+                map.current!.removeLayer(roleLayerId);
+              }
+              if (map.current!.getSource(roleSourceId)) {
+                map.current!.removeSource(roleSourceId);
+              }
             }
-            if (map.current!.getSource(roleSourceId)) {
-              map.current!.removeSource(roleSourceId);
+            
+            // Clean up GeoJSON point layers (for optimized rendering)
+            const scheduleKey = `${day}-${week}-${roleName}`;
+            const pointSourceId = `points-${rep.id}-${scheduleKey}`;
+            const circleLayerId = `circles-${rep.id}-${scheduleKey}`;
+            const labelLayerId = `labels-${rep.id}-${scheduleKey}`;
+            
+            if (map.current!.getLayer(labelLayerId)) {
+              map.current!.removeLayer(labelLayerId);
+            }
+            if (map.current!.getLayer(circleLayerId)) {
+              map.current!.removeLayer(circleLayerId);
+            }
+            if (map.current!.getSource(pointSourceId)) {
+              map.current!.removeSource(pointSourceId);
             }
           });
         });
@@ -434,48 +463,153 @@ export function RepMap() {
     });
 
     // Add markers and routes for each selected rep and day
-    console.log('Adding markers for repDayOutlets:', repDayOutlets);
+    // OPTIMIZED: Use GeoJSON layers for large datasets (faster than individual markers)
+    const totalOutlets = Object.values(repDayOutlets).reduce(
+      (sum, r) => sum + Object.values(r.daySchedules).reduce((s, d) => s + d.outlets.length, 0), 0
+    );
+    const useGeoJSONRendering = totalOutlets > 100; // Use optimized rendering for 100+ outlets
+    
+    console.log(`Adding ${useGeoJSONRendering ? 'GeoJSON layers' : 'markers'} for ${totalOutlets} outlets`);
     
     Object.entries(repDayOutlets).forEach(([repId, repData]) => {
-      console.log('Processing rep:', repId, repData.rep.name);
-      
       Object.entries(repData.daySchedules).forEach(([scheduleKey, dayData]) => {
-        console.log(`Processing schedule ${scheduleKey} for rep ${repData.rep.name}, outlets:`, dayData.outlets.length);
-        
-        // Add markers for outlets with day-specific colors
-        dayData.outlets.forEach((outlet, idx) => {
-          const el = document.createElement('div');
-          el.className = 'rep-marker';
-          el.style.width = '30px';
-          el.style.height = '30px';
-          el.style.backgroundColor = dayData.color;
-          el.style.borderRadius = '50%';
-          el.style.border = '2px solid white';
-          el.style.boxShadow = '0 2px 4px rgba(0,0,0,0.3)';
-          el.style.display = 'flex';
-          el.style.alignItems = 'center';
-          el.style.justifyContent = 'center';
-          el.style.color = 'white';
-          el.style.fontWeight = 'bold';
-          el.style.fontSize = '12px';
-          el.innerHTML = (idx + 1).toString();
-
-          const marker = new mapboxgl.Marker(el)
-            .setLngLat([outlet.longitude, outlet.latitude])
-            .setPopup(
-              new mapboxgl.Popup({ offset: 25 })
+        if (useGeoJSONRendering && map.current) {
+          // OPTIMIZED: Use GeoJSON circle layer for fast rendering
+          const pointSourceId = `points-${repId}-${scheduleKey}`;
+          const circleLayerId = `circles-${repId}-${scheduleKey}`;
+          const labelLayerId = `labels-${repId}-${scheduleKey}`;
+          
+          // Create GeoJSON features for all outlets
+          const features = dayData.outlets.map((outlet, idx) => ({
+            type: 'Feature' as const,
+            geometry: {
+              type: 'Point' as const,
+              coordinates: [outlet.longitude, outlet.latitude]
+            },
+            properties: {
+              name: outlet.name,
+              address: outlet.address,
+              repName: repData.rep.name,
+              dayName: daysOfWeek[dayData.dayOfWeek - 1] || `Day ${dayData.dayOfWeek}`,
+              week: dayData.week,
+              color: dayData.color,
+              order: idx + 1,
+              orderStr: (idx + 1).toString()
+            }
+          }));
+          
+          // Add GeoJSON source
+          if (!map.current.getSource(pointSourceId)) {
+            map.current.addSource(pointSourceId, {
+              type: 'geojson',
+              data: {
+                type: 'FeatureCollection',
+                features
+              }
+            });
+            
+            // Add circle layer (faster than DOM markers)
+            map.current.addLayer({
+              id: circleLayerId,
+              type: 'circle',
+              source: pointSourceId,
+              paint: {
+                'circle-radius': 12,
+                'circle-color': dayData.color,
+                'circle-stroke-width': 2,
+                'circle-stroke-color': '#ffffff'
+              }
+            });
+            
+            // Add label layer for outlet order numbers
+            map.current.addLayer({
+              id: labelLayerId,
+              type: 'symbol',
+              source: pointSourceId,
+              layout: {
+                'text-field': ['get', 'orderStr'],
+                'text-size': 11,
+                'text-font': ['DIN Pro Bold', 'Arial Unicode MS Bold'],
+                'text-allow-overlap': true
+              },
+              paint: {
+                'text-color': '#ffffff'
+              }
+            });
+            
+            // Store handlers for later cleanup
+            const clickHandler = (e: mapboxgl.MapMouseEvent & { features?: mapboxgl.MapboxGeoJSONFeature[] }) => {
+              if (!e.features?.[0]) return;
+              const props = e.features[0].properties;
+              const coords = (e.features[0].geometry as GeoJSON.Point).coordinates;
+              
+              new mapboxgl.Popup({ offset: 15 })
+                .setLngLat([coords[0], coords[1]])
                 .setHTML(`
                   <div>
-                    <strong>${outlet.name}</strong><br/>
-                    ${outlet.address}<br/>
-                    <span style="color: ${dayData.color}">${repData.rep.name} - ${daysOfWeek[dayData.dayOfWeek - 1] || `Day ${dayData.dayOfWeek}`} (Week ${dayData.week})</span>
+                    <strong>${props?.name}</strong><br/>
+                    ${props?.address}<br/>
+                    <span style="color: ${props?.color}">${props?.repName} - ${props?.dayName} (Week ${props?.week})</span>
                   </div>
                 `)
-            )
-            .addTo(map.current!);
+                .addTo(map.current!);
+            };
+            
+            const mouseenterHandler = () => {
+              if (map.current) map.current.getCanvas().style.cursor = 'pointer';
+            };
+            
+            const mouseleaveHandler = () => {
+              if (map.current) map.current.getCanvas().style.cursor = '';
+            };
+            
+            // Add event handlers
+            map.current.on('click', circleLayerId, clickHandler);
+            map.current.on('mouseenter', circleLayerId, mouseenterHandler);
+            map.current.on('mouseleave', circleLayerId, mouseleaveHandler);
+            
+            // Store for cleanup
+            geoJSONLayersRef.current.push({
+              circleLayerId,
+              handlers: { click: clickHandler, mouseenter: mouseenterHandler, mouseleave: mouseleaveHandler }
+            });
+          }
+        } else {
+          // Original DOM marker rendering for small datasets
+          dayData.outlets.forEach((outlet, idx) => {
+            const el = document.createElement('div');
+            el.className = 'rep-marker';
+            el.style.width = '30px';
+            el.style.height = '30px';
+            el.style.backgroundColor = dayData.color;
+            el.style.borderRadius = '50%';
+            el.style.border = '2px solid white';
+            el.style.boxShadow = '0 2px 4px rgba(0,0,0,0.3)';
+            el.style.display = 'flex';
+            el.style.alignItems = 'center';
+            el.style.justifyContent = 'center';
+            el.style.color = 'white';
+            el.style.fontWeight = 'bold';
+            el.style.fontSize = '12px';
+            el.innerHTML = (idx + 1).toString();
 
-          markersRef.current.push(marker);
-        });
+            const marker = new mapboxgl.Marker(el)
+              .setLngLat([outlet.longitude, outlet.latitude])
+              .setPopup(
+                new mapboxgl.Popup({ offset: 25 })
+                  .setHTML(`
+                    <div>
+                      <strong>${outlet.name}</strong><br/>
+                      ${outlet.address}<br/>
+                      <span style="color: ${dayData.color}">${repData.rep.name} - ${daysOfWeek[dayData.dayOfWeek - 1] || `Day ${dayData.dayOfWeek}`} (Week ${dayData.week})</span>
+                    </div>
+                  `)
+              )
+              .addTo(map.current!);
+
+            markersRef.current.push(marker);
+          });
+        }
 
         // Draw route lines for each day separately
         if (dayData.outlets.length > 1 && map.current) {

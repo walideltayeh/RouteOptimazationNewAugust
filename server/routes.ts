@@ -397,12 +397,14 @@ function createExact25OutletClusters(outlets: Outlet[], targetSize: number = 25)
     
     while (cluster.outlets.length < TARGET_SIZE && currentRadius <= MAX_RADIUS && unassigned.size > 0) {
       // Use spatial grid to find candidates near the centroid
-      const nearbyCandidates = spatialGrid.getNearbyOutlets(
+      // Note: Don't pass exclusion set - we filter to unassigned afterward
+      const allNearby = spatialGrid.getNearbyOutlets(
         cluster.centroid.lat, 
         cluster.centroid.lng, 
-        currentRadius, 
-        unassigned // Only consider unassigned outlets
-      ).filter(o => unassigned.has(o.id));
+        currentRadius
+      );
+      // Filter to only unassigned outlets
+      const nearbyCandidates = allNearby.filter(o => unassigned.has(o.id));
       
       // Sort by distance to centroid
       const candidates = nearbyCandidates.map(outlet => ({
@@ -440,12 +442,11 @@ function createExact25OutletClusters(outlets: Outlet[], targetSize: number = 25)
       const remainingNeeded = TARGET_SIZE - cluster.outlets.length;
       const remainingCandidates: { outlet: Outlet; distance: number }[] = [];
       
-      // Use larger radius for final fill
+      // Use larger radius for final fill (only if needed for outliers)
       const finalCandidates = spatialGrid.getNearbyOutlets(
         cluster.centroid.lat, 
         cluster.centroid.lng, 
-        MAX_RADIUS * 2, 
-        new Set() // Don't exclude any
+        MAX_RADIUS * 2
       ).filter(o => unassigned.has(o.id));
       
       for (const outlet of finalCandidates) {
