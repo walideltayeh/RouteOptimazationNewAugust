@@ -32,6 +32,67 @@ interface MulterRequest extends Request {
 
 const upload = multer({ storage: multer.memoryStorage() });
 
+// Spatial Grid Index for efficient neighbor lookups (O(1) instead of O(n))
+class SpatialGrid {
+  private grid: Map<string, Outlet[]> = new Map();
+  private cellSize: number; // in degrees (approximately 1 degree = 111km)
+  
+  constructor(outlets: Outlet[], cellSizeKm: number = 5) {
+    // Convert km to degrees (rough approximation)
+    this.cellSize = cellSizeKm / 111;
+    
+    // Index all outlets
+    for (const outlet of outlets) {
+      const key = this.getCellKey(outlet.latitude, outlet.longitude);
+      if (!this.grid.has(key)) {
+        this.grid.set(key, []);
+      }
+      this.grid.get(key)!.push(outlet);
+    }
+  }
+  
+  private getCellKey(lat: number, lng: number): string {
+    const cellX = Math.floor(lng / this.cellSize);
+    const cellY = Math.floor(lat / this.cellSize);
+    return `${cellX},${cellY}`;
+  }
+  
+  // Get outlets within a radius, checking only nearby grid cells
+  getNearbyOutlets(lat: number, lng: number, radiusKm: number, excludeIds?: Set<string>): Outlet[] {
+    const radiusDegrees = radiusKm / 111;
+    const cellsToCheck = Math.ceil(radiusDegrees / this.cellSize) + 1;
+    
+    const centerCellX = Math.floor(lng / this.cellSize);
+    const centerCellY = Math.floor(lat / this.cellSize);
+    
+    const nearby: Outlet[] = [];
+    
+    // Check all cells within range
+    for (let dx = -cellsToCheck; dx <= cellsToCheck; dx++) {
+      for (let dy = -cellsToCheck; dy <= cellsToCheck; dy++) {
+        const key = `${centerCellX + dx},${centerCellY + dy}`;
+        const cellOutlets = this.grid.get(key);
+        if (cellOutlets) {
+          for (const outlet of cellOutlets) {
+            if (excludeIds && excludeIds.has(outlet.id)) continue;
+            const dist = calculateHaversineDistance(lat, lng, outlet.latitude, outlet.longitude);
+            if (dist <= radiusKm) {
+              nearby.push(outlet);
+            }
+          }
+        }
+      }
+    }
+    
+    return nearby;
+  }
+  
+  // Count nearby outlets efficiently
+  countNearby(lat: number, lng: number, radiusKm: number, excludeIds?: Set<string>): number {
+    return this.getNearbyOutlets(lat, lng, radiusKm, excludeIds).length;
+  }
+}
+
 // Geographic clustering functions
 function calculateHaversineDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6371; // Earth's radius in kilometers
@@ -271,40 +332,46 @@ function performGeographicClustering(
 }
 
 // Create clusters of exactly targetSize outlets each with geographic proximity
+// OPTIMIZED: Uses SpatialGrid for O(n * k) instead of O(n²) complexity
 function createExact25OutletClusters(outlets: Outlet[], targetSize: number = 25): GeographicCluster[] {
   const TARGET_SIZE = targetSize;
   const INITIAL_RADIUS = 2; // Start with 2km radius
-  const RADIUS_INCREMENT = 0.5; // Increase by 0.5km each iteration
-  const MAX_RADIUS = 20; // Maximum search radius
+  const RADIUS_INCREMENT = 1; // Increase by 1km each iteration (faster convergence)
+  const MAX_RADIUS = 50; // Maximum search radius
+  
+  console.log(`[Optimized Clustering] Starting with ${outlets.length} outlets, target size ${TARGET_SIZE}`);
+  const startTime = Date.now();
   
   const clusters: GeographicCluster[] = [];
   const unassigned = new Set(outlets.map(o => o.id));
   const outletMap = new Map(outlets.map(o => [o.id, o]));
   let clusterId = 0;
   
+  // Build spatial index for fast neighbor queries
+  const spatialGrid = new SpatialGrid(outlets, 2); // 2km grid cells
+  
   // Continue until all outlets are assigned
   while (unassigned.size > 0) {
-    // Find the outlet with the most nearby unassigned outlets within 2km
+    // Find a good seed using spatial grid (sample-based for large datasets)
     let bestSeed: Outlet | null = null;
     let maxNearbyCount = 0;
     
     const unassignedArray = Array.from(unassigned);
-    for (const outletId of unassignedArray) {
+    
+    // For large datasets, sample outlets to find seed instead of checking all
+    const sampleSize = Math.min(100, unassignedArray.length);
+    const step = Math.max(1, Math.floor(unassignedArray.length / sampleSize));
+    
+    for (let i = 0; i < unassignedArray.length; i += step) {
+      const outletId = unassignedArray[i];
       const outlet = outletMap.get(outletId)!;
-      let nearbyCount = 0;
       
-      // Count unassigned outlets within INITIAL_RADIUS
-      for (const otherId of unassignedArray) {
-        if (otherId === outletId) continue;
-        const other = outletMap.get(otherId)!;
-        const distance = calculateHaversineDistance(
-          outlet.latitude, outlet.longitude,
-          other.latitude, other.longitude
-        );
-        if (distance <= INITIAL_RADIUS) {
-          nearbyCount++;
-        }
-      }
+      // Use spatial grid for fast neighbor counting
+      const nearbyCount = spatialGrid.countNearby(
+        outlet.latitude, outlet.longitude, 
+        INITIAL_RADIUS, 
+        new Set([outletId]) // Exclude self
+      );
       
       if (nearbyCount > maxNearbyCount) {
         maxNearbyCount = nearbyCount;
@@ -313,7 +380,6 @@ function createExact25OutletClusters(outlets: Outlet[], targetSize: number = 25)
     }
     
     if (!bestSeed) {
-      // No good seed found, pick the first unassigned outlet
       const firstId = unassignedArray[0];
       bestSeed = outletMap.get(firstId)!;
     }
@@ -326,33 +392,26 @@ function createExact25OutletClusters(outlets: Outlet[], targetSize: number = 25)
     };
     unassigned.delete(bestSeed.id);
     
-    // Gradually expand radius until we get 25 outlets
+    // Gradually expand radius until we get target outlets
     let currentRadius = INITIAL_RADIUS;
     
     while (cluster.outlets.length < TARGET_SIZE && currentRadius <= MAX_RADIUS && unassigned.size > 0) {
-      const candidates: { outlet: Outlet; distance: number }[] = [];
+      // Use spatial grid to find candidates near the centroid
+      const nearbyCandidates = spatialGrid.getNearbyOutlets(
+        cluster.centroid.lat, 
+        cluster.centroid.lng, 
+        currentRadius, 
+        unassigned // Only consider unassigned outlets
+      ).filter(o => unassigned.has(o.id));
       
-      // Find all outlets within current radius
-      for (const outletId of Array.from(unassigned)) {
-        const outlet = outletMap.get(outletId)!;
-        
-        // Calculate distance to all outlets in the cluster
-        let minDistanceToCluster = Infinity;
-        for (const clusterOutlet of cluster.outlets) {
-          const distance = calculateHaversineDistance(
-            outlet.latitude, outlet.longitude,
-            clusterOutlet.latitude, clusterOutlet.longitude
-          );
-          minDistanceToCluster = Math.min(minDistanceToCluster, distance);
-        }
-        
-        if (minDistanceToCluster <= currentRadius) {
-          candidates.push({ outlet, distance: minDistanceToCluster });
-        }
-      }
-      
-      // Sort candidates by distance
-      candidates.sort((a, b) => a.distance - b.distance);
+      // Sort by distance to centroid
+      const candidates = nearbyCandidates.map(outlet => ({
+        outlet,
+        distance: calculateHaversineDistance(
+          outlet.latitude, outlet.longitude,
+          cluster.centroid.lat, cluster.centroid.lng
+        )
+      })).sort((a, b) => a.distance - b.distance);
       
       // Add outlets to cluster until we reach TARGET_SIZE
       for (const candidate of candidates) {
@@ -360,8 +419,10 @@ function createExact25OutletClusters(outlets: Outlet[], targetSize: number = 25)
         
         cluster.outlets.push(candidate.outlet);
         unassigned.delete(candidate.outlet.id);
-        
-        // Update centroid
+      }
+      
+      // Update centroid after adding outlets
+      if (cluster.outlets.length > 0) {
         cluster.centroid = {
           lat: cluster.outlets.reduce((sum, o) => sum + o.latitude, 0) / cluster.outlets.length,
           lng: cluster.outlets.reduce((sum, o) => sum + o.longitude, 0) / cluster.outlets.length
@@ -374,13 +435,20 @@ function createExact25OutletClusters(outlets: Outlet[], targetSize: number = 25)
       }
     }
     
-    // If we still don't have 25 outlets and this is not the last cluster, fill from nearest
-    if (cluster.outlets.length < TARGET_SIZE && unassigned.size >= TARGET_SIZE) {
+    // If we still don't have enough outlets, fill from nearest remaining
+    if (cluster.outlets.length < TARGET_SIZE && unassigned.size > 0) {
       const remainingNeeded = TARGET_SIZE - cluster.outlets.length;
       const remainingCandidates: { outlet: Outlet; distance: number }[] = [];
       
-      for (const outletId of Array.from(unassigned)) {
-        const outlet = outletMap.get(outletId)!;
+      // Use larger radius for final fill
+      const finalCandidates = spatialGrid.getNearbyOutlets(
+        cluster.centroid.lat, 
+        cluster.centroid.lng, 
+        MAX_RADIUS * 2, 
+        new Set() // Don't exclude any
+      ).filter(o => unassigned.has(o.id));
+      
+      for (const outlet of finalCandidates) {
         const distance = calculateHaversineDistance(
           outlet.latitude, outlet.longitude,
           cluster.centroid.lat, cluster.centroid.lng
@@ -413,8 +481,15 @@ function createExact25OutletClusters(outlets: Outlet[], targetSize: number = 25)
     }
     
     clusters.push(cluster);
-    console.log(`Created Zone ${cluster.id + 1} with ${cluster.outlets.length} outlets (radius: ${maxDistFromCentroid.toFixed(2)}km)`);
+    
+    // Log progress every 10 clusters for large datasets
+    if (clusters.length % 10 === 0 || unassigned.size === 0) {
+      console.log(`Created Zone ${cluster.id + 1} with ${cluster.outlets.length} outlets (radius: ${maxDistFromCentroid.toFixed(2)}km), ${unassigned.size} remaining`);
+    }
   }
+  
+  const elapsed = Date.now() - startTime;
+  console.log(`[Optimized Clustering] Completed in ${elapsed}ms, created ${clusters.length} clusters`);
   
   return clusters;
 }
