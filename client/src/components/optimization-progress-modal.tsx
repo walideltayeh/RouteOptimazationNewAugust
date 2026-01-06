@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Progress } from '@/components/ui/progress';
-import { CheckCircle2, XCircle } from 'lucide-react';
+import { CheckCircle2, XCircle, Circle, Loader2 } from 'lucide-react';
 import { VisuallyHidden } from '@radix-ui/react-visually-hidden';
 
 interface ProgressUpdate {
@@ -18,18 +18,12 @@ interface OptimizationProgressModalProps {
   onError: (message: string) => void;
 }
 
-const stages = [
-  { name: 'Starting', minPercent: 0 },
-  { name: 'Analyzing', minPercent: 5 },
-  { name: 'Preparing', minPercent: 10 },
-  { name: 'Clustering', minPercent: 15 },
-  { name: 'Zones Created', minPercent: 45 },
-  { name: 'Assigning', minPercent: 55 },
-  { name: 'Creating Reps', minPercent: 60 },
-  { name: 'Scheduling', minPercent: 70 },
-  { name: 'Role Schedules', minPercent: 85 },
-  { name: 'Finalizing', minPercent: 95 },
-  { name: 'Complete', minPercent: 100 },
+const mainStages = [
+  { key: 'start', label: 'Start', completedAt: 5 },
+  { key: 'clustering', label: 'Clustering', completedAt: 45 },
+  { key: 'creating_reps', label: 'Creating Reps', completedAt: 70 },
+  { key: 'done', label: 'Done', completedAt: 95 },
+  { key: 'complete', label: 'Complete', completedAt: 100 },
 ];
 
 export default function OptimizationProgressModal({
@@ -96,11 +90,12 @@ export default function OptimizationProgressModal({
     };
   }, [isOpen, progressId, onReady, onComplete, onError]);
 
-  const getStageIndex = (stageName: string) => {
-    return stages.findIndex(s => s.name === stageName);
+  const getStageStatus = (stage: typeof mainStages[0], percent: number) => {
+    if (percent >= stage.completedAt) return 'completed';
+    const prevStage = mainStages[mainStages.indexOf(stage) - 1];
+    if (!prevStage || percent >= prevStage.completedAt) return 'active';
+    return 'pending';
   };
-
-  const currentStageIndex = getStageIndex(progress.stage);
 
   return (
     <Dialog open={isOpen}>
@@ -139,48 +134,48 @@ export default function OptimizationProgressModal({
             </>
           ) : (
             <>
-              <div className="relative mb-6">
-                <div className="h-24 w-24 rounded-full border-4 border-blue-100 flex items-center justify-center relative overflow-hidden">
-                  <svg className="absolute inset-0 h-24 w-24 -rotate-90" viewBox="0 0 96 96">
-                    <circle
-                      cx="48"
-                      cy="48"
-                      r="44"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="8"
-                      className="text-blue-500"
-                      strokeDasharray={`${2 * Math.PI * 44}`}
-                      strokeDashoffset={`${2 * Math.PI * 44 * (1 - progress.percent / 100)}`}
-                      style={{ transition: 'stroke-dashoffset 0.5s ease-out' }}
-                    />
-                  </svg>
-                  <span className="text-2xl font-bold text-blue-600 z-10">
-                    {Math.round(progress.percent)}%
-                  </span>
+              <div className="text-center mb-6">
+                <div className="text-5xl font-bold text-blue-600 mb-1">
+                  {Math.round(progress.percent)}%
                 </div>
+                <p className="text-sm text-gray-500">Overall Progress</p>
               </div>
               
-              <h3 className="text-lg font-semibold text-gray-800 mb-1">{progress.stage}</h3>
-              <p className="text-sm text-gray-500 text-center mb-6">{progress.detail}</p>
+              <div className="w-full mb-6">
+                <Progress value={progress.percent} className="h-3" />
+              </div>
               
               <div className="w-full space-y-3">
-                <Progress value={progress.percent} className="h-2" />
-                
-                <div className="flex justify-between text-xs text-gray-400">
-                  {stages.filter((_, i) => i % 3 === 0 || i === stages.length - 1).map((stage, i) => (
-                    <span
-                      key={stage.name}
-                      className={`transition-colors ${
-                        currentStageIndex >= getStageIndex(stage.name)
-                          ? 'text-blue-500 font-medium'
-                          : ''
+                {mainStages.map((stage) => {
+                  const status = getStageStatus(stage, progress.percent);
+                  return (
+                    <div 
+                      key={stage.key}
+                      className={`flex items-center gap-3 p-2 rounded-lg transition-all ${
+                        status === 'active' ? 'bg-blue-50' : ''
                       }`}
                     >
-                      {i === 0 ? 'Start' : i === 3 ? 'Done' : stage.name}
-                    </span>
-                  ))}
-                </div>
+                      {status === 'completed' ? (
+                        <CheckCircle2 className="h-5 w-5 text-green-500 flex-shrink-0" />
+                      ) : status === 'active' ? (
+                        <Loader2 className="h-5 w-5 text-blue-500 animate-spin flex-shrink-0" />
+                      ) : (
+                        <Circle className="h-5 w-5 text-gray-300 flex-shrink-0" />
+                      )}
+                      <span className={`text-sm font-medium ${
+                        status === 'completed' ? 'text-green-600' :
+                        status === 'active' ? 'text-blue-600' : 'text-gray-400'
+                      }`}>
+                        {stage.label}
+                      </span>
+                      {status === 'active' && (
+                        <span className="ml-auto text-xs text-gray-400">
+                          {progress.detail}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </>
           )}
