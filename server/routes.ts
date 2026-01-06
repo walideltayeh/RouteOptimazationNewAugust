@@ -38,17 +38,20 @@ class OptimizationProgressManager {
   private progress: Map<string, ProgressUpdate> = new Map();
   
   subscribe(progressId: string, res: Response) {
+    console.log(`[SSE] New subscription for progressId: ${progressId}`);
     if (!this.subscribers.has(progressId)) {
       this.subscribers.set(progressId, []);
     }
     this.subscribers.get(progressId)!.push(res);
     
     // Send initial heartbeat to confirm connection
+    console.log(`[SSE] Sending initial heartbeat for ${progressId}`);
     this.sendToClient(res, { percent: 0, stage: 'Starting', detail: 'Connected, waiting for optimization...' });
     
     // Send current progress if exists
     const current = this.progress.get(progressId);
     if (current) {
+      console.log(`[SSE] Sending cached progress for ${progressId}:`, current);
       this.sendToClient(res, current);
     }
   }
@@ -62,8 +65,10 @@ class OptimizationProgressManager {
   }
   
   emit(progressId: string, update: ProgressUpdate) {
+    console.log(`[SSE] Emitting for ${progressId}: ${update.percent}% - ${update.stage}`);
     this.progress.set(progressId, update);
     const subs = this.subscribers.get(progressId) || [];
+    console.log(`[SSE] Found ${subs.length} subscribers for ${progressId}`);
     for (const res of subs) {
       this.sendToClient(res, update);
     }
