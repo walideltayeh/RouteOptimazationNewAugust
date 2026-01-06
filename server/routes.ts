@@ -1,4 +1,4 @@
-import type { Express, Request } from "express";
+import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { 
@@ -25,6 +25,74 @@ import { performAdvancedClustering as performAdvancedClusteringJS } from "./clus
 import { generateAdvancedSchedule, reoptimizeSchedules, validateSchedule } from "./advanced-scheduling";
 
 const execAsync = promisify(exec);
+
+// Progress tracking for optimization
+interface ProgressUpdate {
+  percent: number;
+  stage: string;
+  detail: string;
+}
+
+class OptimizationProgressManager {
+  private subscribers: Map<string, Response[]> = new Map();
+  private progress: Map<string, ProgressUpdate> = new Map();
+  
+  subscribe(progressId: string, res: Response) {
+    if (!this.subscribers.has(progressId)) {
+      this.subscribers.set(progressId, []);
+    }
+    this.subscribers.get(progressId)!.push(res);
+    
+    // Send current progress if exists
+    const current = this.progress.get(progressId);
+    if (current) {
+      this.sendToClient(res, current);
+    }
+  }
+  
+  unsubscribe(progressId: string, res: Response) {
+    const subs = this.subscribers.get(progressId);
+    if (subs) {
+      const idx = subs.indexOf(res);
+      if (idx > -1) subs.splice(idx, 1);
+    }
+  }
+  
+  emit(progressId: string, update: ProgressUpdate) {
+    this.progress.set(progressId, update);
+    const subs = this.subscribers.get(progressId) || [];
+    for (const res of subs) {
+      this.sendToClient(res, update);
+    }
+  }
+  
+  complete(progressId: string) {
+    this.emit(progressId, { percent: 100, stage: 'Complete', detail: 'Optimization finished!' });
+    // Cleanup after a delay
+    setTimeout(() => {
+      this.subscribers.delete(progressId);
+      this.progress.delete(progressId);
+    }, 5000);
+  }
+  
+  error(progressId: string, message: string) {
+    this.emit(progressId, { percent: -1, stage: 'Error', detail: message });
+    setTimeout(() => {
+      this.subscribers.delete(progressId);
+      this.progress.delete(progressId);
+    }, 5000);
+  }
+  
+  private sendToClient(res: Response, update: ProgressUpdate) {
+    try {
+      res.write(`data: ${JSON.stringify(update)}\n\n`);
+    } catch (e) {
+      // Client disconnected
+    }
+  }
+}
+
+const progressManager = new OptimizationProgressManager();
 
 interface MulterRequest extends Request {
   file?: Express.Multer.File;
@@ -1997,13 +2065,41 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // SSE endpoint for optimization progress
+  app.get("/api/optimize/progress/:progressId", (req, res) => {
+    const { progressId } = req.params;
+    
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+    
+    progressManager.subscribe(progressId, res);
+    
+    req.on('close', () => {
+      progressManager.unsubscribe(progressId, res);
+    });
+  });
+
   // Route optimization
   app.post("/api/optimize", async (req, res) => {
+    const progressId = req.body.progressId || '';
+    const emitProgress = (percent: number, stage: string, detail: string) => {
+      if (progressId) {
+        progressManager.emit(progressId, { percent, stage, detail });
+      }
+    };
+    
     try {
+      emitProgress(2, 'Starting', 'Loading outlets from database...');
       const outlets = await storage.getOutlets();
       if (outlets.length === 0) {
+        if (progressId) progressManager.error(progressId, 'No outlets available');
         return res.status(400).json({ message: "No outlets available for optimization" });
       }
+      
+      emitProgress(5, 'Analyzing', `Processing ${outlets.length} outlets...`);
 
       // Calculate total weekly visits required based on visit frequency
       const totalWeeklyVisits = outlets.reduce((sum, outlet) => sum + outlet.visitFrequency, 0);
@@ -2063,12 +2159,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Use the calculated required reps (initial estimate)
       let finalRequiredReps = Math.max(1, requiredReps); // At least 1 rep needed
 
+      emitProgress(10, 'Preparing', 'Clearing existing data...');
+      
       // Clear existing reps first
       const existingReps = await storage.getReps();
       for (const rep of existingReps) {
         await storage.deleteRep(rep.id);
       }
 
+      emitProgress(15, 'Clustering', `Analyzing ${outlets.length} outlets for geographic patterns...`);
+      
       // Create territories based on geographic clusters (each cluster = one zone)
       console.log(`Creating zones based on geographic clustering for ${outlets.length} outlets`);
       
@@ -2079,6 +2179,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         finalRequiredReps * zonesPerRep // Or enough zones for all reps
       );
       
+      emitProgress(20, 'Clustering', 'Running advanced geographic clustering algorithm...');
+      
       // Perform advanced clustering using JavaScript implementation (HDBSCAN + VRP + Capacitated K-Means)
       const advancedClusters = performAdvancedClusteringJS(outlets, targetZones, minVisitsPerDay, maxVisitsPerDay);
       const clusters = advancedClusters.map(cluster => ({
@@ -2088,6 +2190,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }));
       const actualZoneCount = clusters.length;
       
+      emitProgress(45, 'Zones Created', `Created ${actualZoneCount} geographic zones`);
       console.log(`Created ${actualZoneCount} geographic zones`);
       
       // First, assign outlets to their zones
@@ -2110,6 +2213,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // So we need zones/10 reps (rounded up)
       const requiredRepCount = Math.ceil(actualZoneCount / 10);
       
+      emitProgress(55, 'Assigning', `Assigning ${outlets.length} outlets to ${actualZoneCount} zones...`);
       console.log(`Need ${requiredRepCount} reps to cover ${actualZoneCount} zones (10 zones per rep)`);
       
       // Check if working days have changed for existing optimization
@@ -2118,6 +2222,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // Clear existing schedules to regenerate with new working days
         await storage.clearSchedules();
       }
+      
+      emitProgress(60, 'Creating Reps', `Creating ${requiredRepCount} sales representatives...`);
       
       // Create the required number of reps
       const allReps: Rep[] = [];
@@ -2136,6 +2242,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       // Assign zones to reps based on geographic proximity
       const zoneAssignments = assignZonesToReps(clusters, allReps, zonesPerRep);
+      
+      emitProgress(70, 'Scheduling', `Generating schedules for ${allReps.length} reps...`);
       
       // Generate schedules for each rep
       console.log('Generating schedules for', allReps.length, 'reps');
@@ -2158,6 +2266,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       finalRequiredReps = allReps.length;
 
+      emitProgress(85, 'Role Schedules', 'Generating role-based schedules...');
+      
       // Generate role schedules for all reps based on template
       console.log('Generating role schedules based on hierarchy template...');
       const templateHierarchies = await storage.getRoleHierarchiesByRepId('template');
@@ -2217,10 +2327,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.log(`Generated ${totalRoleSchedules} role schedules for ${allReps.length} reps`);
       }
 
+      emitProgress(95, 'Finalizing', 'Saving results...');
+      
       // Invalidate cache by refreshing data
       const updatedOutlets = await storage.getOutlets();
       const updatedReps = await storage.getReps();
 
+      if (progressId) progressManager.complete(progressId);
+      
       res.json({
         success: true,
         requiredReps: finalRequiredReps,
@@ -2242,6 +2356,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
     } catch (error) {
       console.error("Optimization error:", error);
+      if (progressId) progressManager.error(progressId, 'Optimization failed');
       res.status(500).json({ message: "Failed to run optimization" });
     }
   });

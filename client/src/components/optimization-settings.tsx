@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,6 +11,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Settings, Play, AlertCircle, Clock, Calculator } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import OptimizationProgressModal from "./optimization-progress-modal";
 
 interface FileAnalysis {
   outlets: number;
@@ -47,6 +48,10 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
   
   // Common settings
   const [workingDaysPerWeek, setWorkingDaysPerWeek] = useState(5);
+  
+  // Progress modal state
+  const [showProgressModal, setShowProgressModal] = useState(false);
+  const [progressId, setProgressId] = useState('');
 
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -119,15 +124,12 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       calculationMode: CalculationMode;
       maxTimePerOutlet?: number;
       maxWorkingHoursPerDay?: number;
+      progressId?: string;
     }) => {
       const response = await apiRequest("POST", "/api/optimize", settings);
       return response.json();
     },
     onSuccess: (data) => {
-      toast({
-        title: "Optimization completed",
-        description: `${data.message} (${data.assignedOutlets || 0} outlets assigned)`,
-      });
       queryClient.invalidateQueries({ queryKey: ["/api/reps"] });
       queryClient.invalidateQueries({ queryKey: ["/api/outlets"] });
       queryClient.invalidateQueries({ queryKey: ["/api/schedules"] });
@@ -136,6 +138,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       queryClient.invalidateQueries({ queryKey: ["/api/role-schedules"] });
     },
     onError: (error: Error) => {
+      setShowProgressModal(false);
       toast({
         title: "Optimization failed",
         description: error.message,
@@ -143,6 +146,26 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       });
     },
   });
+  
+  const handleProgressComplete = useCallback(() => {
+    setShowProgressModal(false);
+    queryClient.invalidateQueries({ queryKey: ["/api/reps"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/outlets"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/schedules"] });
+    toast({
+      title: "Optimization completed",
+      description: "Your routes have been optimized successfully!",
+    });
+  }, [queryClient, toast]);
+  
+  const handleProgressError = useCallback((message: string) => {
+    setShowProgressModal(false);
+    toast({
+      title: "Optimization failed",
+      description: message,
+      variant: "destructive",
+    });
+  }, [toast]);
 
   const handleOptimization = () => {
     if (calculationMode === 'manual' && minVisitsPerDay >= maxVisitsPerDay) {
@@ -154,6 +177,11 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       return;
     }
 
+    // Generate a unique progress ID
+    const newProgressId = `opt-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    setProgressId(newProgressId);
+    setShowProgressModal(true);
+
     optimizationMutation.mutate({
       minVisitsPerDay,
       maxVisitsPerDay,
@@ -161,6 +189,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       calculationMode,
       maxTimePerOutlet: calculationMode === 'time-based' ? maxTimePerOutlet : undefined,
       maxWorkingHoursPerDay: calculationMode === 'time-based' ? maxWorkingHoursPerDay : undefined,
+      progressId: newProgressId,
     });
   };
 
@@ -343,10 +372,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
         >
           <Play className="mr-2 h-4 w-4" />
           {optimizationMutation.isPending ? (
-            <>
-              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-              Optimizing...
-            </>
+            "Running..."
           ) : !feasibilityCheck.feasible ? (
             "Cannot Optimize - Adjust Settings"
           ) : (
@@ -354,6 +380,13 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
           )}
         </Button>
       </CardContent>
+      
+      <OptimizationProgressModal
+        isOpen={showProgressModal}
+        progressId={progressId}
+        onComplete={handleProgressComplete}
+        onError={handleProgressError}
+      />
     </Card>
   );
 }
