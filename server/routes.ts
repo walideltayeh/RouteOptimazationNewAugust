@@ -43,6 +43,9 @@ class OptimizationProgressManager {
     }
     this.subscribers.get(progressId)!.push(res);
     
+    // Send initial heartbeat to confirm connection
+    this.sendToClient(res, { percent: 0, stage: 'Starting', detail: 'Connected, waiting for optimization...' });
+    
     // Send current progress if exists
     const current = this.progress.get(progressId);
     if (current) {
@@ -68,7 +71,6 @@ class OptimizationProgressManager {
   
   complete(progressId: string) {
     this.emit(progressId, { percent: 100, stage: 'Complete', detail: 'Optimization finished!' });
-    // Cleanup after a delay
     setTimeout(() => {
       this.subscribers.delete(progressId);
       this.progress.delete(progressId);
@@ -86,6 +88,9 @@ class OptimizationProgressManager {
   private sendToClient(res: Response, update: ProgressUpdate) {
     try {
       res.write(`data: ${JSON.stringify(update)}\n\n`);
+      if (typeof (res as any).flush === 'function') {
+        (res as any).flush();
+      }
     } catch (e) {
       // Client disconnected
     }

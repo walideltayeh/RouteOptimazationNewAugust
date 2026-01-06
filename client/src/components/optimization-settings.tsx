@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useRef } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -52,6 +52,15 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
   // Progress modal state
   const [showProgressModal, setShowProgressModal] = useState(false);
   const [progressId, setProgressId] = useState('');
+  const pendingSettingsRef = useRef<{
+    minVisitsPerDay: number;
+    maxVisitsPerDay: number;
+    workingDaysPerWeek: number;
+    calculationMode: CalculationMode;
+    maxTimePerOutlet?: number;
+    maxWorkingHoursPerDay?: number;
+    progressId: string;
+  } | null>(null);
 
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -168,16 +177,10 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
   }, [toast]);
   
   const handleSSEReady = useCallback(() => {
-    optimizationMutation.mutate({
-      minVisitsPerDay,
-      maxVisitsPerDay,
-      workingDaysPerWeek,
-      calculationMode,
-      maxTimePerOutlet: calculationMode === 'time-based' ? maxTimePerOutlet : undefined,
-      maxWorkingHoursPerDay: calculationMode === 'time-based' ? maxWorkingHoursPerDay : undefined,
-      progressId,
-    });
-  }, [optimizationMutation, minVisitsPerDay, maxVisitsPerDay, workingDaysPerWeek, calculationMode, maxTimePerOutlet, maxWorkingHoursPerDay, progressId]);
+    if (pendingSettingsRef.current) {
+      optimizationMutation.mutate(pendingSettingsRef.current);
+    }
+  }, [optimizationMutation]);
 
   const handleOptimization = () => {
     if (calculationMode === 'manual' && minVisitsPerDay >= maxVisitsPerDay) {
@@ -190,6 +193,17 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
     }
 
     const newProgressId = `opt-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    
+    pendingSettingsRef.current = {
+      minVisitsPerDay,
+      maxVisitsPerDay,
+      workingDaysPerWeek,
+      calculationMode,
+      maxTimePerOutlet: calculationMode === 'time-based' ? maxTimePerOutlet : undefined,
+      maxWorkingHoursPerDay: calculationMode === 'time-based' ? maxWorkingHoursPerDay : undefined,
+      progressId: newProgressId,
+    };
+    
     setProgressId(newProgressId);
     setShowProgressModal(true);
   };
