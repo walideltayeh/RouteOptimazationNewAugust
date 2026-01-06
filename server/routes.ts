@@ -2075,14 +2075,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const { progressId } = req.params;
     
     res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no');
+    res.setHeader('Content-Encoding', 'none');
+    
+    // Disable Nagle's algorithm for immediate sends
+    if (res.socket) {
+      res.socket.setNoDelay(true);
+      res.socket.setKeepAlive(true);
+    }
+    
     res.flushHeaders();
+    
+    // Send initial padding to force buffer flush (2KB)
+    res.write(`: ${' '.repeat(2048)}\n\n`);
     
     progressManager.subscribe(progressId, res);
     
+    // Send keepalive comments every 5 seconds
+    const keepaliveInterval = setInterval(() => {
+      try {
+        res.write(': keepalive\n\n');
+      } catch (e) {
+        clearInterval(keepaliveInterval);
+      }
+    }, 5000);
+    
     req.on('close', () => {
+      clearInterval(keepaliveInterval);
       progressManager.unsubscribe(progressId, res);
     });
   });
