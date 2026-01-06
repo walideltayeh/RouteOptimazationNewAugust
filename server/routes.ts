@@ -2111,21 +2111,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Route optimization
   app.post("/api/optimize", async (req, res) => {
     const progressId = req.body.progressId || '';
-    const emitProgress = (percent: number, stage: string, detail: string) => {
+    
+    // Helper to yield to event loop so SSE can flush
+    const yieldToEventLoop = () => new Promise<void>(resolve => setImmediate(resolve));
+    
+    const emitProgress = async (percent: number, stage: string, detail: string) => {
       if (progressId) {
         progressManager.emit(progressId, { percent, stage, detail });
+        await yieldToEventLoop(); // Allow SSE to send
       }
     };
     
     try {
-      emitProgress(2, 'Starting', 'Loading outlets from database...');
+      await emitProgress(2, 'Starting', 'Loading outlets from database...');
       const outlets = await storage.getOutlets();
       if (outlets.length === 0) {
         if (progressId) progressManager.error(progressId, 'No outlets available');
         return res.status(400).json({ message: "No outlets available for optimization" });
       }
       
-      emitProgress(5, 'Analyzing', `Processing ${outlets.length} outlets...`);
+      await emitProgress(5, 'Analyzing', `Processing ${outlets.length} outlets...`);
 
       // Calculate total weekly visits required based on visit frequency
       const totalWeeklyVisits = outlets.reduce((sum, outlet) => sum + outlet.visitFrequency, 0);
@@ -2185,7 +2190,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Use the calculated required reps (initial estimate)
       let finalRequiredReps = Math.max(1, requiredReps); // At least 1 rep needed
 
-      emitProgress(10, 'Preparing', 'Clearing existing data...');
+      await emitProgress(10, 'Preparing', 'Clearing existing data...');
       
       // Clear existing reps first
       const existingReps = await storage.getReps();
@@ -2193,7 +2198,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         await storage.deleteRep(rep.id);
       }
 
-      emitProgress(15, 'Clustering', `Analyzing ${outlets.length} outlets for geographic patterns...`);
+      await emitProgress(15, 'Clustering', `Analyzing ${outlets.length} outlets for geographic patterns...`);
       
       // Create territories based on geographic clusters (each cluster = one zone)
       console.log(`Creating zones based on geographic clustering for ${outlets.length} outlets`);
@@ -2205,7 +2210,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         finalRequiredReps * zonesPerRep // Or enough zones for all reps
       );
       
-      emitProgress(20, 'Clustering', 'Running advanced geographic clustering algorithm...');
+      await emitProgress(20, 'Clustering', 'Running advanced geographic clustering algorithm...');
       
       // Perform advanced clustering using JavaScript implementation (HDBSCAN + VRP + Capacitated K-Means)
       const advancedClusters = performAdvancedClusteringJS(outlets, targetZones, minVisitsPerDay, maxVisitsPerDay);
@@ -2216,7 +2221,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }));
       const actualZoneCount = clusters.length;
       
-      emitProgress(45, 'Zones Created', `Created ${actualZoneCount} geographic zones`);
+      await emitProgress(45, 'Zones Created', `Created ${actualZoneCount} geographic zones`);
       console.log(`Created ${actualZoneCount} geographic zones`);
       
       // First, assign outlets to their zones
@@ -2232,6 +2237,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
             cluster: i
           });
         }
+        
+        // Yield and emit progress every 20 zones
+        if (i % 20 === 0) {
+          const zoneProgress = 45 + Math.floor((i / actualZoneCount) * 10);
+          await emitProgress(zoneProgress, 'Zones Created', `Processing zone ${i + 1} of ${actualZoneCount}...`);
+        }
       }
       
       // Calculate how many reps we need based on actual zones created
@@ -2239,7 +2250,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // So we need zones/10 reps (rounded up)
       const requiredRepCount = Math.ceil(actualZoneCount / 10);
       
-      emitProgress(55, 'Assigning', `Assigning ${outlets.length} outlets to ${actualZoneCount} zones...`);
+      await emitProgress(55, 'Assigning', `Assigning ${outlets.length} outlets to ${actualZoneCount} zones...`);
       console.log(`Need ${requiredRepCount} reps to cover ${actualZoneCount} zones (10 zones per rep)`);
       
       // Check if working days have changed for existing optimization
@@ -2249,7 +2260,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         await storage.clearSchedules();
       }
       
-      emitProgress(60, 'Creating Reps', `Creating ${requiredRepCount} sales representatives...`);
+      await emitProgress(60, 'Creating Reps', `Creating ${requiredRepCount} sales representatives...`);
       
       // Create the required number of reps
       const allReps: Rep[] = [];
@@ -2269,7 +2280,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Assign zones to reps based on geographic proximity
       const zoneAssignments = assignZonesToReps(clusters, allReps, zonesPerRep);
       
-      emitProgress(70, 'Scheduling', `Generating schedules for ${allReps.length} reps...`);
+      await emitProgress(70, 'Scheduling', `Generating schedules for ${allReps.length} reps...`);
       
       // Generate schedules for each rep
       console.log('Generating schedules for', allReps.length, 'reps');
@@ -2288,11 +2299,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
             await storage.createSchedule(schedule);
           }
         }
+        
+        // Yield and emit progress every 5 reps
+        if (repIndex % 5 === 0) {
+          const scheduleProgress = 70 + Math.floor((repIndex / allReps.length) * 15);
+          await emitProgress(scheduleProgress, 'Scheduling', `Generating schedule for rep ${repIndex + 1} of ${allReps.length}...`);
+        }
       }
       
       finalRequiredReps = allReps.length;
 
-      emitProgress(85, 'Role Schedules', 'Generating role-based schedules...');
+      await emitProgress(85, 'Role Schedules', 'Generating role-based schedules...');
       
       // Generate role schedules for all reps based on template
       console.log('Generating role schedules based on hierarchy template...');
@@ -2353,7 +2370,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.log(`Generated ${totalRoleSchedules} role schedules for ${allReps.length} reps`);
       }
 
-      emitProgress(95, 'Finalizing', 'Saving results...');
+      await emitProgress(95, 'Finalizing', 'Saving results...');
       
       // Invalidate cache by refreshing data
       const updatedOutlets = await storage.getOutlets();
