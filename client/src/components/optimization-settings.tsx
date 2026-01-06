@@ -52,6 +52,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
   // Progress modal state
   const [showProgressModal, setShowProgressModal] = useState(false);
   const [progressId, setProgressId] = useState('');
+  const optimizationStartedRef = useRef(false);
   const pendingSettingsRef = useRef<{
     minVisitsPerDay: number;
     maxVisitsPerDay: number;
@@ -158,6 +159,8 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
   
   const handleProgressComplete = useCallback(() => {
     setShowProgressModal(false);
+    optimizationStartedRef.current = false;
+    pendingSettingsRef.current = null;
     queryClient.invalidateQueries({ queryKey: ["/api/reps"] });
     queryClient.invalidateQueries({ queryKey: ["/api/outlets"] });
     queryClient.invalidateQueries({ queryKey: ["/api/schedules"] });
@@ -169,6 +172,8 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
   
   const handleProgressError = useCallback((message: string) => {
     setShowProgressModal(false);
+    optimizationStartedRef.current = false;
+    pendingSettingsRef.current = null;
     toast({
       title: "Optimization failed",
       description: message,
@@ -177,7 +182,8 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
   }, [toast]);
   
   const handleSSEReady = useCallback(() => {
-    if (pendingSettingsRef.current) {
+    if (pendingSettingsRef.current && !optimizationStartedRef.current) {
+      optimizationStartedRef.current = true;
       optimizationMutation.mutate(pendingSettingsRef.current);
     }
   }, [optimizationMutation]);
@@ -192,6 +198,9 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       return;
     }
 
+    // Reset refs for new optimization
+    optimizationStartedRef.current = false;
+    
     const newProgressId = `opt-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     
     pendingSettingsRef.current = {

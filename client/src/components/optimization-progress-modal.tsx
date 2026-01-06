@@ -41,9 +41,26 @@ export default function OptimizationProgressModal({
   const [isComplete, setIsComplete] = useState(false);
   const [hasError, setHasError] = useState(false);
   const readyCalledRef = useRef(false);
+  const eventSourceRef = useRef<EventSource | null>(null);
+  
+  // Store callbacks in refs to avoid effect re-runs
+  const onReadyRef = useRef(onReady);
+  const onCompleteRef = useRef(onComplete);
+  const onErrorRef = useRef(onError);
+  
+  useEffect(() => {
+    onReadyRef.current = onReady;
+    onCompleteRef.current = onComplete;
+    onErrorRef.current = onError;
+  }, [onReady, onComplete, onError]);
 
   useEffect(() => {
     if (!isOpen || !progressId) return;
+    
+    // Prevent duplicate connections
+    if (eventSourceRef.current) {
+      return;
+    }
 
     setProgress({ percent: 0, stage: 'Starting', detail: 'Connecting...' });
     setIsComplete(false);
@@ -51,11 +68,12 @@ export default function OptimizationProgressModal({
     readyCalledRef.current = false;
 
     const eventSource = new EventSource(`/api/optimize/progress/${progressId}`);
+    eventSourceRef.current = eventSource;
 
     eventSource.onopen = () => {
-      if (!readyCalledRef.current && onReady) {
+      if (!readyCalledRef.current && onReadyRef.current) {
         readyCalledRef.current = true;
-        setTimeout(() => onReady(), 100);
+        setTimeout(() => onReadyRef.current?.(), 100);
       }
     };
 
@@ -67,11 +85,13 @@ export default function OptimizationProgressModal({
         if (data.percent === 100) {
           setIsComplete(true);
           eventSource.close();
-          setTimeout(() => onComplete(), 1500);
+          eventSourceRef.current = null;
+          setTimeout(() => onCompleteRef.current(), 1500);
         } else if (data.percent === -1) {
           setHasError(true);
           eventSource.close();
-          onError(data.detail);
+          eventSourceRef.current = null;
+          onErrorRef.current(data.detail);
         }
       } catch (e) {
         console.error('Failed to parse progress:', e);
@@ -79,16 +99,17 @@ export default function OptimizationProgressModal({
     };
 
     eventSource.onerror = () => {
-      if (!readyCalledRef.current && onReady) {
+      if (!readyCalledRef.current && onReadyRef.current) {
         readyCalledRef.current = true;
-        onReady();
+        onReadyRef.current();
       }
     };
 
     return () => {
       eventSource.close();
+      eventSourceRef.current = null;
     };
-  }, [isOpen, progressId, onReady, onComplete, onError]);
+  }, [isOpen, progressId]);
 
   const getStageStatus = (stage: typeof mainStages[0], percent: number) => {
     if (percent >= stage.completedAt) return 'completed';
