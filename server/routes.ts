@@ -2213,7 +2213,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       await emitProgress(20, 'Clustering', 'Running advanced geographic clustering algorithm...');
       
       // Perform advanced clustering using JavaScript implementation (HDBSCAN + VRP + Capacitated K-Means)
-      const advancedClusters = performAdvancedClusteringJS(outlets, targetZones, minVisitsPerDay, maxVisitsPerDay);
+      // Pass progress callback to allow SSE updates during long-running clustering
+      const advancedClusters = await performAdvancedClusteringJS(outlets, targetZones, minVisitsPerDay, maxVisitsPerDay, emitProgress);
       const clusters = advancedClusters.map(cluster => ({
         id: cluster.id,
         centroid: cluster.centroid,

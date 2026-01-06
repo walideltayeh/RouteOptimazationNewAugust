@@ -20,6 +20,11 @@ export interface GeographicCluster {
   radius?: number;
 }
 
+export type ProgressCallback = (percent: number, stage: string, detail: string) => Promise<void>;
+
+// Helper to yield to event loop for SSE flushing
+const yieldToEventLoop = (): Promise<void> => new Promise(resolve => setImmediate(resolve));
+
 // Haversine distance calculation
 function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371; // Earth's radius in km
@@ -84,6 +89,104 @@ export function hdbscanClustering(outlets: Outlet[], minClusterSize: number = 5,
 
       neighbors.forEach(idx => visited.add(idx));
     }
+  }
+
+  // Handle noise points
+  const noise: Point[] = [];
+  for (let i = 0; i < points.length; i++) {
+    if (!visited.has(i)) {
+      noise.push(points[i]);
+    }
+  }
+
+  // Assign noise points to nearest cluster
+  if (noise.length > 0 && clusters.length > 0) {
+    noise.forEach(point => {
+      let minDist = Infinity;
+      let nearestCluster = 0;
+      
+      clusters.forEach((cluster, idx) => {
+        const dist = calculateDistance(point.lat, point.lng, cluster.centroid.lat, cluster.centroid.lng);
+        if (dist < minDist) {
+          minDist = dist;
+          nearestCluster = idx;
+        }
+      });
+
+      clusters[nearestCluster].points.push(point);
+    });
+
+    // Recalculate centroids and radii
+    clusters.forEach(cluster => {
+      cluster.centroid = calculateCentroid(cluster.points);
+      cluster.radius = calculateRadius(cluster.points, cluster.centroid);
+    });
+  }
+
+  return clusters;
+}
+
+// Async version with yields for SSE flushing
+async function hdbscanClusteringAsync(outlets: Outlet[], minClusterSize: number = 5, minSamples: number = 3): Promise<Cluster[]> {
+  const points: Point[] = outlets.map(o => ({
+    lat: o.latitude,
+    lng: o.longitude,
+    id: o.id
+  }));
+
+  // Calculate core distances (k-nearest neighbor distance) with yields
+  const coreDistances: number[] = [];
+  for (let i = 0; i < points.length; i++) {
+    const distances = points
+      .filter((_, j) => i !== j)
+      .map(other => calculateDistance(points[i].lat, points[i].lng, other.lat, other.lng))
+      .sort((a, b) => a - b);
+    coreDistances.push(distances[minSamples - 1] || Infinity);
+    
+    // Yield every 100 points
+    if (i % 100 === 0) await yieldToEventLoop();
+  }
+
+  // Build mutual reachability distance graph with yields
+  const reachabilityGraph: number[][] = Array(points.length).fill(null).map(() => Array(points.length).fill(Infinity));
+  
+  for (let i = 0; i < points.length; i++) {
+    for (let j = i + 1; j < points.length; j++) {
+      const dist = calculateDistance(points[i].lat, points[i].lng, points[j].lat, points[j].lng);
+      const mutualReachability = Math.max(coreDistances[i], coreDistances[j], dist);
+      reachabilityGraph[i][j] = mutualReachability;
+      reachabilityGraph[j][i] = mutualReachability;
+    }
+    // Yield every 50 rows
+    if (i % 50 === 0) await yieldToEventLoop();
+  }
+
+  // Find dense regions using DBSCAN-like approach
+  const visited = new Set<number>();
+  const clusters: Cluster[] = [];
+  let clusterId = 0;
+
+  for (let i = 0; i < points.length; i++) {
+    if (visited.has(i)) continue;
+
+    const neighbors = expandCluster(i, reachabilityGraph, coreDistances, minSamples, points.length);
+    
+    if (neighbors.length >= minClusterSize) {
+      const clusterPoints = neighbors.map(idx => points[idx]);
+      const centroid = calculateCentroid(clusterPoints);
+      
+      clusters.push({
+        id: clusterId++,
+        points: clusterPoints,
+        centroid,
+        radius: calculateRadius(clusterPoints, centroid)
+      });
+
+      neighbors.forEach(idx => visited.add(idx));
+    }
+    
+    // Yield every 100 points
+    if (i % 100 === 0) await yieldToEventLoop();
   }
 
   // Handle noise points
@@ -441,6 +544,157 @@ export function capacitatedKMeans(
   return clusters;
 }
 
+// Async version with yields for SSE flushing
+async function capacitatedKMeansAsync(
+  outlets: Outlet[],
+  k: number,
+  minCapacity: number = 20,
+  maxCapacity: number = 30,
+  maxIterations: number = 50
+): Promise<Cluster[]> {
+  const points: Point[] = outlets.map(o => ({
+    lat: o.latitude,
+    lng: o.longitude,
+    id: o.id
+  }));
+
+  let actualK = Math.max(k, Math.ceil(points.length / maxCapacity));
+  const centroids = initializeCentroidsKMeansPlusPlus(points, actualK);
+  let clusters: Cluster[] = centroids.map((centroid, i) => ({
+    id: i,
+    points: [],
+    centroid,
+    radius: 0
+  }));
+
+  await yieldToEventLoop();
+
+  // Phase 1: Initial assignment respecting max capacity
+  const unassignedPoints = [...points];
+  
+  for (let clusterIdx = 0; clusterIdx < actualK && unassignedPoints.length > 0; clusterIdx++) {
+    const cluster = clusters[clusterIdx];
+    
+    unassignedPoints.sort((a, b) => {
+      const distA = calculateDistance(a.lat, a.lng, cluster.centroid.lat, cluster.centroid.lng);
+      const distB = calculateDistance(b.lat, b.lng, cluster.centroid.lat, cluster.centroid.lng);
+      return distA - distB;
+    });
+
+    const assignCount = Math.min(maxCapacity, unassignedPoints.length);
+    for (let i = 0; i < assignCount; i++) {
+      cluster.points.push(unassignedPoints[0]);
+      unassignedPoints.shift();
+    }
+    
+    // Yield every 10 clusters
+    if (clusterIdx % 10 === 0) await yieldToEventLoop();
+  }
+
+  await yieldToEventLoop();
+
+  // Handle remaining unassigned points
+  if (unassignedPoints.length > 0) {
+    for (const point of unassignedPoints) {
+      let nearestCluster: Cluster | null = null;
+      let nearestDist = Infinity;
+      
+      for (const cluster of clusters) {
+        if (cluster.points.length < maxCapacity) {
+          const dist = calculateDistance(point.lat, point.lng, cluster.centroid.lat, cluster.centroid.lng);
+          if (dist < nearestDist) {
+            nearestDist = dist;
+            nearestCluster = cluster;
+          }
+        }
+      }
+      
+      if (nearestCluster) {
+        nearestCluster.points.push(point);
+      } else {
+        clusters.push({
+          id: clusters.length,
+          points: [point],
+          centroid: { ...point },
+          radius: 0
+        });
+      }
+    }
+  }
+
+  await yieldToEventLoop();
+
+  // Phase 2: Limited iterative refinement with yields
+  let iteration = 0;
+  let improved = true;
+
+  while (improved && iteration < maxIterations) {
+    improved = false;
+    iteration++;
+
+    for (let i = 0; i < clusters.length; i++) {
+      for (let j = i + 1; j < clusters.length; j++) {
+        const cluster1 = clusters[i];
+        const cluster2 = clusters[j];
+
+        if (cluster1.points.length === 0 || cluster2.points.length === 0) continue;
+
+        let bestSwap: { idx1: number; idx2: number; improvement: number } | null = null;
+        let bestImprovement = 0;
+
+        for (let p1 = 0; p1 < cluster1.points.length; p1++) {
+          for (let p2 = 0; p2 < cluster2.points.length; p2++) {
+            const point1 = cluster1.points[p1];
+            const point2 = cluster2.points[p2];
+
+            const currentDist = 
+              calculateDistance(point1.lat, point1.lng, cluster1.centroid.lat, cluster1.centroid.lng) +
+              calculateDistance(point2.lat, point2.lng, cluster2.centroid.lat, cluster2.centroid.lng);
+
+            const swapDist = 
+              calculateDistance(point1.lat, point1.lng, cluster2.centroid.lat, cluster2.centroid.lng) +
+              calculateDistance(point2.lat, point2.lng, cluster1.centroid.lat, cluster1.centroid.lng);
+
+            const improvement = currentDist - swapDist;
+            if (improvement > bestImprovement) {
+              bestImprovement = improvement;
+              bestSwap = { idx1: p1, idx2: p2, improvement };
+            }
+          }
+        }
+
+        if (bestSwap && bestSwap.improvement > 0.001) {
+          const temp = cluster1.points[bestSwap.idx1];
+          cluster1.points[bestSwap.idx1] = cluster2.points[bestSwap.idx2];
+          cluster2.points[bestSwap.idx2] = temp;
+          improved = true;
+        }
+      }
+      
+      // Yield every 5 cluster comparisons
+      if (i % 5 === 0) await yieldToEventLoop();
+    }
+
+    clusters.forEach(cluster => {
+      if (cluster.points.length > 0) {
+        cluster.centroid = calculateCentroid(cluster.points);
+        cluster.radius = calculateRadius(cluster.points, cluster.centroid);
+      }
+    });
+    
+    await yieldToEventLoop();
+  }
+
+  clusters = clusters.filter(c => c.points.length > 0);
+
+  console.log(`Capacitated K-Means: ${clusters.length} clusters with varying sizes`);
+  clusters.forEach((c, idx) => {
+    console.log(`  Cluster ${idx + 1}: ${c.points.length} points`);
+  });
+  
+  return clusters;
+}
+
 function initializeCentroidsKMeansPlusPlus(points: Point[], k: number): Point[] {
   const centroids: Point[] = [];
   
@@ -537,13 +791,22 @@ function calculateRadius(points: Point[], centroid: Point): number {
 }
 
 // Main clustering algorithm combining all three approaches
-export function performAdvancedClustering(
+export async function performAdvancedClustering(
   outlets: Outlet[], 
   targetClusters: number, 
   minVisitsPerDay: number = 25, 
-  maxVisitsPerDay: number = 30
-): GeographicCluster[] {
+  maxVisitsPerDay: number = 30,
+  onProgress?: ProgressCallback
+): Promise<GeographicCluster[]> {
+  const emitProgress = async (percent: number, stage: string, detail: string) => {
+    if (onProgress) {
+      await onProgress(percent, stage, detail);
+    }
+    await yieldToEventLoop();
+  };
+  
   console.log(`Starting advanced clustering for ${outlets.length} outlets targeting ${targetClusters} clusters (${minVisitsPerDay}-${maxVisitsPerDay} outlets/zone)`);
+  await emitProgress(22, 'Clustering', `Analyzing ${outlets.length} outlets...`);
 
   // Use maxVisitsPerDay as the target zone size
   const outletsPerZone = maxVisitsPerDay;
@@ -553,8 +816,10 @@ export function performAdvancedClustering(
   console.log(`Creating ${exactClusters} zones of ${outletsPerZone} outlets each (${remainingOutlets} outlets remaining)`);
 
   // Step 1: Use HDBSCAN to find natural geographic clusters
-  const hdbscanClusters = hdbscanClustering(outlets, outletsPerZone, 5);
+  await emitProgress(25, 'Clustering', 'Finding natural geographic patterns...');
+  const hdbscanClusters = await hdbscanClusteringAsync(outlets, outletsPerZone, 5);
   console.log(`HDBSCAN found ${hdbscanClusters.length} natural clusters`);
+  await emitProgress(30, 'Clustering', `Found ${hdbscanClusters.length} natural patterns...`);
 
   // Step 2: Apply VRP optimization to large clusters and merge small ones
   const processedClusters: Cluster[] = [];
@@ -594,10 +859,12 @@ export function performAdvancedClustering(
   }
 
   console.log(`After processing: ${processedClusters.length} clusters`);
+  await emitProgress(35, 'Clustering', 'Optimizing zone boundaries...');
 
   // Step 3: Use Capacitated K-Means to get clusters within the min/max range
-  const finalClusters = capacitatedKMeans(outlets, exactClusters, minVisitsPerDay, maxVisitsPerDay);
+  const finalClusters = await capacitatedKMeansAsync(outlets, exactClusters, minVisitsPerDay, maxVisitsPerDay);
   console.log(`Capacitated K-Means created ${finalClusters.length} final clusters`);
+  await emitProgress(42, 'Clustering', `Created ${finalClusters.length} optimized zones...`);
 
   // Accept clusters that are within the min/max range
   const result: GeographicCluster[] = [];
