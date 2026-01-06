@@ -166,6 +166,18 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       variant: "destructive",
     });
   }, [toast]);
+  
+  const handleSSEReady = useCallback(() => {
+    optimizationMutation.mutate({
+      minVisitsPerDay,
+      maxVisitsPerDay,
+      workingDaysPerWeek,
+      calculationMode,
+      maxTimePerOutlet: calculationMode === 'time-based' ? maxTimePerOutlet : undefined,
+      maxWorkingHoursPerDay: calculationMode === 'time-based' ? maxWorkingHoursPerDay : undefined,
+      progressId,
+    });
+  }, [optimizationMutation, minVisitsPerDay, maxVisitsPerDay, workingDaysPerWeek, calculationMode, maxTimePerOutlet, maxWorkingHoursPerDay, progressId]);
 
   const handleOptimization = () => {
     if (calculationMode === 'manual' && minVisitsPerDay >= maxVisitsPerDay) {
@@ -177,20 +189,9 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       return;
     }
 
-    // Generate a unique progress ID
     const newProgressId = `opt-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     setProgressId(newProgressId);
     setShowProgressModal(true);
-
-    optimizationMutation.mutate({
-      minVisitsPerDay,
-      maxVisitsPerDay,
-      workingDaysPerWeek,
-      calculationMode,
-      maxTimePerOutlet: calculationMode === 'time-based' ? maxTimePerOutlet : undefined,
-      maxWorkingHoursPerDay: calculationMode === 'time-based' ? maxWorkingHoursPerDay : undefined,
-      progressId: newProgressId,
-    });
   };
 
   return (
@@ -384,6 +385,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       <OptimizationProgressModal
         isOpen={showProgressModal}
         progressId={progressId}
+        onReady={handleSSEReady}
         onComplete={handleProgressComplete}
         onError={handleProgressError}
       />

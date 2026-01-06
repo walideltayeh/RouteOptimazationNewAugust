@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
-import { Dialog, DialogContent } from '@/components/ui/dialog';
+import { useEffect, useState, useRef } from 'react';
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Progress } from '@/components/ui/progress';
-import { CheckCircle2, XCircle, Loader2 } from 'lucide-react';
+import { CheckCircle2, XCircle } from 'lucide-react';
+import { VisuallyHidden } from '@radix-ui/react-visually-hidden';
 
 interface ProgressUpdate {
   percent: number;
@@ -12,6 +13,7 @@ interface ProgressUpdate {
 interface OptimizationProgressModalProps {
   isOpen: boolean;
   progressId: string;
+  onReady?: () => void;
   onComplete: () => void;
   onError: (message: string) => void;
 }
@@ -33,6 +35,7 @@ const stages = [
 export default function OptimizationProgressModal({
   isOpen,
   progressId,
+  onReady,
   onComplete,
   onError
 }: OptimizationProgressModalProps) {
@@ -43,15 +46,24 @@ export default function OptimizationProgressModal({
   });
   const [isComplete, setIsComplete] = useState(false);
   const [hasError, setHasError] = useState(false);
+  const readyCalledRef = useRef(false);
 
   useEffect(() => {
     if (!isOpen || !progressId) return;
 
-    setProgress({ percent: 0, stage: 'Starting', detail: 'Initializing optimization...' });
+    setProgress({ percent: 0, stage: 'Starting', detail: 'Connecting...' });
     setIsComplete(false);
     setHasError(false);
+    readyCalledRef.current = false;
 
     const eventSource = new EventSource(`/api/optimize/progress/${progressId}`);
+
+    eventSource.onopen = () => {
+      if (!readyCalledRef.current && onReady) {
+        readyCalledRef.current = true;
+        setTimeout(() => onReady(), 100);
+      }
+    };
 
     eventSource.onmessage = (event) => {
       try {
@@ -73,13 +85,16 @@ export default function OptimizationProgressModal({
     };
 
     eventSource.onerror = () => {
-      eventSource.close();
+      if (!readyCalledRef.current && onReady) {
+        readyCalledRef.current = true;
+        onReady();
+      }
     };
 
     return () => {
       eventSource.close();
     };
-  }, [isOpen, progressId, onComplete, onError]);
+  }, [isOpen, progressId, onReady, onComplete, onError]);
 
   const getStageIndex = (stageName: string) => {
     return stages.findIndex(s => s.name === stageName);
@@ -89,7 +104,19 @@ export default function OptimizationProgressModal({
 
   return (
     <Dialog open={isOpen}>
-      <DialogContent className="sm:max-w-md" onPointerDownOutside={(e) => e.preventDefault()}>
+      <DialogContent 
+        className="sm:max-w-md" 
+        onPointerDownOutside={(e) => e.preventDefault()}
+        onEscapeKeyDown={(e) => e.preventDefault()}
+        aria-describedby="optimization-progress-description"
+      >
+        <VisuallyHidden>
+          <DialogTitle>Optimization Progress</DialogTitle>
+        </VisuallyHidden>
+        <DialogDescription id="optimization-progress-description" className="sr-only">
+          Route optimization is in progress. Please wait while your routes are being optimized.
+        </DialogDescription>
+        
         <div className="flex flex-col items-center py-6">
           {hasError ? (
             <>
@@ -132,7 +159,6 @@ export default function OptimizationProgressModal({
                     {Math.round(progress.percent)}%
                   </span>
                 </div>
-                <Loader2 className="absolute -bottom-2 right-0 h-6 w-6 text-blue-500 animate-spin" />
               </div>
               
               <h3 className="text-lg font-semibold text-gray-800 mb-1">{progress.stage}</h3>
