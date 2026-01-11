@@ -19,6 +19,11 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import type { DashboardMetrics, Rep, Outlet, Schedule, RoleHierarchy } from "@shared/schema";
 
+interface AuthStatus {
+  isAuthenticated: boolean;
+  isSuperuser: boolean;
+}
+
 interface RoleConfig {
   role: string;
   roleName: string;
@@ -64,6 +69,10 @@ export default function Dashboard() {
 
   const { data: existingHierarchies = [] } = useQuery<RoleHierarchy[]>({
     queryKey: ["/api/role-hierarchies"],
+  });
+
+  const { data: authStatus } = useQuery<AuthStatus>({
+    queryKey: ["/api/auth/status"],
   });
 
   // Determine current step based on data state
@@ -179,18 +188,20 @@ export default function Dashboard() {
               <p className="text-sm text-gray-600 mt-1">Manage your sales rep territories and optimize routes</p>
             </div>
             <div className="flex items-center space-x-4">
-              <Button 
-                className="bg-primary hover:bg-primary/90"
-                onClick={handleNewOptimization}
-                disabled={clearAllMutation.isPending}
-              >
-                {clearAllMutation.isPending ? (
-                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-                ) : (
-                  <Plus className="mr-2 h-4 w-4" />
-                )}
-                New Optimization
-              </Button>
+              {authStatus?.isSuperuser && (
+                <Button 
+                  className="bg-primary hover:bg-primary/90"
+                  onClick={handleNewOptimization}
+                  disabled={clearAllMutation.isPending}
+                >
+                  {clearAllMutation.isPending ? (
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                  ) : (
+                    <Plus className="mr-2 h-4 w-4" />
+                  )}
+                  New Optimization
+                </Button>
+              )}
               <Button variant="outline">
                 <Download className="mr-2 h-4 w-4" />
                 Export
