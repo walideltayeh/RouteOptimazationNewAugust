@@ -8,8 +8,10 @@ export function useTrial() {
 
   const isTrialActive = status?.isTrialMode && !status?.isExpired && !status?.isBlocked;
   const needsOnboarding = !status?.isTrialMode;
-  const canAddOutlet = (status?.outletsRemaining ?? 0) > 0;
-  const canAddVehicle = (status?.vehiclesRemaining ?? 0) > 0;
+  
+  // Allow actions if no trial started yet (will prompt onboarding) OR if trial is active with capacity
+  const canAddOutlet = !status?.isTrialMode || (status?.outletsRemaining ?? 0) > 0;
+  const canAddVehicle = !status?.isTrialMode || (status?.vehiclesRemaining ?? 0) > 0;
 
   return {
     status,

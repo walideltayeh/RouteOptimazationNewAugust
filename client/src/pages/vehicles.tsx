@@ -169,7 +169,7 @@ export default function VehiclesPage() {
   return (
     <div className="p-6">
       <div className="max-w-7xl mx-auto space-y-6">
-        {status?.vehiclesRemaining !== undefined && status.vehiclesRemaining <= 0 && (
+        {status?.isTrialMode && status.vehiclesRemaining <= 0 && (
           <Alert className="border-red-200 bg-red-50">
             <AlertTriangle className="h-4 w-4 text-red-600" />
             <AlertDescription className="text-red-800">

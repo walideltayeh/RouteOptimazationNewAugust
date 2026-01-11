@@ -133,7 +133,7 @@ export default function FileUpload() {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-6">
-        {status?.outletsRemaining !== undefined && status.outletsRemaining <= 10 && status.outletsRemaining > 0 && (
+        {status?.isTrialMode && status.outletsRemaining <= 10 && status.outletsRemaining > 0 && (
           <Alert className="border-amber-200 bg-amber-50">
             <AlertTriangle className="h-4 w-4 text-amber-600" />
             <AlertDescription className="text-amber-800">
@@ -141,7 +141,7 @@ export default function FileUpload() {
             </AlertDescription>
           </Alert>
         )}
-        {status?.outletsRemaining !== undefined && status.outletsRemaining <= 0 && (
+        {status?.isTrialMode && status.outletsRemaining <= 0 && (
           <Alert className="border-red-200 bg-red-50">
             <AlertTriangle className="h-4 w-4 text-red-600" />
             <AlertDescription className="text-red-800">
