@@ -1577,6 +1577,7 @@ export class MemStorage implements IStorage {
   }
 
   async clearAll(): Promise<void> {
+    // Clear optimization-related data only, preserve trial and vehicle data
     this.outlets.clear();
     this.reps.clear();
     this.schedules.clear();
@@ -1585,12 +1586,23 @@ export class MemStorage implements IStorage {
     this.vehicleMileageSnapshots.clear();
     this.roleHierarchies.clear();
     this.roleSchedules.clear();
-    this.trialAccounts.clear();
-    this.trialUsages.clear();
-    this.deviceFingerprints.clear();
-    this.fingerprintEvents.clear();
-    this.orgRiskProfiles.clear();
-    this.trialConversions.clear();
+    // DO NOT clear trial-related data - preserve user's trial session
+    // this.trialAccounts.clear();
+    // this.trialUsages.clear();
+    // this.deviceFingerprints.clear();
+    // this.fingerprintEvents.clear();
+    // this.orgRiskProfiles.clear();
+    // this.trialConversions.clear();
+    
+    // Reset outlet count in trial usage for all active trials
+    this.trialUsages.forEach((usage, trialId) => {
+      this.trialUsages.set(trialId, {
+        ...usage,
+        outletCount: 0,
+        lastActivityAt: new Date(),
+        updatedAt: new Date()
+      });
+    });
   }
 
   private haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
