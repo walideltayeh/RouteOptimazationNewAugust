@@ -10,6 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { 
   Car, 
   Plus, 
@@ -25,7 +26,9 @@ import {
   ExternalLink
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { useTrial } from "@/hooks/use-trial";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import UpgradeModal from "@/components/upgrade-modal";
 import type { Vehicle, VehicleMaintenance, VehicleAlert, Rep } from "@shared/schema";
 
 export default function VehiclesPage() {
@@ -34,6 +37,8 @@ export default function VehiclesPage() {
   const [isAddVehicleOpen, setIsAddVehicleOpen] = useState(false);
   const [isAddMaintenanceOpen, setIsAddMaintenanceOpen] = useState(false);
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+  const { status, canAddVehicle } = useTrial();
 
   const { data: vehicles = [], isLoading: vehiclesLoading } = useQuery<Vehicle[]>({
     queryKey: ["/api/vehicles"],
@@ -57,15 +62,21 @@ export default function VehiclesPage() {
 
   const createVehicleMutation = useMutation({
     mutationFn: async (data: any) => {
-      return apiRequest("POST", "/api/vehicles", data);
+      const response = await apiRequest("POST", "/api/vehicles", data);
+      return response;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/vehicles"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/trial/status"] });
       setIsAddVehicleOpen(false);
       toast({ title: "Success", description: "Vehicle added successfully" });
     },
-    onError: () => {
-      toast({ title: "Error", description: "Failed to add vehicle", variant: "destructive" });
+    onError: (error: any) => {
+      if (error?.message?.includes("402") || error?.status === 402) {
+        setShowUpgradeModal(true);
+      } else {
+        toast({ title: "Error", description: "Failed to add vehicle", variant: "destructive" });
+      }
     }
   });
 
@@ -96,6 +107,12 @@ export default function VehiclesPage() {
 
   const handleAddVehicle = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    
+    if (!canAddVehicle) {
+      setShowUpgradeModal(true);
+      return;
+    }
+    
     const formData = new FormData(e.currentTarget);
     createVehicleMutation.mutate({
       plateNumber: formData.get("plateNumber"),
@@ -152,6 +169,14 @@ export default function VehiclesPage() {
   return (
     <div className="p-6">
       <div className="max-w-7xl mx-auto space-y-6">
+        {status?.vehiclesRemaining !== undefined && status.vehiclesRemaining <= 0 && (
+          <Alert className="border-red-200 bg-red-50">
+            <AlertTriangle className="h-4 w-4 text-red-600" />
+            <AlertDescription className="text-red-800">
+              You've reached your vehicle limit. Upgrade to add more vehicles.
+            </AlertDescription>
+          </Alert>
+        )}
         <header className="bg-white shadow-sm border-b border-gray-200 px-6 py-4 rounded-lg">
           <div className="flex justify-between items-center">
             <div>
@@ -459,6 +484,14 @@ export default function VehiclesPage() {
             </form>
           </DialogContent>
         </Dialog>
+        
+        <UpgradeModal
+          isOpen={showUpgradeModal}
+          onClose={() => setShowUpgradeModal(false)}
+          limitType="vehicle"
+          currentCount={status?.vehicleCount ?? 0}
+          maxCount={status?.vehicleLimit ?? 2}
+        />
       </div>
     </div>
   );

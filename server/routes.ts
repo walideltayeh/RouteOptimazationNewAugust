@@ -1,5 +1,6 @@
-import type { Express, Request, Response } from "express";
+import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
+import { createHash } from "crypto";
 import { storage } from "./storage";
 import { 
   insertOptimizationRunSchema, 
@@ -10,11 +11,16 @@ import {
   insertVehicleMaintenanceSchema,
   insertRoleHierarchySchema,
   ROLE_PRESETS,
+  TRIAL_LIMITS,
+  TRIAL_STATUS,
+  RISK_LEVELS,
   type InsertSchedule, 
   type InsertRoleSchedule,
   type Rep, 
   type Outlet,
-  type Schedule
+  type Schedule,
+  type FingerprintSignals,
+  type TrialStatus
 } from "@shared/schema";
 import multer from "multer";
 import * as XLSX from "xlsx";
@@ -23,6 +29,15 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import { performAdvancedClustering as performAdvancedClusteringJS } from "./clustering-algorithms";
 import { generateAdvancedSchedule, reoptimizeSchedules, validateSchedule } from "./advanced-scheduling";
+import { 
+  shouldBlockTrial, 
+  generateOrgKey, 
+  extractIpSubnet, 
+  extractEmailDomain,
+  detectSharedFingerprints,
+  assessOrgRisk,
+  calculateFingerprintSimilarity
+} from "./trial-detection";
 
 const execAsync = promisify(exec);
 
@@ -1483,8 +1498,557 @@ function generateWeeklySchedules(rep: Rep, outlets: Outlet[]): InsertSchedule[] 
 
 import { generateScheduleExcel, generateVehicleSummaryExcel } from './export';
 
+interface TrialContext {
+  ipAddress: string;
+  ipSubnet: string;
+  trialId: string | null;
+  isTrialMode: boolean;
+}
+
+declare global {
+  namespace Express {
+    interface Request {
+      trialContext?: TrialContext;
+    }
+  }
+}
+
+function extractIpAddress(req: Request): string {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (forwarded) {
+    const ips = Array.isArray(forwarded) ? forwarded[0] : forwarded.split(',')[0];
+    return ips.trim();
+  }
+  return req.socket?.remoteAddress || '127.0.0.1';
+}
+
+
+function generateFingerprintHashServerSide(signals: FingerprintSignals): string {
+  const components = [
+    String(signals.screenWidth ?? ''),
+    String(signals.screenHeight ?? ''),
+    String(signals.screenColorDepth ?? ''),
+    String(signals.devicePixelRatio ?? ''),
+    String(signals.hardwareConcurrency ?? ''),
+    String(signals.deviceMemory ?? ''),
+    String(signals.maxTouchPoints ?? ''),
+    signals.timezone ?? '',
+    String(signals.timezoneOffset ?? ''),
+    signals.platform ?? '',
+    signals.language ?? '',
+    signals.webglVendor ?? '',
+    signals.webglRenderer ?? '',
+    signals.webglHash ?? '',
+    signals.canvasHash ?? '',
+    signals.audioHash ?? '',
+    signals.fontsHash ?? '',
+    signals.userAgent ?? ''
+  ];
+  return createHash('sha256').update(components.join('|')).digest('hex');
+}
+
+async function getAllFingerprintsForOrg(orgKey: string): Promise<import("@shared/schema").DeviceFingerprint[]> {
+  const orgProfile = await storage.getOrgRiskProfileByKey(orgKey);
+  if (!orgProfile) return [];
+  
+  const linkedTrialIds = (orgProfile.linkedTrialIds as string[] | null) || [];
+  const allFingerprints: import("@shared/schema").DeviceFingerprint[] = [];
+  
+  for (const trialId of linkedTrialIds) {
+    const fingerprints = await storage.getDeviceFingerprintsByTrialId(trialId);
+    allFingerprints.push(...fingerprints);
+  }
+  
+  return allFingerprints;
+}
+
+function validateEmail(email: string): boolean {
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  return emailRegex.test(email);
+}
+
+
+async function getTrialStatus(trialId: string): Promise<TrialStatus> {
+  const trial = await storage.getTrialAccount(trialId);
+  const usage = await storage.getTrialUsage(trialId);
+  
+  if (!trial) {
+    return {
+      isTrialMode: false,
+      trialId: null,
+      status: 'inactive',
+      outletLimit: 0,
+      vehicleLimit: 0,
+      outletCount: 0,
+      vehicleCount: 0,
+      outletsRemaining: 0,
+      vehiclesRemaining: 0,
+      daysRemaining: 0,
+      isExpired: true,
+      isBlocked: false,
+      upgradeRequired: true
+    };
+  }
+  
+  const now = new Date();
+  const endDate = trial.endDate ? new Date(trial.endDate) : null;
+  const daysRemaining = endDate ? Math.max(0, Math.ceil((endDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))) : 0;
+  const isExpired = trial.status === TRIAL_STATUS.EXPIRED || (endDate ? endDate < now : false);
+  const isBlocked = trial.status === TRIAL_STATUS.BLOCKED;
+  
+  const outletCount = usage?.outletCount || 0;
+  const vehicleCount = usage?.vehicleCount || 0;
+  
+  return {
+    isTrialMode: true,
+    trialId: trial.id,
+    status: trial.status,
+    outletLimit: trial.outletLimit,
+    vehicleLimit: trial.vehicleLimit,
+    outletCount,
+    vehicleCount,
+    outletsRemaining: Math.max(0, trial.outletLimit - outletCount),
+    vehiclesRemaining: Math.max(0, trial.vehicleLimit - vehicleCount),
+    daysRemaining,
+    isExpired,
+    isBlocked,
+    blockReason: isBlocked ? 'Account has been blocked due to suspicious activity' : undefined,
+    upgradeRequired: isExpired || outletCount >= trial.outletLimit || vehicleCount >= trial.vehicleLimit
+  };
+}
+
 export async function registerRoutes(app: Express): Promise<Server> {
   
+  app.use((req: Request, _res: Response, next: NextFunction) => {
+    const ipAddress = extractIpAddress(req);
+    const ipSubnet = extractIpSubnet(ipAddress);
+    const trialCookie = req.cookies?.trial_session || null;
+    
+    req.trialContext = {
+      ipAddress,
+      ipSubnet,
+      trialId: trialCookie,
+      isTrialMode: !!trialCookie
+    };
+    
+    next();
+  });
+
+  app.post("/api/trial/start", async (req: Request, res: Response) => {
+    try {
+      const { email, companyName, consentGiven } = req.body;
+      
+      if (!email || !validateEmail(email)) {
+        return res.status(400).json({ message: "Invalid email format" });
+      }
+      
+      if (!consentGiven) {
+        return res.status(400).json({ message: "Consent is required to start a trial" });
+      }
+      
+      const ipAddress = req.trialContext?.ipAddress || extractIpAddress(req);
+      const ipSubnet = extractIpSubnet(ipAddress);
+      const emailDomain = extractEmailDomain(email);
+      const orgKey = generateOrgKey(ipSubnet, emailDomain);
+      
+      const blockDecision = await shouldBlockTrial(email, orgKey, null, storage);
+      if (blockDecision.blocked) {
+        return res.status(403).json({ 
+          message: blockDecision.reason || "Unable to create trial. Please contact support.",
+          blocked: true,
+          reason: blockDecision.reason,
+          riskLevel: blockDecision.riskLevel,
+          upgradeRequired: blockDecision.upgradeRequired
+        });
+      }
+      
+      const endDate = new Date();
+      endDate.setDate(endDate.getDate() + TRIAL_LIMITS.TRIAL_DURATION_DAYS);
+      
+      const trial = await storage.createTrialAccount({
+        email,
+        companyName: companyName || null,
+        status: TRIAL_STATUS.ACTIVE,
+        outletLimit: TRIAL_LIMITS.MAX_OUTLETS,
+        vehicleLimit: TRIAL_LIMITS.MAX_VEHICLES,
+        startDate: new Date(),
+        endDate,
+        consentGiven: true,
+        consentTimestamp: new Date(),
+        ipAddress,
+        ipSubnet,
+        emailDomain,
+        orgKey,
+        metadata: { source: 'web' }
+      });
+      
+      await storage.createTrialUsage(trial.id);
+      
+      const existingOrgProfile = await storage.getOrgRiskProfileByKey(orgKey);
+      if (!existingOrgProfile) {
+        await storage.createOrgRiskProfile({
+          orgKey,
+          ipSubnet,
+          emailDomain,
+          trialCount: 1,
+          activeTrialCount: 1,
+          riskLevel: RISK_LEVELS.LOW,
+          riskScore: 0,
+          linkedTrialIds: [trial.id]
+        });
+      } else {
+        await storage.incrementOrgTrialCount(orgKey);
+      }
+      
+      res.cookie('trial_session', trial.id, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        maxAge: TRIAL_LIMITS.TRIAL_DURATION_DAYS * 24 * 60 * 60 * 1000,
+        sameSite: 'lax'
+      });
+      
+      const status = await getTrialStatus(trial.id);
+      res.status(201).json(status);
+    } catch (error) {
+      console.error("Error starting trial:", error);
+      res.status(500).json({ message: "Failed to start trial" });
+    }
+  });
+
+  app.post("/api/trial/fingerprint", async (req: Request, res: Response) => {
+    try {
+      const trialId = req.trialContext?.trialId || req.cookies?.trial_session;
+      if (!trialId) {
+        return res.status(401).json({ message: "No active trial session" });
+      }
+      
+      const signals = req.body as FingerprintSignals;
+      const fingerprintHash = generateFingerprintHashServerSide(signals);
+      const ipAddress = req.trialContext?.ipAddress || extractIpAddress(req);
+      const ipSubnet = extractIpSubnet(ipAddress);
+      
+      const trial = await storage.getTrialAccount(trialId);
+      if (!trial) {
+        return res.status(404).json({ message: "Trial account not found" });
+      }
+      
+      const orgKey = trial.orgKey;
+      let orgProfile = orgKey ? await storage.getOrgRiskProfileByKey(orgKey) : null;
+      
+      const existingFingerprints = await storage.getDeviceFingerprintsByTrialId(trialId);
+      const allFingerprints = orgKey ? await getAllFingerprintsForOrg(orgKey) : [];
+      
+      const sharedDetection = detectSharedFingerprints(fingerprintHash, allFingerprints.filter(fp => fp.trialId !== trialId));
+      
+      if (sharedDetection.isShared) {
+        if (orgProfile && orgKey) {
+          const currentSharedSignals = (orgProfile.sharedSignals as { fingerprintMatches?: number } | null) || {};
+          const newSharedSignals = {
+            ...currentSharedSignals,
+            fingerprintMatches: (currentSharedSignals.fingerprintMatches || 0) + 1,
+            lastMatchedTrials: sharedDetection.matchingTrialIds,
+            signalTypes: sharedDetection.signalTypes
+          };
+          
+          const currentLinkedFingerprints = (orgProfile.linkedFingerprints as string[] | null) || [];
+          const newLinkedFingerprints = Array.from(new Set([...currentLinkedFingerprints, fingerprintHash]));
+          
+          const currentRiskFactors = (orgProfile.riskFactors as { velocity?: number; lastTrialTime?: string } | null) || {};
+          const now = new Date();
+          let velocity = currentRiskFactors.velocity || 0;
+          if (currentRiskFactors.lastTrialTime) {
+            const lastTime = new Date(currentRiskFactors.lastTrialTime);
+            const hoursSinceLastTrial = (now.getTime() - lastTime.getTime()) / (1000 * 60 * 60);
+            if (hoursSinceLastTrial < 24) {
+              velocity = Math.min(1, velocity + 0.2);
+            }
+          }
+          
+          await storage.updateOrgRiskProfile(orgProfile.id, {
+            sharedSignals: newSharedSignals,
+            linkedFingerprints: newLinkedFingerprints,
+            riskFactors: {
+              ...currentRiskFactors,
+              fingerprintMatch: true,
+              matchedTrialIds: sharedDetection.matchingTrialIds,
+              velocity,
+              lastTrialTime: now.toISOString()
+            }
+          });
+          
+          orgProfile = await storage.getOrgRiskProfileByKey(orgKey);
+          if (orgProfile) {
+            const riskAssessment = assessOrgRisk(orgProfile);
+            
+            let riskLevel: typeof RISK_LEVELS[keyof typeof RISK_LEVELS] = RISK_LEVELS.LOW;
+            if (riskAssessment.level === 'blocked') {
+              riskLevel = RISK_LEVELS.BLOCKED;
+            } else if (riskAssessment.level === 'high') {
+              riskLevel = RISK_LEVELS.HIGH;
+            } else if (riskAssessment.level === 'medium') {
+              riskLevel = RISK_LEVELS.MEDIUM;
+            }
+            
+            await storage.updateOrgRiskProfile(orgProfile.id, {
+              riskScore: riskAssessment.score,
+              riskLevel
+            });
+            
+            if (riskAssessment.level === 'blocked') {
+              await storage.updateTrialAccount(trialId, {
+                status: TRIAL_STATUS.BLOCKED
+              });
+              
+              await storage.createFingerprintEvent({
+                fingerprintId: sharedDetection.matchingTrialIds[0] || fingerprintHash,
+                trialId,
+                eventType: 'blocked',
+                metadata: { 
+                  reason: 'high_risk_fingerprint_sharing',
+                  riskScore: riskAssessment.score,
+                  factors: riskAssessment.factors
+                },
+                ipAddress
+              });
+              
+              return res.status(403).json({ 
+                success: false, 
+                blocked: true,
+                reason: "Account blocked due to suspicious activity. Please contact support.",
+                riskLevel: 'blocked'
+              });
+            }
+          }
+        }
+        
+        const existingMatch = await storage.getDeviceFingerprintByHash(fingerprintHash);
+        if (existingMatch) {
+          await storage.createFingerprintEvent({
+            fingerprintId: existingMatch.id,
+            trialId,
+            eventType: 'suspicious',
+            metadata: { 
+              reason: 'fingerprint_reuse', 
+              originalTrialId: existingMatch.trialId,
+              matchingTrials: sharedDetection.matchingTrialIds
+            },
+            ipAddress
+          });
+          
+          return res.status(200).json({ 
+            success: true, 
+            warning: 'Device has been seen before',
+            fingerprintId: existingMatch.id
+          });
+        }
+      }
+      
+      const fingerprint = await storage.createDeviceFingerprint({
+        trialId,
+        fingerprintHash,
+        userAgent: signals.userAgent,
+        platform: signals.platform,
+        language: signals.language,
+        languages: signals.languages,
+        timezone: signals.timezone,
+        timezoneOffset: signals.timezoneOffset,
+        screenWidth: signals.screenWidth,
+        screenHeight: signals.screenHeight,
+        screenColorDepth: signals.screenColorDepth,
+        devicePixelRatio: signals.devicePixelRatio,
+        hardwareConcurrency: signals.hardwareConcurrency,
+        deviceMemory: signals.deviceMemory,
+        maxTouchPoints: signals.maxTouchPoints,
+        canvasHash: signals.canvasHash,
+        webglVendor: signals.webglVendor,
+        webglRenderer: signals.webglRenderer,
+        webglHash: signals.webglHash,
+        audioHash: signals.audioHash,
+        fontsHash: signals.fontsHash,
+        ipAddress,
+        ipSubnet,
+        connectionType: signals.connectionType,
+        localStorageId: signals.localStorageId,
+        sessionStorageId: signals.sessionStorageId,
+        cookieId: signals.cookieId,
+        trustScore: 100
+      });
+      
+      if (orgProfile && orgKey) {
+        const currentLinkedFingerprints = (orgProfile.linkedFingerprints as string[] | null) || [];
+        if (!currentLinkedFingerprints.includes(fingerprintHash)) {
+          await storage.updateOrgRiskProfile(orgProfile.id, {
+            linkedFingerprints: [...currentLinkedFingerprints, fingerprintHash]
+          });
+        }
+      }
+      
+      await storage.createFingerprintEvent({
+        fingerprintId: fingerprint.id,
+        trialId,
+        eventType: 'created',
+        metadata: { source: 'trial_registration' },
+        ipAddress
+      });
+      
+      res.status(201).json({ 
+        success: true, 
+        fingerprintId: fingerprint.id 
+      });
+    } catch (error) {
+      console.error("Error processing fingerprint:", error);
+      res.status(500).json({ message: "Failed to process fingerprint" });
+    }
+  });
+
+  app.get("/api/trial/status", async (req: Request, res: Response) => {
+    try {
+      const trialId = req.trialContext?.trialId || req.cookies?.trial_session;
+      
+      if (!trialId) {
+        return res.json({
+          isTrialMode: false,
+          trialId: null,
+          status: 'inactive',
+          outletLimit: 0,
+          vehicleLimit: 0,
+          outletCount: 0,
+          vehicleCount: 0,
+          outletsRemaining: 0,
+          vehiclesRemaining: 0,
+          daysRemaining: 0,
+          isExpired: false,
+          isBlocked: false,
+          upgradeRequired: false
+        } as TrialStatus);
+      }
+      
+      const status = await getTrialStatus(trialId);
+      res.json(status);
+    } catch (error) {
+      console.error("Error fetching trial status:", error);
+      res.status(500).json({ message: "Failed to fetch trial status" });
+    }
+  });
+
+  app.post("/api/trial/check-limits", async (req: Request, res: Response) => {
+    try {
+      const trialId = req.trialContext?.trialId || req.cookies?.trial_session;
+      
+      if (!trialId) {
+        return res.json({ allowed: true });
+      }
+      
+      const { operation, count = 1 } = req.body as { operation: 'add_outlet' | 'add_vehicle'; count?: number };
+      
+      if (!operation) {
+        return res.status(400).json({ message: "Operation type is required" });
+      }
+      
+      const trial = await storage.getTrialAccount(trialId);
+      const usage = await storage.getTrialUsage(trialId);
+      
+      if (!trial || !usage) {
+        return res.json({ allowed: true });
+      }
+      
+      if (trial.status === TRIAL_STATUS.BLOCKED) {
+        return res.json({ 
+          allowed: false, 
+          reason: "Trial account has been blocked" 
+        });
+      }
+      
+      if (trial.status === TRIAL_STATUS.EXPIRED || (trial.endDate && new Date(trial.endDate) < new Date())) {
+        return res.json({ 
+          allowed: false, 
+          reason: "Trial period has expired. Please upgrade to continue." 
+        });
+      }
+      
+      if (operation === 'add_outlet') {
+        const newCount = usage.outletCount + count;
+        if (newCount > trial.outletLimit) {
+          return res.json({ 
+            allowed: false, 
+            reason: `Outlet limit reached (${usage.outletCount}/${trial.outletLimit}). Upgrade to add more outlets.`,
+            currentCount: usage.outletCount,
+            limit: trial.outletLimit
+          });
+        }
+      }
+      
+      if (operation === 'add_vehicle') {
+        const newCount = usage.vehicleCount + count;
+        if (newCount > trial.vehicleLimit) {
+          return res.json({ 
+            allowed: false, 
+            reason: `Vehicle limit reached (${usage.vehicleCount}/${trial.vehicleLimit}). Upgrade to add more vehicles.`,
+            currentCount: usage.vehicleCount,
+            limit: trial.vehicleLimit
+          });
+        }
+      }
+      
+      res.json({ allowed: true });
+    } catch (error) {
+      console.error("Error checking trial limits:", error);
+      res.status(500).json({ message: "Failed to check trial limits" });
+    }
+  });
+
+  app.post("/api/outlets", async (req: Request, res: Response) => {
+    try {
+      const trialId = req.trialContext?.trialId || req.cookies?.trial_session;
+      
+      if (trialId) {
+        const trial = await storage.getTrialAccount(trialId);
+        const usage = await storage.getTrialUsage(trialId);
+        
+        if (trial && usage) {
+          if (trial.status === TRIAL_STATUS.BLOCKED) {
+            return res.status(402).json({ 
+              message: "Trial account has been blocked. Please contact support.",
+              upgradeRequired: true
+            });
+          }
+          
+          if (trial.status === TRIAL_STATUS.EXPIRED || (trial.endDate && new Date(trial.endDate) < new Date())) {
+            return res.status(402).json({ 
+              message: "Trial period has expired. Please upgrade to continue.",
+              upgradeRequired: true
+            });
+          }
+          
+          if (usage.outletCount >= trial.outletLimit) {
+            return res.status(402).json({ 
+              message: `Outlet limit reached (${usage.outletCount}/${trial.outletLimit}). Upgrade to add more outlets.`,
+              upgradeRequired: true,
+              currentCount: usage.outletCount,
+              limit: trial.outletLimit
+            });
+          }
+        }
+      }
+      
+      const parsed = insertOutletSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Invalid outlet data", errors: parsed.error.errors });
+      }
+      
+      const outlet = await storage.createOutlet(parsed.data);
+      
+      if (trialId) {
+        await storage.incrementOutletCount(trialId, 1);
+      }
+      
+      res.status(201).json(outlet);
+    } catch (error) {
+      console.error("Error creating outlet:", error);
+      res.status(500).json({ message: "Failed to create outlet" });
+    }
+  });
+
   // Dashboard metrics
   app.get("/api/dashboard/metrics", async (_req, res) => {
     try {
@@ -2638,15 +3202,54 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Create vehicle
-  app.post("/api/vehicles", async (req, res) => {
+  app.post("/api/vehicles", async (req: Request, res: Response) => {
     try {
+      const trialId = req.trialContext?.trialId || req.cookies?.trial_session;
+      
+      if (trialId) {
+        const trial = await storage.getTrialAccount(trialId);
+        const usage = await storage.getTrialUsage(trialId);
+        
+        if (trial && usage) {
+          if (trial.status === TRIAL_STATUS.BLOCKED) {
+            return res.status(402).json({ 
+              message: "Trial account has been blocked. Please contact support.",
+              upgradeRequired: true
+            });
+          }
+          
+          if (trial.status === TRIAL_STATUS.EXPIRED || (trial.endDate && new Date(trial.endDate) < new Date())) {
+            return res.status(402).json({ 
+              message: "Trial period has expired. Please upgrade to continue.",
+              upgradeRequired: true
+            });
+          }
+          
+          if (usage.vehicleCount >= trial.vehicleLimit) {
+            return res.status(402).json({ 
+              message: `Vehicle limit reached (${usage.vehicleCount}/${trial.vehicleLimit}). Upgrade to add more vehicles.`,
+              upgradeRequired: true,
+              currentCount: usage.vehicleCount,
+              limit: trial.vehicleLimit
+            });
+          }
+        }
+      }
+      
       const parsed = insertVehicleSchema.safeParse(req.body);
       if (!parsed.success) {
         return res.status(400).json({ message: "Invalid vehicle data", errors: parsed.error.errors });
       }
+      
       const vehicle = await storage.createVehicle(parsed.data);
+      
+      if (trialId) {
+        await storage.incrementVehicleCount(trialId, 1);
+      }
+      
       res.status(201).json(vehicle);
     } catch (error) {
+      console.error("Error creating vehicle:", error);
       res.status(500).json({ message: "Failed to create vehicle" });
     }
   });

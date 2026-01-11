@@ -26,7 +26,19 @@ import {
   type RoleHierarchy,
   type InsertRoleHierarchy,
   type RoleSchedule,
-  type InsertRoleSchedule
+  type InsertRoleSchedule,
+  type TrialAccount,
+  type InsertTrialAccount,
+  type TrialUsage,
+  type InsertTrialUsage,
+  type DeviceFingerprint,
+  type InsertDeviceFingerprint,
+  type FingerprintEvent,
+  type InsertFingerprintEvent,
+  type OrgRiskProfile,
+  type InsertOrgRiskProfile,
+  type TrialConversion,
+  type InsertTrialConversion
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 
@@ -126,6 +138,37 @@ export interface IStorage {
   deleteRoleSchedulesByRepId(repId: string): Promise<void>;
   deleteRoleSchedulesByHierarchyId(hierarchyId: string): Promise<void>;
   clearRoleSchedules(): Promise<void>;
+
+  // Trial Accounts
+  createTrialAccount(data: InsertTrialAccount): Promise<TrialAccount>;
+  getTrialAccount(id: string): Promise<TrialAccount | undefined>;
+  getTrialAccountByEmail(email: string): Promise<TrialAccount | undefined>;
+  updateTrialAccount(id: string, data: Partial<InsertTrialAccount>): Promise<TrialAccount | undefined>;
+  getActiveTrialByOrgKey(orgKey: string): Promise<TrialAccount | undefined>;
+
+  // Trial Usage
+  createTrialUsage(trialId: string): Promise<TrialUsage>;
+  getTrialUsage(trialId: string): Promise<TrialUsage | undefined>;
+  incrementOutletCount(trialId: string, count?: number): Promise<TrialUsage | undefined>;
+  incrementVehicleCount(trialId: string, count?: number): Promise<TrialUsage | undefined>;
+  decrementOutletCount(trialId: string, count?: number): Promise<TrialUsage | undefined>;
+  decrementVehicleCount(trialId: string, count?: number): Promise<TrialUsage | undefined>;
+
+  // Device Fingerprints
+  createDeviceFingerprint(data: InsertDeviceFingerprint): Promise<DeviceFingerprint>;
+  getDeviceFingerprintByHash(hash: string): Promise<DeviceFingerprint | undefined>;
+  getDeviceFingerprintsByTrialId(trialId: string): Promise<DeviceFingerprint[]>;
+  updateFingerprintTrustScore(id: string, score: number, anomalyFlags?: unknown): Promise<DeviceFingerprint | undefined>;
+  createFingerprintEvent(data: InsertFingerprintEvent): Promise<FingerprintEvent>;
+
+  // Org Risk Profiles
+  createOrgRiskProfile(data: InsertOrgRiskProfile): Promise<OrgRiskProfile>;
+  getOrgRiskProfileByKey(orgKey: string): Promise<OrgRiskProfile | undefined>;
+  updateOrgRiskProfile(id: string, data: Partial<InsertOrgRiskProfile>): Promise<OrgRiskProfile | undefined>;
+  incrementOrgTrialCount(orgKey: string): Promise<OrgRiskProfile | undefined>;
+
+  // Trial Conversions
+  createTrialConversion(data: InsertTrialConversion): Promise<TrialConversion>;
   
   // Clear all data
   clearAll(): Promise<void>;
@@ -144,6 +187,12 @@ export class MemStorage implements IStorage {
   private vehicleMileageSnapshots: Map<string, VehicleMileageSnapshot>;
   private roleHierarchies: Map<string, RoleHierarchy>;
   private roleSchedules: Map<string, RoleSchedule>;
+  private trialAccounts: Map<string, TrialAccount>;
+  private trialUsages: Map<string, TrialUsage>;
+  private deviceFingerprints: Map<string, DeviceFingerprint>;
+  private fingerprintEvents: Map<string, FingerprintEvent>;
+  private orgRiskProfiles: Map<string, OrgRiskProfile>;
+  private trialConversions: Map<string, TrialConversion>;
 
   constructor() {
     this.outlets = new Map();
@@ -158,6 +207,12 @@ export class MemStorage implements IStorage {
     this.maintenancePolicies = new Map();
     this.maintenanceForecasts = new Map();
     this.vehicleMileageSnapshots = new Map();
+    this.trialAccounts = new Map();
+    this.trialUsages = new Map();
+    this.deviceFingerprints = new Map();
+    this.fingerprintEvents = new Map();
+    this.orgRiskProfiles = new Map();
+    this.trialConversions = new Map();
     
     // Initialize default maintenance policies
     this.initializeDefaultPolicies();
@@ -1196,6 +1251,301 @@ export class MemStorage implements IStorage {
     this.roleSchedules.clear();
   }
 
+  // Trial Account Methods
+  async createTrialAccount(data: InsertTrialAccount): Promise<TrialAccount> {
+    const id = randomUUID();
+    const now = new Date();
+    const trialAccount: TrialAccount = {
+      ...data,
+      id,
+      status: data.status || 'active',
+      outletLimit: data.outletLimit ?? 100,
+      vehicleLimit: data.vehicleLimit ?? 2,
+      startDate: data.startDate || now,
+      endDate: data.endDate || null,
+      consentGiven: data.consentGiven ?? false,
+      consentTimestamp: data.consentTimestamp || null,
+      companyName: data.companyName || null,
+      ipAddress: data.ipAddress || null,
+      ipSubnet: data.ipSubnet || null,
+      emailDomain: data.emailDomain || null,
+      orgKey: data.orgKey || null,
+      metadata: data.metadata || null,
+      createdAt: now,
+      updatedAt: now
+    };
+    this.trialAccounts.set(id, trialAccount);
+    return trialAccount;
+  }
+
+  async getTrialAccount(id: string): Promise<TrialAccount | undefined> {
+    return this.trialAccounts.get(id);
+  }
+
+  async getTrialAccountByEmail(email: string): Promise<TrialAccount | undefined> {
+    return Array.from(this.trialAccounts.values()).find(t => t.email === email);
+  }
+
+  async updateTrialAccount(id: string, data: Partial<InsertTrialAccount>): Promise<TrialAccount | undefined> {
+    const existing = this.trialAccounts.get(id);
+    if (!existing) return undefined;
+    
+    const updated: TrialAccount = {
+      ...existing,
+      ...data,
+      updatedAt: new Date()
+    };
+    this.trialAccounts.set(id, updated);
+    return updated;
+  }
+
+  async getActiveTrialByOrgKey(orgKey: string): Promise<TrialAccount | undefined> {
+    return Array.from(this.trialAccounts.values()).find(
+      t => t.orgKey === orgKey && t.status === 'active'
+    );
+  }
+
+  // Trial Usage Methods
+  async createTrialUsage(trialId: string): Promise<TrialUsage> {
+    const id = randomUUID();
+    const now = new Date();
+    const usage: TrialUsage = {
+      id,
+      trialId,
+      outletCount: 0,
+      vehicleCount: 0,
+      optimizationRuns: 0,
+      lastActivityAt: now,
+      createdAt: now,
+      updatedAt: now
+    };
+    this.trialUsages.set(trialId, usage);
+    return usage;
+  }
+
+  async getTrialUsage(trialId: string): Promise<TrialUsage | undefined> {
+    return this.trialUsages.get(trialId);
+  }
+
+  async incrementOutletCount(trialId: string, count: number = 1): Promise<TrialUsage | undefined> {
+    const usage = this.trialUsages.get(trialId);
+    if (!usage) return undefined;
+    
+    const updated: TrialUsage = {
+      ...usage,
+      outletCount: usage.outletCount + count,
+      lastActivityAt: new Date(),
+      updatedAt: new Date()
+    };
+    this.trialUsages.set(trialId, updated);
+    return updated;
+  }
+
+  async incrementVehicleCount(trialId: string, count: number = 1): Promise<TrialUsage | undefined> {
+    const usage = this.trialUsages.get(trialId);
+    if (!usage) return undefined;
+    
+    const updated: TrialUsage = {
+      ...usage,
+      vehicleCount: usage.vehicleCount + count,
+      lastActivityAt: new Date(),
+      updatedAt: new Date()
+    };
+    this.trialUsages.set(trialId, updated);
+    return updated;
+  }
+
+  async decrementOutletCount(trialId: string, count: number = 1): Promise<TrialUsage | undefined> {
+    const usage = this.trialUsages.get(trialId);
+    if (!usage) return undefined;
+    
+    const updated: TrialUsage = {
+      ...usage,
+      outletCount: Math.max(0, usage.outletCount - count),
+      lastActivityAt: new Date(),
+      updatedAt: new Date()
+    };
+    this.trialUsages.set(trialId, updated);
+    return updated;
+  }
+
+  async decrementVehicleCount(trialId: string, count: number = 1): Promise<TrialUsage | undefined> {
+    const usage = this.trialUsages.get(trialId);
+    if (!usage) return undefined;
+    
+    const updated: TrialUsage = {
+      ...usage,
+      vehicleCount: Math.max(0, usage.vehicleCount - count),
+      lastActivityAt: new Date(),
+      updatedAt: new Date()
+    };
+    this.trialUsages.set(trialId, updated);
+    return updated;
+  }
+
+  // Device Fingerprint Methods
+  async createDeviceFingerprint(data: InsertDeviceFingerprint): Promise<DeviceFingerprint> {
+    const id = randomUUID();
+    const now = new Date();
+    const fingerprint: DeviceFingerprint = {
+      ...data,
+      id,
+      trustScore: data.trustScore ?? 100,
+      anomalyFlags: data.anomalyFlags || null,
+      userAgent: data.userAgent || null,
+      platform: data.platform || null,
+      language: data.language || null,
+      languages: data.languages || null,
+      timezone: data.timezone || null,
+      timezoneOffset: data.timezoneOffset || null,
+      screenWidth: data.screenWidth || null,
+      screenHeight: data.screenHeight || null,
+      screenColorDepth: data.screenColorDepth || null,
+      devicePixelRatio: data.devicePixelRatio || null,
+      hardwareConcurrency: data.hardwareConcurrency || null,
+      deviceMemory: data.deviceMemory || null,
+      maxTouchPoints: data.maxTouchPoints || null,
+      canvasHash: data.canvasHash || null,
+      webglVendor: data.webglVendor || null,
+      webglRenderer: data.webglRenderer || null,
+      webglHash: data.webglHash || null,
+      audioHash: data.audioHash || null,
+      fontsHash: data.fontsHash || null,
+      ipAddress: data.ipAddress || null,
+      ipSubnet: data.ipSubnet || null,
+      connectionType: data.connectionType || null,
+      localStorageId: data.localStorageId || null,
+      sessionStorageId: data.sessionStorageId || null,
+      cookieId: data.cookieId || null,
+      firstSeenAt: data.firstSeenAt || now,
+      lastSeenAt: data.lastSeenAt || now,
+      createdAt: now
+    };
+    this.deviceFingerprints.set(id, fingerprint);
+    return fingerprint;
+  }
+
+  async getDeviceFingerprintByHash(hash: string): Promise<DeviceFingerprint | undefined> {
+    return Array.from(this.deviceFingerprints.values()).find(
+      f => f.fingerprintHash === hash
+    );
+  }
+
+  async getDeviceFingerprintsByTrialId(trialId: string): Promise<DeviceFingerprint[]> {
+    return Array.from(this.deviceFingerprints.values()).filter(
+      f => f.trialId === trialId
+    );
+  }
+
+  async updateFingerprintTrustScore(id: string, score: number, anomalyFlags?: unknown): Promise<DeviceFingerprint | undefined> {
+    const fingerprint = this.deviceFingerprints.get(id);
+    if (!fingerprint) return undefined;
+    
+    const updated: DeviceFingerprint = {
+      ...fingerprint,
+      trustScore: score,
+      anomalyFlags: anomalyFlags !== undefined ? anomalyFlags : fingerprint.anomalyFlags,
+      lastSeenAt: new Date()
+    };
+    this.deviceFingerprints.set(id, updated);
+    return updated;
+  }
+
+  async createFingerprintEvent(data: InsertFingerprintEvent): Promise<FingerprintEvent> {
+    const id = randomUUID();
+    const event: FingerprintEvent = {
+      ...data,
+      id,
+      metadata: data.metadata || null,
+      ipAddress: data.ipAddress || null,
+      createdAt: new Date()
+    };
+    this.fingerprintEvents.set(id, event);
+    return event;
+  }
+
+  // Org Risk Profile Methods
+  async createOrgRiskProfile(data: InsertOrgRiskProfile): Promise<OrgRiskProfile> {
+    const id = randomUUID();
+    const now = new Date();
+    const profile: OrgRiskProfile = {
+      ...data,
+      id,
+      trialCount: data.trialCount ?? 0,
+      activeTrialCount: data.activeTrialCount ?? 0,
+      blockedTrialCount: data.blockedTrialCount ?? 0,
+      riskLevel: data.riskLevel || 'low',
+      riskScore: data.riskScore ?? 0,
+      riskFactors: data.riskFactors || null,
+      ipSubnet: data.ipSubnet || null,
+      emailDomain: data.emailDomain || null,
+      reverseDns: data.reverseDns || null,
+      geoLocation: data.geoLocation || null,
+      linkedTrialIds: data.linkedTrialIds || null,
+      linkedFingerprints: data.linkedFingerprints || null,
+      sharedSignals: data.sharedSignals || null,
+      blockedUntil: data.blockedUntil || null,
+      blockReason: data.blockReason || null,
+      firstSeenAt: data.firstSeenAt || now,
+      lastActivityAt: data.lastActivityAt || now,
+      createdAt: now,
+      updatedAt: now
+    };
+    this.orgRiskProfiles.set(id, profile);
+    return profile;
+  }
+
+  async getOrgRiskProfileByKey(orgKey: string): Promise<OrgRiskProfile | undefined> {
+    return Array.from(this.orgRiskProfiles.values()).find(
+      p => p.orgKey === orgKey
+    );
+  }
+
+  async updateOrgRiskProfile(id: string, data: Partial<InsertOrgRiskProfile>): Promise<OrgRiskProfile | undefined> {
+    const profile = this.orgRiskProfiles.get(id);
+    if (!profile) return undefined;
+    
+    const updated: OrgRiskProfile = {
+      ...profile,
+      ...data,
+      updatedAt: new Date()
+    };
+    this.orgRiskProfiles.set(id, updated);
+    return updated;
+  }
+
+  async incrementOrgTrialCount(orgKey: string): Promise<OrgRiskProfile | undefined> {
+    const profile = await this.getOrgRiskProfileByKey(orgKey);
+    if (!profile) return undefined;
+    
+    const updated: OrgRiskProfile = {
+      ...profile,
+      trialCount: profile.trialCount + 1,
+      activeTrialCount: profile.activeTrialCount + 1,
+      lastActivityAt: new Date(),
+      updatedAt: new Date()
+    };
+    this.orgRiskProfiles.set(profile.id, updated);
+    return updated;
+  }
+
+  // Trial Conversion Methods
+  async createTrialConversion(data: InsertTrialConversion): Promise<TrialConversion> {
+    const id = randomUUID();
+    const now = new Date();
+    const conversion: TrialConversion = {
+      ...data,
+      id,
+      planType: data.planType || null,
+      conversionValue: data.conversionValue || null,
+      metadata: data.metadata || null,
+      convertedAt: data.convertedAt || now,
+      createdAt: now
+    };
+    this.trialConversions.set(id, conversion);
+    return conversion;
+  }
+
   async clearAll(): Promise<void> {
     this.outlets.clear();
     this.reps.clear();
@@ -1205,6 +1555,12 @@ export class MemStorage implements IStorage {
     this.vehicleMileageSnapshots.clear();
     this.roleHierarchies.clear();
     this.roleSchedules.clear();
+    this.trialAccounts.clear();
+    this.trialUsages.clear();
+    this.deviceFingerprints.clear();
+    this.fingerprintEvents.clear();
+    this.orgRiskProfiles.clear();
+    this.trialConversions.clear();
   }
 
   private haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {

@@ -3,15 +3,20 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useToast } from "@/hooks/use-toast";
-import { Upload, CloudUpload } from "lucide-react";
+import { useTrial } from "@/hooks/use-trial";
+import { Upload, CloudUpload, AlertTriangle } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
+import UpgradeModal from "@/components/upgrade-modal";
 import type { FileAnalysis } from "@shared/schema";
 
 export default function FileUpload() {
   const [isDragOver, setIsDragOver] = useState(false);
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const { status, canAddOutlet } = useTrial();
 
   const { data: analysis } = useQuery<FileAnalysis>({
     queryKey: ["/api/analysis"],
@@ -28,6 +33,10 @@ export default function FileUpload() {
       });
       
       if (!response.ok) {
+        if (response.status === 402) {
+          setShowUpgradeModal(true);
+          throw new Error("Upgrade required to add more outlets");
+        }
         const error = await response.json();
         throw new Error(error.message || "Upload failed");
       }
@@ -42,18 +51,26 @@ export default function FileUpload() {
       queryClient.invalidateQueries({ queryKey: ["/api/analysis"] });
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard/metrics"] });
       queryClient.invalidateQueries({ queryKey: ["/api/outlets"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/trial/status"] });
     },
     onError: (error: Error) => {
-      toast({
-        title: "Upload failed",
-        description: error.message,
-        variant: "destructive",
-      });
+      if (!error.message.includes("Upgrade required")) {
+        toast({
+          title: "Upload failed",
+          description: error.message,
+          variant: "destructive",
+        });
+      }
     },
   });
 
   const handleFileUpload = (file: File) => {
     if (!file) return;
+
+    if (!canAddOutlet) {
+      setShowUpgradeModal(true);
+      return;
+    }
 
     const validTypes = [
       "text/csv",
@@ -107,6 +124,7 @@ export default function FileUpload() {
   };
 
   return (
+    <>
     <Card className="border-2 border-primary">
       <CardHeader>
         <CardTitle className="flex items-center">
@@ -115,6 +133,22 @@ export default function FileUpload() {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-6">
+        {status?.outletsRemaining !== undefined && status.outletsRemaining <= 10 && status.outletsRemaining > 0 && (
+          <Alert className="border-amber-200 bg-amber-50">
+            <AlertTriangle className="h-4 w-4 text-amber-600" />
+            <AlertDescription className="text-amber-800">
+              Only {status.outletsRemaining} outlet{status.outletsRemaining !== 1 ? 's' : ''} remaining in your trial. Upgrade to add unlimited outlets.
+            </AlertDescription>
+          </Alert>
+        )}
+        {status?.outletsRemaining !== undefined && status.outletsRemaining <= 0 && (
+          <Alert className="border-red-200 bg-red-50">
+            <AlertTriangle className="h-4 w-4 text-red-600" />
+            <AlertDescription className="text-red-800">
+              You've reached your outlet limit. Upgrade to add more outlets.
+            </AlertDescription>
+          </Alert>
+        )}
         {/* File Upload Area */}
         <div
           className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors cursor-pointer ${
@@ -166,5 +200,14 @@ export default function FileUpload() {
         )}
       </CardContent>
     </Card>
+    
+    <UpgradeModal
+      isOpen={showUpgradeModal}
+      onClose={() => setShowUpgradeModal(false)}
+      limitType="outlet"
+      currentCount={status?.outletCount ?? 0}
+      maxCount={status?.outletLimit ?? 100}
+    />
+    </>
   );
 }
