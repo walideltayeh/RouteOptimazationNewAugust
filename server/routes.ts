@@ -1617,21 +1617,79 @@ async function getTrialStatus(trialId: string): Promise<TrialStatus> {
   };
 }
 
+// Superuser credentials
+const SUPERUSER = {
+  email: 'walid@walid.com',
+  password: 'Walid1981@'
+};
+
 export async function registerRoutes(app: Express): Promise<Server> {
   
   app.use((req: Request, _res: Response, next: NextFunction) => {
     const ipAddress = extractIpAddress(req);
     const ipSubnet = extractIpSubnet(ipAddress);
     const trialCookie = req.cookies?.trial_session || null;
+    const superuserCookie = req.cookies?.superuser_session || null;
     
     req.trialContext = {
       ipAddress,
       ipSubnet,
       trialId: trialCookie,
-      isTrialMode: !!trialCookie
+      isTrialMode: !!trialCookie && !superuserCookie
     };
     
+    // Add superuser flag to request
+    (req as any).isSuperuser = !!superuserCookie;
+    
     next();
+  });
+
+  // Superuser login endpoint
+  app.post("/api/auth/login", async (req: Request, res: Response) => {
+    try {
+      const { email, password } = req.body;
+      
+      if (email === SUPERUSER.email && password === SUPERUSER.password) {
+        res.cookie('superuser_session', 'authenticated', {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+          sameSite: 'lax'
+        });
+        
+        // Clear trial session if present
+        res.clearCookie('trial_session');
+        
+        return res.json({
+          success: true,
+          message: "Login successful",
+          isSuperuser: true
+        });
+      }
+      
+      return res.status(401).json({
+        message: "Invalid credentials"
+      });
+    } catch (error) {
+      console.error("Login error:", error);
+      res.status(500).json({ message: "Login failed" });
+    }
+  });
+
+  // Superuser logout endpoint
+  app.post("/api/auth/logout", async (_req: Request, res: Response) => {
+    res.clearCookie('superuser_session');
+    res.clearCookie('trial_session');
+    res.json({ success: true, message: "Logged out" });
+  });
+
+  // Check auth status
+  app.get("/api/auth/status", async (req: Request, res: Response) => {
+    const isSuperuser = !!(req as any).isSuperuser;
+    res.json({
+      isAuthenticated: isSuperuser,
+      isSuperuser
+    });
   });
 
   app.post("/api/trial/start", async (req: Request, res: Response) => {
@@ -1644,6 +1702,45 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       if (!consentGiven) {
         return res.status(400).json({ message: "Consent is required to start a trial" });
+      }
+      
+      // Check if trial already exists for this email
+      const existingTrial = await storage.getTrialAccountByEmail(email);
+      if (existingTrial) {
+        // Check if the existing trial is still valid
+        const now = new Date();
+        const endDate = existingTrial.endDate ? new Date(existingTrial.endDate) : null;
+        const isExpired = existingTrial.status === TRIAL_STATUS.EXPIRED || (endDate ? endDate < now : false);
+        const isBlocked = existingTrial.status === TRIAL_STATUS.BLOCKED;
+        
+        if (isBlocked) {
+          return res.status(403).json({
+            message: "This email has been blocked. Please contact support or upgrade.",
+            blocked: true,
+            upgradeRequired: true
+          });
+        }
+        
+        if (isExpired) {
+          return res.status(402).json({
+            message: "Your trial has expired. Please upgrade to continue.",
+            upgradeRequired: true
+          });
+        }
+        
+        // Return the existing trial instead of creating a new one
+        res.cookie('trial_session', existingTrial.id, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          maxAge: TRIAL_LIMITS.TRIAL_DURATION_DAYS * 24 * 60 * 60 * 1000,
+          sameSite: 'lax'
+        });
+        
+        const status = await getTrialStatus(existingTrial.id);
+        return res.status(200).json({
+          ...status,
+          message: "Welcome back! Your existing trial has been restored."
+        });
       }
       
       const ipAddress = req.trialContext?.ipAddress || extractIpAddress(req);
@@ -2218,6 +2315,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
           scheduling: null
         }
       });
+
+      // Update trial usage if in trial mode
+      const uploadTrialId = req.trialContext?.trialId || req.cookies?.trial_session;
+      if (uploadTrialId) {
+        await storage.setOutletCount(uploadTrialId, outlets.length);
+      }
 
       res.json({
         success: true,
