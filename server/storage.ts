@@ -155,6 +155,7 @@ export interface IStorage {
   decrementVehicleCount(trialId: string, count?: number): Promise<TrialUsage | undefined>;
   setOutletCount(trialId: string, count: number): Promise<TrialUsage | undefined>;
   setVehicleCount(trialId: string, count: number): Promise<TrialUsage | undefined>;
+  incrementOptimizationRuns(trialId: string): Promise<TrialUsage | undefined>;
 
   // Device Fingerprints
   createDeviceFingerprint(data: InsertDeviceFingerprint): Promise<DeviceFingerprint>;
@@ -1406,6 +1407,20 @@ export class MemStorage implements IStorage {
     const updated: TrialUsage = {
       ...usage,
       vehicleCount: count,
+      lastActivityAt: new Date(),
+      updatedAt: new Date()
+    };
+    this.trialUsages.set(trialId, updated);
+    return updated;
+  }
+
+  async incrementOptimizationRuns(trialId: string): Promise<TrialUsage | undefined> {
+    const usage = this.trialUsages.get(trialId);
+    if (!usage) return undefined;
+    
+    const updated: TrialUsage = {
+      ...usage,
+      optimizationRuns: usage.optimizationRuns + 1,
       lastActivityAt: new Date(),
       updatedAt: new Date()
     };

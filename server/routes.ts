@@ -2843,16 +2843,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Route optimization
   app.post("/api/optimize", async (req, res) => {
-    // Check trial restrictions - optimization not allowed for trial users
+    // Check trial restrictions - trial users can run 1 optimization only
     const isSuperuser = !!(req as any).isSuperuser;
     const trialId = req.trialContext?.trialId || req.cookies?.trial_session;
     
     if (trialId && !isSuperuser) {
-      return res.status(402).json({
-        message: "Route optimization is not available during the trial period. Please upgrade to access this feature.",
-        upgradeRequired: true,
-        feature: 'optimization'
-      });
+      const trialUsage = await storage.getTrialUsage(trialId);
+      if (trialUsage && trialUsage.optimizationRuns >= 1) {
+        return res.status(402).json({
+          message: "You have reached the optimization limit for your trial (1 run). Please upgrade to run more optimizations.",
+          upgradeRequired: true,
+          feature: 'optimization'
+        });
+      }
     }
     
     const progressId = req.body.progressId || '';
@@ -3123,6 +3126,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const updatedReps = await storage.getReps();
 
       if (progressId) progressManager.complete(progressId);
+      
+      // Increment trial optimization run count if in trial mode
+      if (trialId && !isSuperuser) {
+        await storage.incrementOptimizationRuns(trialId);
+      }
       
       res.json({
         success: true,
