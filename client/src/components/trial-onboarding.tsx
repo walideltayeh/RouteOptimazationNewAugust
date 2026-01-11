@@ -33,8 +33,10 @@ import {
   ArrowRight,
   Building2,
   Mail,
-  Loader2
+  Loader2,
+  LogIn
 } from "lucide-react";
+import LoginModal from "./login-modal";
 
 const accountFormSchema = z.object({
   email: z.string().email("Please enter a valid email address"),
@@ -61,7 +63,13 @@ export default function TrialOnboarding({ open, onComplete }: TrialOnboardingPro
   const [step, setStep] = useState<OnboardingStep>("welcome");
   const [accountData, setAccountData] = useState<AccountFormValues | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showLoginModal, setShowLoginModal] = useState(false);
   const { toast } = useToast();
+
+  const handleAdminLoginSuccess = () => {
+    setShowLoginModal(false);
+    onComplete();
+  };
 
   const accountForm = useForm<AccountFormValues>({
     resolver: zodResolver(accountFormSchema),
@@ -197,8 +205,33 @@ export default function TrialOnboarding({ open, onComplete }: TrialOnboardingPro
               Start Free Trial
               <ArrowRight className="ml-2 h-4 w-4" />
             </Button>
+            
+            <div className="relative my-4">
+              <div className="absolute inset-0 flex items-center">
+                <span className="w-full border-t" />
+              </div>
+              <div className="relative flex justify-center text-xs uppercase">
+                <span className="bg-background px-2 text-muted-foreground">Or</span>
+              </div>
+            </div>
+            
+            <Button 
+              variant="outline" 
+              onClick={() => setShowLoginModal(true)} 
+              className="w-full"
+              size="lg"
+            >
+              <LogIn className="mr-2 h-4 w-4" />
+              Admin / Super User Login
+            </Button>
           </>
         )}
+
+        <LoginModal 
+          isOpen={showLoginModal} 
+          onClose={() => setShowLoginModal(false)} 
+          onLoginSuccess={handleAdminLoginSuccess}
+        />
 
         {step === "account" && (
           <>
