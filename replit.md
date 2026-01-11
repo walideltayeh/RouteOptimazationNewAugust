@@ -34,6 +34,46 @@ Preferred communication style: Simple, everyday language.
 - **Dynamic Zone Sizing**: Clustering algorithms respect user-defined min/max outlet parameters.
 - **Hierarchy-Based Visit Follow-Up**: Role hierarchy system where Merchandisers and Collection Agents automatically follow Sales Rep routes with configurable day offsets (e.g., Rep Day 0, Merchandiser Day +1, Collection Agent Day +2). Preserves outlet order and route sequence across all roles with automatic cascade regeneration when Rep schedule changes.
 
+### Trial Management System
+A comprehensive 360° trial management solution with strict anti-abuse measures:
+
+**Trial Limits:**
+- Maximum 100 outlets per trial account
+- Maximum 2 vehicles per trial account
+- 14-day trial duration
+- Enforced at both UI and backend levels with 402 responses when exceeded
+
+**Anti-Abuse & Device Fingerprinting:**
+- Browser signals: userAgent, platform, language, timezone
+- Hardware signals: CPU cores, device memory, screen dimensions
+- Canvas, WebGL, and audio fingerprinting for unique device identification
+- Persistent identifiers via localStorage, sessionStorage, and cookies
+- SHA-256 hashing for privacy-compliant fingerprint storage
+- Server-side fingerprint validation (doesn't trust client hash)
+
+**Office-Level Detection:**
+- IP subnet (/24) extraction for network grouping
+- Email domain analysis with public provider normalization
+- Org key generation combining IP + domain signals
+- Shared fingerprint detection across trials
+- Risk scoring with automatic escalation (low → medium → high → blocked)
+- Velocity tracking (time between trials from same org)
+
+**UI Components:**
+- Trial onboarding modal with multi-step consent flow
+- Trial banner showing usage stats and days remaining
+- Upgrade modal for limit-reached scenarios
+- Usage indicators in outlet/vehicle forms
+- Warning banners when approaching limits
+
+**Database Tables:**
+- trialAccounts: Core trial data with status and limits
+- trialUsage: Usage tracking (outlet/vehicle counts)
+- deviceFingerprints: Device identification data
+- fingerprintEvents: Audit trail for security
+- orgRiskProfiles: Organization-level risk assessment
+- trialConversions: Upgrade tracking
+
 ### Technical Implementations
 - **Monorepo Structure**: Clear separation between client, server, and shared code.
 - **Type Safety**: Shared TypeScript schemas between client and server.
