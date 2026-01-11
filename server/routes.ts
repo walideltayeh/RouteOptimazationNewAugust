@@ -1617,10 +1617,10 @@ async function getTrialStatus(trialId: string): Promise<TrialStatus> {
   };
 }
 
-// Superuser credentials
+// Superuser credentials from environment variables with fallback
 const SUPERUSER = {
-  email: 'walid@walid.com',
-  password: 'Walid1981@'
+  email: process.env.SUPERUSER_EMAIL || 'walid@walid.com',
+  password: process.env.SUPERUSER_PASSWORD || 'Walid1981@'
 };
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -1686,9 +1686,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Check auth status
   app.get("/api/auth/status", async (req: Request, res: Response) => {
     const isSuperuser = !!(req as any).isSuperuser;
+    const trialId = req.trialContext?.trialId || req.cookies?.trial_session;
+    const isTrialMode = !!trialId && !isSuperuser;
+    
     res.json({
       isAuthenticated: isSuperuser,
-      isSuperuser
+      isSuperuser,
+      isTrialMode
     });
   });
 
@@ -2814,6 +2818,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Route optimization
   app.post("/api/optimize", async (req, res) => {
+    // Check trial restrictions - optimization not allowed for trial users
+    const isSuperuser = !!(req as any).isSuperuser;
+    const trialId = req.trialContext?.trialId || req.cookies?.trial_session;
+    
+    if (trialId && !isSuperuser) {
+      return res.status(402).json({
+        message: "Route optimization is not available during the trial period. Please upgrade to access this feature.",
+        upgradeRequired: true,
+        feature: 'optimization'
+      });
+    }
+    
     const progressId = req.body.progressId || '';
     
     // Helper to yield to event loop so SSE can flush

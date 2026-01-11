@@ -1,4 +1,7 @@
 import { Link, useLocation } from "wouter";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { queryClient, apiRequest } from "@/lib/queryClient";
+import { useState } from "react";
 import { 
   BarChart3, 
   Upload, 
@@ -8,8 +11,13 @@ import {
   FileText,
   Route,
   Car,
-  Users
+  Users,
+  LogIn,
+  LogOut,
+  Shield
 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import LoginModal from "@/components/login-modal";
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: BarChart3 },
@@ -18,8 +26,30 @@ const navigation = [
   { name: "Vehicles", href: "/vehicles", icon: Car },
 ];
 
+interface AuthStatus {
+  isAuthenticated: boolean;
+  isSuperuser: boolean;
+  isTrialMode: boolean;
+}
+
 export default function Sidebar() {
   const [location] = useLocation();
+  const [showLoginModal, setShowLoginModal] = useState(false);
+  
+  const { data: authStatus } = useQuery<AuthStatus>({
+    queryKey: ["/api/auth/status"],
+  });
+  
+  const logoutMutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("POST", "/api/auth/logout");
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/status"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/trial/status"] });
+      window.location.reload();
+    }
+  });
 
   return (
     <aside className="w-64 bg-white shadow-lg border-r border-gray-200 flex flex-col">
@@ -53,17 +83,44 @@ export default function Sidebar() {
         </ul>
       </nav>
       
-      <div className="p-4 border-t border-gray-200">
-        <div className="flex items-center">
-          <div className="w-8 h-8 bg-primary rounded-full flex items-center justify-center text-white text-sm font-medium">
-            JD
+      <div className="p-4 border-t border-gray-200 space-y-3">
+        {authStatus?.isSuperuser ? (
+          <div className="flex items-center justify-between">
+            <div className="flex items-center">
+              <div className="w-8 h-8 bg-green-600 rounded-full flex items-center justify-center text-white text-sm font-medium">
+                <Shield className="h-4 w-4" />
+              </div>
+              <div className="ml-3">
+                <p className="text-sm font-medium text-gray-900">Admin</p>
+                <p className="text-xs text-green-600">Full Access</p>
+              </div>
+            </div>
+            <Button 
+              variant="ghost" 
+              size="sm"
+              onClick={() => logoutMutation.mutate()}
+              disabled={logoutMutation.isPending}
+            >
+              <LogOut className="h-4 w-4" />
+            </Button>
           </div>
-          <div className="ml-3">
-            <p className="text-sm font-medium text-gray-900">John Doe</p>
-            <p className="text-xs text-gray-500">Territory Manager</p>
-          </div>
-        </div>
+        ) : (
+          <Button 
+            variant="outline" 
+            className="w-full justify-start"
+            onClick={() => setShowLoginModal(true)}
+          >
+            <LogIn className="mr-2 h-4 w-4" />
+            Admin Login
+          </Button>
+        )}
       </div>
+      
+      <LoginModal 
+        isOpen={showLoginModal}
+        onClose={() => setShowLoginModal(false)}
+        onLoginSuccess={() => setShowLoginModal(false)}
+      />
     </aside>
   );
 }
