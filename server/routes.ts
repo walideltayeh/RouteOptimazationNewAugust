@@ -2104,6 +2104,38 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "File is empty or could not be parsed" });
       }
 
+      // Check trial limits before processing
+      const trialId = req.trialContext?.trialId || req.cookies?.trial_session;
+      if (trialId) {
+        const trial = await storage.getTrialAccount(trialId);
+        if (trial) {
+          // Check if trial is blocked or expired
+          if (trial.status === TRIAL_STATUS.BLOCKED) {
+            return res.status(402).json({
+              message: "Your trial has been blocked. Please upgrade to continue.",
+              upgradeRequired: true
+            });
+          }
+          if (trial.status === TRIAL_STATUS.EXPIRED || (trial.endDate && new Date(trial.endDate) < new Date())) {
+            return res.status(402).json({
+              message: "Your trial has expired. Please upgrade to continue.",
+              upgradeRequired: true
+            });
+          }
+
+          // Check outlet limit
+          const outletLimit = trial.outletLimit || TRIAL_LIMITS.MAX_OUTLETS;
+          if (data.length > outletLimit) {
+            return res.status(402).json({
+              message: `Your trial is limited to ${outletLimit} outlets. This file contains ${data.length} outlets. Please upgrade to process more outlets.`,
+              upgradeRequired: true,
+              fileOutlets: data.length,
+              outletLimit: outletLimit
+            });
+          }
+        }
+      }
+
       // Clear existing outlets
       await storage.deleteAllOutlets();
 
