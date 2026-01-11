@@ -1,6 +1,6 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
-import { createHash } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { storage } from "./storage";
 import { 
   insertOptimizationRunSchema, 
@@ -1623,6 +1623,20 @@ const SUPERUSER = {
   password: process.env.SUPERUSER_PASSWORD || 'Walid1981@'
 };
 
+// Server-side session storage for superuser tokens
+const activeSuperuserSessions = new Set<string>();
+
+// Generate secure random token
+function generateSecureToken(): string {
+  return randomUUID() + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2);
+}
+
+// Validate superuser session token
+function isValidSuperuserSession(token: string | null): boolean {
+  if (!token) return false;
+  return activeSuperuserSessions.has(token);
+}
+
 export async function registerRoutes(app: Express): Promise<Server> {
   
   app.use((req: Request, _res: Response, next: NextFunction) => {
@@ -1631,15 +1645,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const trialCookie = req.cookies?.trial_session || null;
     const superuserCookie = req.cookies?.superuser_session || null;
     
+    // Validate superuser session server-side
+    const isSuperuserValid = isValidSuperuserSession(superuserCookie);
+    
     req.trialContext = {
       ipAddress,
       ipSubnet,
       trialId: trialCookie,
-      isTrialMode: !!trialCookie && !superuserCookie
+      isTrialMode: !!trialCookie && !isSuperuserValid
     };
     
-    // Add superuser flag to request
-    (req as any).isSuperuser = !!superuserCookie;
+    // Add superuser flag to request (only if token is valid)
+    (req as any).isSuperuser = isSuperuserValid;
     
     next();
   });
@@ -1650,7 +1667,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { email, password } = req.body;
       
       if (email === SUPERUSER.email && password === SUPERUSER.password) {
-        res.cookie('superuser_session', 'authenticated', {
+        // Generate a secure, random session token
+        const sessionToken = generateSecureToken();
+        activeSuperuserSessions.add(sessionToken);
+        
+        res.cookie('superuser_session', sessionToken, {
           httpOnly: true,
           secure: process.env.NODE_ENV === 'production',
           maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
@@ -1677,7 +1698,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Superuser logout endpoint
-  app.post("/api/auth/logout", async (_req: Request, res: Response) => {
+  app.post("/api/auth/logout", async (req: Request, res: Response) => {
+    const sessionToken = req.cookies?.superuser_session;
+    if (sessionToken) {
+      activeSuperuserSessions.delete(sessionToken);
+    }
     res.clearCookie('superuser_session');
     res.clearCookie('trial_session');
     res.json({ success: true, message: "Logged out" });
