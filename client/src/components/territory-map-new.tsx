@@ -513,8 +513,10 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
           `)
           .addTo(map.current!);
         
-        setTimeout(() => {
-          const btn = document.querySelector('.edit-outlet-btn');
+        // Use popup's DOM element to scope the query
+        const popupEl = popup.getElement();
+        if (popupEl) {
+          const btn = popupEl.querySelector('.edit-outlet-btn');
           if (btn) {
             btn.addEventListener('click', (evt) => {
               const target = evt.target as HTMLElement;
@@ -525,7 +527,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
               popup.remove();
             });
           }
-        }, 0);
+        }
       }
     });
   };
@@ -573,8 +575,10 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
           `)
           .addTo(map.current!);
         
-        setTimeout(() => {
-          const btn = document.querySelector('.view-zone-btn');
+        // Use popup's DOM element to scope the query
+        const popupEl = popup.getElement();
+        if (popupEl) {
+          const btn = popupEl.querySelector('.view-zone-btn');
           if (btn) {
             btn.addEventListener('click', (evt) => {
               const target = evt.target as HTMLElement;
@@ -584,7 +588,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
               popup.remove();
             });
           }
-        }, 0);
+        }
       }
     });
   };
@@ -859,9 +863,10 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
             `)
             .addTo(map.current!);
           
-          // Attach click handler after popup is added
-          setTimeout(() => {
-            const btn = document.querySelector('.edit-outlet-btn');
+          // Use popup's DOM element to scope the query
+          const popupEl = popup.getElement();
+          if (popupEl) {
+            const btn = popupEl.querySelector('.edit-outlet-btn');
             if (btn) {
               btn.addEventListener('click', (evt) => {
                 const target = evt.target as HTMLElement;
@@ -872,7 +877,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                 popup.remove();
               });
             }
-          }, 0);
+          }
         }
       });
 
