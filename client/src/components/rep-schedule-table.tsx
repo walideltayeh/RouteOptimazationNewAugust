@@ -116,6 +116,45 @@ export default function RepScheduleTable() {
     },
   });
 
+  // Export individual rep mutation
+  const [exportingRepId, setExportingRepId] = useState<string | null>(null);
+  
+  const exportRepSchedule = async (repId: string, repName: string) => {
+    setExportingRepId(repId);
+    try {
+      const response = await fetch(`/api/export/role-schedules?repId=${repId}`, {
+        method: 'GET',
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to export schedule');
+      }
+      
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${repName.replace(/\s+/g, '_')}_schedule_${new Date().toISOString().split('T')[0]}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      
+      toast({
+        title: "Export successful",
+        description: `Schedule for ${repName} exported to Excel`,
+      });
+    } catch (error) {
+      toast({
+        title: "Export failed",
+        description: "Failed to export schedule. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setExportingRepId(null);
+    }
+  };
+
   // Get all schedules
   const { data: schedules = [], refetch: refetchSchedules } = useQuery<Schedule[]>({
     queryKey: ["/api/schedules"],
@@ -352,11 +391,12 @@ export default function RepScheduleTable() {
                       </Badge>
                     </TableCell>
                     <TableCell className="text-center">
-                      <div className="flex items-center justify-center space-x-2">
+                      <div className="flex items-center justify-center space-x-1">
                         <Button 
                           variant="ghost" 
                           size="sm"
                           onClick={() => handleViewSchedule(rep.id)}
+                          title="View Schedule"
                         >
                           <Eye className="h-4 w-4" />
                         </Button>
@@ -364,8 +404,22 @@ export default function RepScheduleTable() {
                           variant="ghost" 
                           size="sm"
                           onClick={() => handleEditSchedule(rep.id)}
+                          title="Edit Schedule"
                         >
                           <Edit className="h-4 w-4" />
+                        </Button>
+                        <Button 
+                          variant="ghost" 
+                          size="sm"
+                          onClick={() => exportRepSchedule(rep.id, rep.name)}
+                          disabled={exportingRepId === rep.id}
+                          title="Export Rep Schedule"
+                        >
+                          {exportingRepId === rep.id ? (
+                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-600" />
+                          ) : (
+                            <Download className="h-4 w-4" />
+                          )}
                         </Button>
                       </div>
                     </TableCell>

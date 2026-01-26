@@ -202,10 +202,39 @@ export default function Dashboard() {
                   New Optimization
                 </Button>
               )}
-              <Button variant="outline">
-                <Download className="mr-2 h-4 w-4" />
-                Export
-              </Button>
+              {hasOptimization && (
+                <Button 
+                  variant="outline"
+                  onClick={async () => {
+                    try {
+                      const response = await fetch('/api/export/territories');
+                      if (!response.ok) throw new Error('Export failed');
+                      const blob = await response.blob();
+                      const url = window.URL.createObjectURL(blob);
+                      const a = document.createElement('a');
+                      a.href = url;
+                      a.download = `territories_${new Date().toISOString().split('T')[0]}.xlsx`;
+                      document.body.appendChild(a);
+                      a.click();
+                      window.URL.revokeObjectURL(url);
+                      document.body.removeChild(a);
+                      toast({
+                        title: "Export successful",
+                        description: "Territories exported to Excel",
+                      });
+                    } catch (error) {
+                      toast({
+                        title: "Export failed",
+                        description: "Failed to export territories",
+                        variant: "destructive",
+                      });
+                    }
+                  }}
+                >
+                  <Download className="mr-2 h-4 w-4" />
+                  Export Territories
+                </Button>
+              )}
             </div>
           </div>
         </header>

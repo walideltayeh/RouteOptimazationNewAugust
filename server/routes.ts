@@ -2527,6 +2527,83 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Export territories to Excel (outlets grouped by rep/territory)
+  app.get("/api/export/territories", async (_req, res) => {
+    try {
+      const reps = await storage.getReps();
+      const outlets = await storage.getOutlets();
+      
+      if (reps.length === 0 || outlets.length === 0) {
+        return res.status(400).json({ message: "No territories available to export" });
+      }
+      
+      const workbook = XLSX.utils.book_new();
+      
+      // Create a sheet for each rep's territory
+      for (const rep of reps) {
+        const repOutlets = outlets.filter(o => o.repId === rep.id);
+        
+        if (repOutlets.length === 0) continue;
+        
+        const data = repOutlets.map((outlet, index) => ({
+          '#': index + 1,
+          'Outlet Name': outlet.name,
+          'Address': outlet.address || '-',
+          'Latitude': outlet.latitude,
+          'Longitude': outlet.longitude,
+          'Visit Frequency': outlet.visitFrequency === 1 ? 'VF1' : outlet.visitFrequency === 2 ? 'VF2' : 'VF4',
+          'Cluster': outlet.cluster ?? '-',
+        }));
+        
+        const worksheet = XLSX.utils.json_to_sheet(data);
+        
+        // Set column widths
+        worksheet['!cols'] = [
+          { wch: 5 },   // #
+          { wch: 30 },  // Outlet Name
+          { wch: 40 },  // Address
+          { wch: 12 },  // Latitude
+          { wch: 12 },  // Longitude
+          { wch: 15 },  // Visit Frequency
+          { wch: 10 },  // Cluster
+        ];
+        
+        // Sanitize sheet name (max 31 chars, no special chars)
+        const sheetName = rep.name.substring(0, 31).replace(/[:\\/?*\[\]]/g, '_');
+        XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+      }
+      
+      // Also create a summary sheet
+      const summaryData = reps.map(rep => {
+        const repOutlets = outlets.filter(o => o.repId === rep.id);
+        return {
+          'Rep Name': rep.name,
+          'Rep Code': rep.code,
+          'Territory': rep.territory,
+          'Total Outlets': repOutlets.length,
+          'VF1 Outlets': repOutlets.filter(o => o.visitFrequency === 1).length,
+          'VF2 Outlets': repOutlets.filter(o => o.visitFrequency === 2).length,
+          'VF4 Outlets': repOutlets.filter(o => o.visitFrequency === 4).length,
+        };
+      });
+      
+      const summarySheet = XLSX.utils.json_to_sheet(summaryData);
+      summarySheet['!cols'] = [
+        { wch: 25 }, { wch: 15 }, { wch: 20 }, { wch: 15 }, { wch: 12 }, { wch: 12 }, { wch: 12 }
+      ];
+      XLSX.utils.book_append_sheet(workbook, summarySheet, 'Summary');
+      
+      const excelBuffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+      
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename=territories_${new Date().toISOString().split('T')[0]}.xlsx`);
+      res.send(excelBuffer);
+    } catch (error) {
+      console.error("Error exporting territories:", error);
+      res.status(500).json({ message: "Failed to export territories" });
+    }
+  });
+
   // Export schedules to Excel
   app.get("/api/export/schedules", async (_req, res) => {
     try {
