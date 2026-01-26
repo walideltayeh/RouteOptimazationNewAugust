@@ -1338,11 +1338,11 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                       })
                       .sort((a, b) => a.distance - b.distance);
                     
-                    const closestZone = zonesWithDistance.length > 0 ? zonesWithDistance[0].territory : null;
+                    const recommendedZones = new Set(zonesWithDistance.slice(0, 2).map(z => z.territory));
                     
                     return zonesWithDistance.map(({ territory }) => (
                       <SelectItem key={territory} value={territory}>
-                        {territory === closestZone ? `Recommended - ${territory}` : territory}
+                        {recommendedZones.has(territory) ? `Recommended - ${territory}` : territory}
                       </SelectItem>
                     ));
                   })()}
