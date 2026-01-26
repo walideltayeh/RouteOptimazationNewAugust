@@ -2276,7 +2276,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
           );
 
           const outlet: typeof insertOutletSchema._type = {
-            name: row.outletname || row.name || row.Name || row.outlet_name || row["Outlet Name"] || `Outlet ${outlets.length + 1}`,
+            name: row.outletname || row.OutletName || row.Outletname || row["Outlet Name"] || row["outlet name"] || 
+                  row.name || row.Name || row.NAME || 
+                  row.outlet_name || row.outlet || row.Outlet || row.OUTLET ||
+                  row.shop || row.Shop || row.SHOP || row.shop_name || row["Shop Name"] || row.ShopName ||
+                  row.store || row.Store || row.STORE || row.store_name || row["Store Name"] || row.StoreName ||
+                  row.customer || row.Customer || row.CUSTOMER || row.customer_name || row["Customer Name"] || row.CustomerName ||
+                  row.location || row.Location || row.site || row.Site ||
+                  `Outlet ${outlets.length + 1}`,
             address: `${row.District || ''} - ${row.Region || ''} - ${row.Area || ''}`.replace(/^- |- $|^-$/, '').trim() || row.address || row.Address || "",
             latitude: parseFloat(row.latitude || row.Latitude || row.lat || row.Lat || "0"),
             longitude: parseFloat(row.longitude || row.Longitude || row.lng || row.Lng || row.lon || row.Lon || "0"),
