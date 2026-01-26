@@ -2604,6 +2604,103 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Export clusters to Excel (outlets grouped by cluster)
+  app.get("/api/export/clusters", async (req, res) => {
+    try {
+      const outlets = await storage.getOutlets();
+      const reps = await storage.getReps();
+      
+      if (outlets.length === 0) {
+        return res.status(400).json({ message: "No outlets available to export" });
+      }
+      
+      // Get cluster filter from query params (comma-separated cluster numbers)
+      const clustersParam = req.query.clusters as string | undefined;
+      const clusterFilter = clustersParam ? clustersParam.split(',').map(c => parseInt(c.trim(), 10)) : null;
+      
+      // Group outlets by cluster
+      const clusterMap = new Map<number, typeof outlets>();
+      outlets.forEach(outlet => {
+        const cluster = outlet.cluster ?? 0;
+        if (clusterFilter && !clusterFilter.includes(cluster)) return;
+        if (!clusterMap.has(cluster)) {
+          clusterMap.set(cluster, []);
+        }
+        clusterMap.get(cluster)!.push(outlet);
+      });
+      
+      const workbook = XLSX.utils.book_new();
+      
+      // Create a sheet for each cluster
+      const sortedClusters = Array.from(clusterMap.keys()).sort((a, b) => a - b);
+      
+      sortedClusters.forEach(clusterId => {
+        const clusterOutlets = clusterMap.get(clusterId)!;
+        
+        // Find rep for this cluster (if any)
+        const repId = clusterOutlets[0]?.repId;
+        const rep = repId ? reps.find(r => r.id === repId) : null;
+        
+        const data = clusterOutlets.map((outlet, index) => ({
+          '#': index + 1,
+          'Outlet Name': outlet.name,
+          'Address': outlet.address || '-',
+          'Latitude': outlet.latitude,
+          'Longitude': outlet.longitude,
+          'Visit Frequency': outlet.visitFrequency === 1 ? 'VF1' : outlet.visitFrequency === 2 ? 'VF2' : 'VF4',
+          'Rep': rep?.name || 'Unassigned',
+        }));
+        
+        const worksheet = XLSX.utils.json_to_sheet(data);
+        
+        // Set column widths
+        worksheet['!cols'] = [
+          { wch: 5 },   // #
+          { wch: 30 },  // Outlet Name
+          { wch: 40 },  // Address
+          { wch: 12 },  // Latitude
+          { wch: 12 },  // Longitude
+          { wch: 15 },  // Visit Frequency
+          { wch: 20 },  // Rep
+        ];
+        
+        const sheetName = `Cluster ${clusterId}`;
+        XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+      });
+      
+      // Add summary sheet
+      const summaryData = sortedClusters.map(clusterId => {
+        const clusterOutlets = clusterMap.get(clusterId)!;
+        const repId = clusterOutlets[0]?.repId;
+        const rep = repId ? reps.find(r => r.id === repId) : null;
+        return {
+          'Cluster': clusterId,
+          'Rep': rep?.name || 'Unassigned',
+          'Total Outlets': clusterOutlets.length,
+          'VF1 Outlets': clusterOutlets.filter(o => o.visitFrequency === 1).length,
+          'VF2 Outlets': clusterOutlets.filter(o => o.visitFrequency === 2).length,
+          'VF4 Outlets': clusterOutlets.filter(o => o.visitFrequency === 4).length,
+        };
+      });
+      
+      const summarySheet = XLSX.utils.json_to_sheet(summaryData);
+      summarySheet['!cols'] = [
+        { wch: 10 }, { wch: 25 }, { wch: 15 }, { wch: 12 }, { wch: 12 }, { wch: 12 }
+      ];
+      XLSX.utils.book_append_sheet(workbook, summarySheet, 'Summary');
+      
+      const excelBuffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+      
+      const filename = clusterFilter ? `clusters_selected_${new Date().toISOString().split('T')[0]}.xlsx` : `clusters_${new Date().toISOString().split('T')[0]}.xlsx`;
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
+      res.send(excelBuffer);
+    } catch (error) {
+      console.error("Error exporting clusters:", error);
+      res.status(500).json({ message: "Failed to export clusters" });
+    }
+  });
+
   // Export schedules to Excel
   app.get("/api/export/schedules", async (_req, res) => {
     try {

@@ -9,7 +9,7 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem } from '
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { MapPin, Users, Navigation, Layers, Grid3X3, Check, ChevronsUpDown, RefreshCw, Edit2, AlertCircle } from 'lucide-react';
+import { MapPin, Users, Navigation, Layers, Grid3X3, Check, ChevronsUpDown, RefreshCw, Edit2, AlertCircle, Download } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { apiRequest } from '@/lib/queryClient';
 import type { Outlet, Rep } from '@shared/schema';
@@ -45,8 +45,77 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   const [pendingChanges, setPendingChanges] = useState<Array<{id: string, name: string, oldTerritory: string, newTerritory: string}>>([]);
   const [showReoptimizeDialog, setShowReoptimizeDialog] = useState(false);
   const [vfFilters, setVfFilters] = useState<{vf1: boolean, vf2: boolean, vf4: boolean}>({vf1: true, vf2: true, vf4: true});
+  const [isExporting, setIsExporting] = useState(false);
   const { toast } = useToast();
   const queryClient = useQueryClient();
+
+  // Export functions
+  const exportAllClusters = async () => {
+    setIsExporting(true);
+    try {
+      const response = await fetch('/api/export/clusters');
+      if (!response.ok) throw new Error('Export failed');
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `clusters_${new Date().toISOString().split('T')[0]}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      toast({
+        title: "Export successful",
+        description: "All clusters exported to Excel",
+      });
+    } catch (error) {
+      toast({
+        title: "Export failed",
+        description: "Failed to export clusters",
+        variant: "destructive",
+      });
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const exportSelectedClusters = async () => {
+    if (selectedZones.length === 0) {
+      toast({
+        title: "No clusters selected",
+        description: "Please select at least one cluster to export",
+        variant: "destructive",
+      });
+      return;
+    }
+    setIsExporting(true);
+    try {
+      const clusterIds = selectedZones.join(',');
+      const response = await fetch(`/api/export/clusters?clusters=${encodeURIComponent(clusterIds)}`);
+      if (!response.ok) throw new Error('Export failed');
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `clusters_selected_${new Date().toISOString().split('T')[0]}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      toast({
+        title: "Export successful",
+        description: `${selectedZones.length} cluster(s) exported to Excel`,
+      });
+    } catch (error) {
+      toast({
+        title: "Export failed",
+        description: "Failed to export selected clusters",
+        variant: "destructive",
+      });
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   const { data: outlets = [] } = useQuery<Outlet[]>({
     queryKey: ['/api/outlets'],
@@ -902,6 +971,36 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                   <Users className="mr-1 h-4 w-4" />
                   {reps.length} Reps
                 </div>
+              </div>
+
+              {/* Export buttons */}
+              <div className="flex items-center space-x-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={exportAllClusters}
+                  disabled={isExporting || outlets.length === 0}
+                  title="Export all clusters to Excel"
+                >
+                  {isExporting ? (
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-600 mr-2" />
+                  ) : (
+                    <Download className="mr-2 h-4 w-4" />
+                  )}
+                  Export All
+                </Button>
+                {selectedZones.length > 0 && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={exportSelectedClusters}
+                    disabled={isExporting}
+                    title={`Export ${selectedZones.length} selected cluster(s)`}
+                  >
+                    <Download className="mr-2 h-4 w-4" />
+                    Export Selected ({selectedZones.length})
+                  </Button>
+                )}
               </div>
 
               {/* Re-optimize button */}
