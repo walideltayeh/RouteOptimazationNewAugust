@@ -2275,14 +2275,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
             row.time || row.Time || row.duration || row.Duration || "30"
           );
 
+          // Normalize row keys to lowercase for consistent matching
+          const normalizedRow: Record<string, string> = {};
+          Object.keys(row).forEach(key => {
+            normalizedRow[key.toLowerCase().trim()] = row[key];
+          });
+          
           const outlet: typeof insertOutletSchema._type = {
-            name: row.outletname || row.OutletName || row.Outletname || row["Outlet Name"] || row["outlet name"] || 
-                  row.name || row.Name || row.NAME || 
-                  row.outlet_name || row.outlet || row.Outlet || row.OUTLET ||
-                  row.shop || row.Shop || row.SHOP || row.shop_name || row["Shop Name"] || row.ShopName ||
-                  row.store || row.Store || row.STORE || row.store_name || row["Store Name"] || row.StoreName ||
-                  row.customer || row.Customer || row.CUSTOMER || row.customer_name || row["Customer Name"] || row.CustomerName ||
-                  row.location || row.Location || row.site || row.Site ||
+            name: normalizedRow['outlet name'] || normalizedRow['outletname'] || normalizedRow['outlet_name'] ||
+                  normalizedRow['name'] || normalizedRow['outlet'] ||
+                  normalizedRow['shop name'] || normalizedRow['shopname'] || normalizedRow['shop_name'] || normalizedRow['shop'] ||
+                  normalizedRow['store name'] || normalizedRow['storename'] || normalizedRow['store_name'] || normalizedRow['store'] ||
+                  normalizedRow['customer name'] || normalizedRow['customername'] || normalizedRow['customer_name'] || normalizedRow['customer'] ||
+                  normalizedRow['location'] || normalizedRow['site'] ||
                   `Outlet ${outlets.length + 1}`,
             address: `${row.District || ''} - ${row.Region || ''} - ${row.Area || ''}`.replace(/^- |- $|^-$/, '').trim() || row.address || row.Address || "",
             latitude: parseFloat(row.latitude || row.Latitude || row.lat || row.Lat || "0"),
@@ -2621,15 +2626,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "No outlets available to export" });
       }
       
-      // Get cluster filter from query params (comma-separated cluster numbers)
+      // Get cluster filter from query params (comma-separated - can be numbers or "Zone X" format)
       const clustersParam = req.query.clusters as string | undefined;
-      const clusterFilter = clustersParam ? clustersParam.split(',').map(c => parseInt(c.trim(), 10)) : null;
+      let clusterFilter: number[] | null = null;
+      
+      if (clustersParam) {
+        clusterFilter = clustersParam.split(',').map(c => {
+          const trimmed = c.trim();
+          // Handle "Zone X" format - extract the number and convert to 0-indexed cluster
+          const zoneMatch = trimmed.match(/^Zone\s*(\d+)$/i);
+          if (zoneMatch) {
+            // Zone numbers are 1-indexed, cluster numbers are 0-indexed
+            return parseInt(zoneMatch[1], 10) - 1;
+          }
+          // Handle plain number (assume it's already a cluster number)
+          return parseInt(trimmed, 10);
+        }).filter(n => !isNaN(n) && n >= 0);
+      }
       
       // Group outlets by cluster
       const clusterMap = new Map<number, typeof outlets>();
       outlets.forEach(outlet => {
         const cluster = outlet.cluster ?? 0;
-        if (clusterFilter && !clusterFilter.includes(cluster)) return;
+        if (clusterFilter && clusterFilter.length > 0 && !clusterFilter.includes(cluster)) return;
         if (!clusterMap.has(cluster)) {
           clusterMap.set(cluster, []);
         }
