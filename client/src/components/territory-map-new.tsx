@@ -40,7 +40,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   const [viewMode, setViewMode] = useState<'cluster' | 'individual'>('cluster');
   const [selectedZones, setSelectedZones] = useState<string[]>([]);
   const [open, setOpen] = useState(false);
-  const [editingOutlet, setEditingOutlet] = useState<{id: string, name: string, territory: string} | null>(null);
+  const [editingOutlet, setEditingOutlet] = useState<{id: string, name: string, territory: string, lat?: number, lng?: number} | null>(null);
   const [newTerritory, setNewTerritory] = useState<string>('');
   const [pendingChanges, setPendingChanges] = useState<Array<{id: string, name: string, oldTerritory: string, newTerritory: string}>>([]);
   const [showReoptimizeDialog, setShowReoptimizeDialog] = useState(false);
@@ -467,6 +467,9 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
         const feature = e.features[0];
         const properties = feature.properties as any;
         const { id, name, territory, visitFrequency } = properties;
+        const coords = (feature.geometry as any).coordinates as [number, number];
+        const outletLng = coords[0];
+        const outletLat = coords[1];
         
         const escapeHtml = (str: string) => str
           .replace(/&/g, '&amp;')
@@ -506,6 +509,8 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                 data-outlet-id="${escapeHtml(id || '')}"
                 data-outlet-name="${safeName}"
                 data-outlet-territory="${safeTerritory}"
+                data-outlet-lat="${outletLat}"
+                data-outlet-lng="${outletLng}"
                 class="edit-outlet-btn mt-2 w-full px-3 py-1 bg-blue-500 text-white text-xs rounded hover:bg-blue-600 cursor-pointer">
                 Reassign to Different Zone
               </button>
@@ -523,7 +528,9 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
               const outletId = target.dataset.outletId || '';
               const outletName = target.dataset.outletName || '';
               const outletTerritory = target.dataset.outletTerritory || '';
-              setEditingOutlet({ id: outletId, name: outletName, territory: outletTerritory });
+              const lat = parseFloat(target.dataset.outletLat || '0');
+              const lng = parseFloat(target.dataset.outletLng || '0');
+              setEditingOutlet({ id: outletId, name: outletName, territory: outletTerritory, lat, lng });
               popup.remove();
             });
           }
@@ -814,6 +821,9 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
           const feature = e.features[0];
           const properties = feature.properties as any;
           const { id, name, territory, visitFrequency } = properties;
+          const coords = (feature.geometry as any).coordinates as [number, number];
+          const outletLng = coords[0];
+          const outletLat = coords[1];
           
           // Escape HTML special characters for display
           const escapeHtml = (str: string) => str
@@ -856,6 +866,8 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                   data-outlet-id="${escapeHtml(id || '')}"
                   data-outlet-name="${safeName}"
                   data-outlet-territory="${safeTerritory}"
+                  data-outlet-lat="${outletLat}"
+                  data-outlet-lng="${outletLng}"
                   class="edit-outlet-btn mt-2 w-full px-3 py-1 bg-blue-500 text-white text-xs rounded hover:bg-blue-600 cursor-pointer">
                   Reassign to Different Zone
                 </button>
@@ -873,7 +885,9 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                 const outletId = target.dataset.outletId || '';
                 const outletName = target.dataset.outletName || '';
                 const outletTerritory = target.dataset.outletTerritory || '';
-                setEditingOutlet({ id: outletId, name: outletName, territory: outletTerritory });
+                const lat = parseFloat(target.dataset.outletLat || '0');
+                const lng = parseFloat(target.dataset.outletLng || '0');
+                setEditingOutlet({ id: outletId, name: outletName, territory: outletTerritory, lat, lng });
                 popup.remove();
               });
             }
@@ -1303,9 +1317,35 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                   <SelectValue placeholder="Select new territory" />
                 </SelectTrigger>
                 <SelectContent>
-                  {Object.keys(territoryGroups).filter(t => t !== editingOutlet?.territory).map(territory => (
-                    <SelectItem key={territory} value={territory}>{territory}</SelectItem>
-                  ))}
+                  {(() => {
+                    const outletLat = editingOutlet?.lat || 0;
+                    const outletLng = editingOutlet?.lng || 0;
+                    
+                    const calcDistance = (lat1: number, lng1: number, lat2: number, lng2: number) => {
+                      const dLat = lat2 - lat1;
+                      const dLng = lng2 - lng1;
+                      return Math.sqrt(dLat * dLat + dLng * dLng);
+                    };
+                    
+                    const zonesWithDistance = Object.keys(territoryGroups)
+                      .filter(t => t !== editingOutlet?.territory)
+                      .map(territory => {
+                        const zoneOutlets = territoryGroups[territory];
+                        const avgLat = zoneOutlets.reduce((sum, o) => sum + o.latitude, 0) / zoneOutlets.length;
+                        const avgLng = zoneOutlets.reduce((sum, o) => sum + o.longitude, 0) / zoneOutlets.length;
+                        const distance = calcDistance(outletLat, outletLng, avgLat, avgLng);
+                        return { territory, distance };
+                      })
+                      .sort((a, b) => a.distance - b.distance);
+                    
+                    const closestZone = zonesWithDistance.length > 0 ? zonesWithDistance[0].territory : null;
+                    
+                    return zonesWithDistance.map(({ territory }) => (
+                      <SelectItem key={territory} value={territory}>
+                        {territory === closestZone ? `Recommended - ${territory}` : territory}
+                      </SelectItem>
+                    ));
+                  })()}
                 </SelectContent>
               </Select>
             </div>
