@@ -221,7 +221,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center">
-          <Settings className="mr-2 h-5 w-5 text-primary" />
+          <Settings className="mr-2 h-5 w-5 text-[#1d1d1f] dark:text-white" />
           Step 3: Optimization Settings
         </CardTitle>
       </CardHeader>
@@ -296,8 +296,8 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
             </div>
           </div>
         ) : (
-          <div className="space-y-4 p-4 bg-blue-50 rounded-lg">
-            <h4 className="font-medium text-blue-700">Time-Based Settings</h4>
+          <div className="space-y-4 p-4 bg-[#f5f5f7] dark:bg-[#2c2c2e] rounded-xl">
+            <h4 className="font-medium text-[#1d1d1f] dark:text-white">Time-Based Settings</h4>
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <Label htmlFor="maxTimePerOutlet">Max Time per Outlet (min)</Label>

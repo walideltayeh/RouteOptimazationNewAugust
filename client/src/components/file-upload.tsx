@@ -125,10 +125,10 @@ export default function FileUpload() {
 
   return (
     <>
-    <Card className="border-2 border-primary">
+    <Card className="border-2 border-[#8B0000]">
       <CardHeader>
         <CardTitle className="flex items-center">
-          <Upload className="mr-2 h-5 w-5 text-primary" />
+          <Upload className="mr-2 h-5 w-5 text-[#1d1d1f] dark:text-white" />
           Step 1: Data Upload & Analysis
         </CardTitle>
       </CardHeader>
@@ -151,10 +151,10 @@ export default function FileUpload() {
         )}
         {/* File Upload Area */}
         <div
-          className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors cursor-pointer ${
+          className={`border-2 border-dashed rounded-xl p-6 text-center transition-colors cursor-pointer ${
             isDragOver 
-              ? "border-primary bg-primary/5" 
-              : "border-gray-300 hover:border-primary/50"
+              ? "border-[#8B0000] bg-[#8B0000]/5" 
+              : "border-[#d2d2d7] dark:border-[#424245] hover:border-[#8B0000]/50"
           }`}
           onDrop={handleDrop}
           onDragOver={(e) => {
