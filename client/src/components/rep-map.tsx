@@ -16,10 +16,14 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { Check, ChevronsUpDown, Zap, Save, Download, GripVertical } from "lucide-react";
+import { Check, ChevronsUpDown, Zap, Save, Download, GripVertical, Edit2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { apiRequest } from "@/lib/queryClient";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
 import RouteOrderEditor from "@/components/route-order-editor";
 import type { Rep, Outlet, Schedule, RoleHierarchy, RoleSchedule } from "@shared/schema";
 
@@ -62,6 +66,16 @@ export function RepMap() {
   const [isSaving, setIsSaving] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [editingSchedule, setEditingSchedule] = useState<{ schedule: Schedule; rep: Rep } | null>(null);
+  const [editingOutlet, setEditingOutlet] = useState<{
+    id: string;
+    name: string;
+    territory: string;
+    currentRepId: string | null;
+    lat: number;
+    lng: number;
+  } | null>(null);
+  const [newZone, setNewZone] = useState<string>('');
+  const [newRepId, setNewRepId] = useState<string>('');
   const markersRef = useRef<mapboxgl.Marker[]>([]);
   // Track GeoJSON layer IDs for cleanup
   const geoJSONLayersRef = useRef<{ circleLayerId: string; handlers: { click: any; mouseenter: any; mouseleave: any } }[]>([]);
@@ -383,6 +397,139 @@ export function RepMap() {
     return { zoneGroups, zoneList, totalOutlets: repOutlets.length };
   }, [viewMode, selectedReps, schedules, outlets]);
 
+  // Get all unique zones from outlets
+  const allZones = useMemo(() => {
+    const zones = new Set<string>();
+    outlets.forEach(o => {
+      if (o.territory) zones.add(o.territory);
+    });
+    return Array.from(zones).sort();
+  }, [outlets]);
+
+  // Calculate zone centers for recommendations
+  const zoneCenters = useMemo(() => {
+    const centers: Record<string, { lat: number; lng: number; outlets: number }> = {};
+    outlets.forEach(o => {
+      if (!o.territory) return;
+      if (!centers[o.territory]) {
+        centers[o.territory] = { lat: 0, lng: 0, outlets: 0 };
+      }
+      centers[o.territory].lat += o.latitude;
+      centers[o.territory].lng += o.longitude;
+      centers[o.territory].outlets += 1;
+    });
+    Object.keys(centers).forEach(zone => {
+      const c = centers[zone];
+      c.lat = c.lat / c.outlets;
+      c.lng = c.lng / c.outlets;
+    });
+    return centers;
+  }, [outlets]);
+
+  // Get rep territories (zones assigned to each rep via schedules)
+  const repTerritories = useMemo(() => {
+    const repZones: Record<string, Set<string>> = {};
+    schedules.forEach(schedule => {
+      if (!repZones[schedule.repId]) {
+        repZones[schedule.repId] = new Set();
+      }
+      const outletIds = Array.isArray(schedule.outletIds) 
+        ? schedule.outletIds 
+        : typeof schedule.outletIds === 'string' 
+          ? JSON.parse(schedule.outletIds as string)
+          : [];
+      outletIds.forEach((id: string) => {
+        const outlet = outlets.find(o => o.id === id);
+        if (outlet?.territory) {
+          repZones[schedule.repId].add(outlet.territory);
+        }
+      });
+    });
+    return repZones;
+  }, [schedules, outlets]);
+
+  // Recommendation algorithm: find closest zones and reps
+  const getRecommendations = useMemo(() => {
+    if (!editingOutlet) return { zones: [], reps: [] };
+
+    const outletLat = editingOutlet.lat;
+    const outletLng = editingOutlet.lng;
+
+    const calcDistance = (lat1: number, lng1: number, lat2: number, lng2: number) => {
+      const dLat = lat2 - lat1;
+      const dLng = lng2 - lng1;
+      return Math.sqrt(dLat * dLat + dLng * dLng);
+    };
+
+    // Sort zones by distance
+    const zonesWithDistance = allZones
+      .filter(zone => zone !== editingOutlet.territory)
+      .map(zone => {
+        const center = zoneCenters[zone];
+        const distance = center ? calcDistance(outletLat, outletLng, center.lat, center.lng) : Infinity;
+        return { zone, distance };
+      })
+      .sort((a, b) => a.distance - b.distance);
+
+    // Sort reps by distance to their zone centers (filter out reps with no territories)
+    const repsWithDistance = reps
+      .filter(rep => rep.id !== editingOutlet.currentRepId)
+      .map(rep => {
+        const repZoneSet = repTerritories[rep.id] || new Set();
+        let minDistance = Infinity;
+        repZoneSet.forEach(zone => {
+          const center = zoneCenters[zone];
+          if (center) {
+            const dist = calcDistance(outletLat, outletLng, center.lat, center.lng);
+            if (dist < minDistance) minDistance = dist;
+          }
+        });
+        return { rep, distance: minDistance };
+      })
+      .filter(r => r.distance !== Infinity) // Only include reps with valid territories
+      .sort((a, b) => a.distance - b.distance);
+
+    return {
+      zones: zonesWithDistance.slice(0, 2).map(z => z.zone),
+      reps: repsWithDistance.slice(0, 2).map(r => r.rep.id)
+    };
+  }, [editingOutlet, allZones, zoneCenters, reps, repTerritories]);
+
+  // Reassignment mutation
+  const reassignMutation = useMutation({
+    mutationFn: async (data: { outletId: string; newTerritory: string; newRepId?: string }) => {
+      await apiRequest("POST", "/api/outlets/bulk-reassign", { 
+        updates: [{
+          id: data.outletId,
+          territory: data.newTerritory,
+          repId: data.newRepId || null
+        }]
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/outlets'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/schedules'] });
+      toast({ title: "Success", description: "Outlet reassigned successfully" });
+      setEditingOutlet(null);
+      setNewZone('');
+      setNewRepId('');
+    },
+    onError: () => {
+      toast({ title: "Error", description: "Failed to reassign outlet", variant: "destructive" });
+    }
+  });
+
+  const handleReassignOutlet = () => {
+    if (!editingOutlet || !newZone) return;
+    // Handle "keep-current" sentinel: undefined means don't change rep
+    const resolvedRepId = newRepId === 'keep-current' || newRepId === '' ? undefined : newRepId;
+    reassignMutation.mutate({
+      outletId: editingOutlet.id,
+      newTerritory: newZone,
+      newRepId: resolvedRepId
+    });
+  };
+
   // Initialize map
   useEffect(() => {
     if (!mapContainer.current || !MAPBOX_TOKEN || map.current) return;
@@ -537,12 +684,16 @@ export function RepMap() {
             coordinates: [outlet.longitude, outlet.latitude]
           },
           properties: {
+            id: outlet.id,
             name: outlet.name,
             address: outlet.address || '',
             zone: zoneName,
             color: zoneData.color,
             vf: outlet.visitFrequency || 1,
-            order: i + 1
+            order: i + 1,
+            lat: outlet.latitude,
+            lng: outlet.longitude,
+            repId: outlet.repId || ''
           }
         }));
         
@@ -582,17 +733,38 @@ export function RepMap() {
             const props = e.features[0].properties;
             const coords = (e.features[0].geometry as GeoJSON.Point).coordinates;
             
-            new mapboxgl.Popup({ offset: 15 })
+            const popup = new mapboxgl.Popup({ offset: 15 })
               .setLngLat([coords[0], coords[1]])
               .setHTML(`
                 <div>
                   <strong>${props?.name}</strong><br/>
                   ${props?.address ? `${props.address}<br/>` : ''}
                   <span style="color: ${props?.color}">Zone: ${props?.zone}</span><br/>
-                  <span>Visit Frequency: VF${props?.vf}</span>
+                  <span>Visit Frequency: VF${props?.vf}</span><br/>
+                  <button id="reassign-btn-${props?.id}" class="reassign-outlet-btn" style="margin-top: 8px; padding: 4px 12px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">
+                    Reassign
+                  </button>
                 </div>
               `)
               .addTo(map.current!);
+            
+            setTimeout(() => {
+              const btn = popup.getElement()?.querySelector(`#reassign-btn-${props?.id}`);
+              if (btn) {
+                btn.addEventListener('click', () => {
+                  setEditingOutlet({
+                    id: props?.id,
+                    name: props?.name,
+                    territory: props?.zone,
+                    currentRepId: props?.repId || null,
+                    lat: props?.lat,
+                    lng: props?.lng
+                  });
+                  setNewRepId('keep-current'); // Default to keep current rep
+                  popup.remove();
+                });
+              }
+            }, 100);
           });
           
           map.current!.on('mouseenter', circleLayerId, () => {
@@ -640,14 +812,19 @@ export function RepMap() {
               coordinates: [outlet.longitude, outlet.latitude]
             },
             properties: {
+              id: outlet.id,
               name: outlet.name,
               address: outlet.address,
+              territory: outlet.territory || '',
+              repId: repId,
               repName: repData.rep.name,
               dayName: daysOfWeek[dayData.dayOfWeek - 1] || `Day ${dayData.dayOfWeek}`,
               week: dayData.week,
               color: dayData.color,
               order: idx + 1,
-              orderStr: (idx + 1).toString()
+              orderStr: (idx + 1).toString(),
+              lat: outlet.latitude,
+              lng: outlet.longitude
             }
           }));
           
@@ -696,16 +873,38 @@ export function RepMap() {
               const props = e.features[0].properties;
               const coords = (e.features[0].geometry as GeoJSON.Point).coordinates;
               
-              new mapboxgl.Popup({ offset: 15 })
+              const popup = new mapboxgl.Popup({ offset: 15 })
                 .setLngLat([coords[0], coords[1]])
                 .setHTML(`
                   <div>
                     <strong>${props?.name}</strong><br/>
                     ${props?.address}<br/>
-                    <span style="color: ${props?.color}">${props?.repName} - ${props?.dayName} (Week ${props?.week})</span>
+                    <span style="color: ${props?.color}">${props?.repName} - ${props?.dayName} (Week ${props?.week})</span><br/>
+                    ${props?.territory ? `<span>Zone: ${props?.territory}</span><br/>` : ''}
+                    <button id="reassign-sched-btn-${props?.id}" class="reassign-outlet-btn" style="margin-top: 8px; padding: 4px 12px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">
+                      Reassign
+                    </button>
                   </div>
                 `)
                 .addTo(map.current!);
+              
+              setTimeout(() => {
+                const btn = popup.getElement()?.querySelector(`#reassign-sched-btn-${props?.id}`);
+                if (btn) {
+                  btn.addEventListener('click', () => {
+                    setEditingOutlet({
+                      id: props?.id,
+                      name: props?.name,
+                      territory: props?.territory || '',
+                      currentRepId: props?.repId || null,
+                      lat: props?.lat,
+                      lng: props?.lng
+                    });
+                    setNewRepId('keep-current'); // Default to keep current rep
+                    popup.remove();
+                  });
+                }
+              }, 100);
             };
             
             const mouseenterHandler = () => {
@@ -746,18 +945,42 @@ export function RepMap() {
             el.style.fontSize = '12px';
             el.innerHTML = (idx + 1).toString();
 
+            const popup = new mapboxgl.Popup({ offset: 25 })
+              .setHTML(`
+                <div>
+                  <strong>${outlet.name}</strong><br/>
+                  ${outlet.address}<br/>
+                  <span style="color: ${dayData.color}">${repData.rep.name} - ${daysOfWeek[dayData.dayOfWeek - 1] || `Day ${dayData.dayOfWeek}`} (Week ${dayData.week})</span><br/>
+                  ${outlet.territory ? `<span>Zone: ${outlet.territory}</span><br/>` : ''}
+                  <button id="reassign-dom-btn-${outlet.id}" style="margin-top: 8px; padding: 4px 12px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">
+                    Reassign
+                  </button>
+                </div>
+              `);
+            
+            popup.on('open', () => {
+              setTimeout(() => {
+                const btn = popup.getElement()?.querySelector(`#reassign-dom-btn-${outlet.id}`);
+                if (btn) {
+                  btn.addEventListener('click', () => {
+                    setEditingOutlet({
+                      id: outlet.id,
+                      name: outlet.name,
+                      territory: outlet.territory || '',
+                      currentRepId: repId,
+                      lat: outlet.latitude,
+                      lng: outlet.longitude
+                    });
+                    setNewRepId('keep-current'); // Default to keep current rep
+                    popup.remove();
+                  });
+                }
+              }, 100);
+            });
+            
             const marker = new mapboxgl.Marker(el)
               .setLngLat([outlet.longitude, outlet.latitude])
-              .setPopup(
-                new mapboxgl.Popup({ offset: 25 })
-                  .setHTML(`
-                    <div>
-                      <strong>${outlet.name}</strong><br/>
-                      ${outlet.address}<br/>
-                      <span style="color: ${dayData.color}">${repData.rep.name} - ${daysOfWeek[dayData.dayOfWeek - 1] || `Day ${dayData.dayOfWeek}`} (Week ${dayData.week})</span>
-                    </div>
-                  `)
-              )
+              .setPopup(popup)
               .addTo(map.current!);
 
             markersRef.current.push(marker);
@@ -1282,6 +1505,80 @@ export function RepMap() {
             repName={editingSchedule.rep.name}
           />
         )}
+
+        {/* Outlet Reassignment Dialog */}
+        <Dialog open={!!editingOutlet} onOpenChange={(open) => !open && setEditingOutlet(null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle className="flex items-center">
+                <Edit2 className="mr-2 h-5 w-5" />
+                Reassign Outlet
+              </DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div>
+                <p className="text-sm text-gray-600">Outlet:</p>
+                <p className="font-medium">{editingOutlet?.name}</p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-600">Current Zone:</p>
+                <Badge variant="outline">{editingOutlet?.territory || 'Unassigned'}</Badge>
+              </div>
+              <div>
+                <p className="text-sm text-gray-600">Current Rep:</p>
+                <Badge variant="outline">
+                  {editingOutlet?.currentRepId 
+                    ? reps.find(r => r.id === editingOutlet.currentRepId)?.name || 'Unknown'
+                    : 'Unassigned'}
+                </Badge>
+              </div>
+              <div>
+                <p className="text-sm text-gray-600 mb-2">New Zone:</p>
+                <Select value={newZone} onValueChange={setNewZone}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select new zone" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {allZones
+                      .filter(zone => zone !== editingOutlet?.territory)
+                      .map(zone => (
+                        <SelectItem key={zone} value={zone}>
+                          {getRecommendations.zones.includes(zone) ? `Recommended - ${zone}` : zone}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <p className="text-sm text-gray-600 mb-2">New Rep (optional):</p>
+                <Select value={newRepId} onValueChange={setNewRepId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Keep current rep or select new" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="keep-current">Keep Current Rep</SelectItem>
+                    {reps.map(rep => (
+                      <SelectItem key={rep.id} value={rep.id}>
+                        {getRecommendations.reps.includes(rep.id) ? `Recommended - ${rep.name}` : rep.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => { setEditingOutlet(null); setNewZone(''); setNewRepId(''); }}>
+                Cancel
+              </Button>
+              <Button 
+                onClick={handleReassignOutlet} 
+                disabled={!newZone || reassignMutation.isPending}
+              >
+                {reassignMutation.isPending ? "Reassigning..." : "Reassign"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </CardContent>
     </Card>
   );
