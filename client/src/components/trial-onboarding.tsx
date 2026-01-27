@@ -37,6 +37,7 @@ import {
   LogIn
 } from "lucide-react";
 import LoginModal from "./login-modal";
+import pinLogo from "@assets/image_1769535972472.png";
 
 const accountFormSchema = z.object({
   email: z.string().email("Please enter a valid email address"),
@@ -154,8 +155,8 @@ export default function TrialOnboarding({ open, onComplete }: TrialOnboardingPro
         {step === "welcome" && (
           <>
             <DialogHeader className="text-center">
-              <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-blue-100">
-                <MapPin className="h-8 w-8 text-blue-600" />
+              <div className="mx-auto mb-4">
+                <img src={pinLogo} alt="RouteOptima" className="h-16 w-16 object-contain" />
               </div>
               <DialogTitle className="text-2xl">Welcome to RouteOptima</DialogTitle>
               <DialogDescription className="text-base">
@@ -165,36 +166,30 @@ export default function TrialOnboarding({ open, onComplete }: TrialOnboardingPro
             
             <div className="space-y-4 py-4">
               <div className="flex items-start gap-3">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-green-100">
-                  <MapPin className="h-5 w-5 text-green-600" />
-                </div>
+                <MapPin className="h-5 w-5 text-[#1d1d1f] dark:text-white mt-0.5 shrink-0" />
                 <div>
-                  <h4 className="font-medium">Territory Management</h4>
-                  <p className="text-sm text-muted-foreground">
+                  <h4 className="font-medium text-[#1d1d1f] dark:text-white">Territory Management</h4>
+                  <p className="text-sm text-[#86868b]">
                     Automatically cluster outlets into optimal territories
                   </p>
                 </div>
               </div>
               
               <div className="flex items-start gap-3">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-purple-100">
-                  <Truck className="h-5 w-5 text-purple-600" />
-                </div>
+                <Truck className="h-5 w-5 text-[#1d1d1f] dark:text-white mt-0.5 shrink-0" />
                 <div>
-                  <h4 className="font-medium">Vehicle Intelligence</h4>
-                  <p className="text-sm text-muted-foreground">
+                  <h4 className="font-medium text-[#1d1d1f] dark:text-white">Vehicle Intelligence</h4>
+                  <p className="text-sm text-[#86868b]">
                     Track vehicles and predict maintenance needs
                   </p>
                 </div>
               </div>
               
               <div className="flex items-start gap-3">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-orange-100">
-                  <BarChart3 className="h-5 w-5 text-orange-600" />
-                </div>
+                <BarChart3 className="h-5 w-5 text-[#1d1d1f] dark:text-white mt-0.5 shrink-0" />
                 <div>
-                  <h4 className="font-medium">Analytics & Insights</h4>
-                  <p className="text-sm text-muted-foreground">
+                  <h4 className="font-medium text-[#1d1d1f] dark:text-white">Analytics & Insights</h4>
+                  <p className="text-sm text-[#86868b]">
                     ML-powered forecasting and route analytics
                   </p>
                 </div>
@@ -208,10 +203,10 @@ export default function TrialOnboarding({ open, onComplete }: TrialOnboardingPro
             
             <div className="relative my-4">
               <div className="absolute inset-0 flex items-center">
-                <span className="w-full border-t" />
+                <span className="w-full border-t border-[#e5e5e5] dark:border-[#38383a]" />
               </div>
               <div className="relative flex justify-center text-xs uppercase">
-                <span className="bg-background px-2 text-muted-foreground">Or</span>
+                <span className="bg-white dark:bg-[#1c1c1e] px-2 text-[#86868b]">Or</span>
               </div>
             </div>
             
@@ -252,7 +247,7 @@ export default function TrialOnboarding({ open, onComplete }: TrialOnboardingPro
                       <FormLabel>Email Address *</FormLabel>
                       <FormControl>
                         <div className="relative">
-                          <Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                          <Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#86868b]" />
                           <Input 
                             {...field} 
                             type="email" 
@@ -274,7 +269,7 @@ export default function TrialOnboarding({ open, onComplete }: TrialOnboardingPro
                       <FormLabel>Company Name (Optional)</FormLabel>
                       <FormControl>
                         <div className="relative">
-                          <Building2 className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                          <Building2 className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#86868b]" />
                           <Input 
                             {...field} 
                             placeholder="Your Company" 
@@ -288,7 +283,7 @@ export default function TrialOnboarding({ open, onComplete }: TrialOnboardingPro
                 />
 
                 {error && (
-                  <div className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
+                  <div className="rounded-xl bg-red-50 dark:bg-red-900/20 p-3 text-sm text-red-700 dark:text-red-400">
                     {error}
                   </div>
                 )}
@@ -322,12 +317,12 @@ export default function TrialOnboarding({ open, onComplete }: TrialOnboardingPro
             </DialogHeader>
             
             <div className="space-y-4 py-2">
-              <div className="rounded-lg bg-blue-50 p-4">
+              <div className="rounded-xl bg-[#f5f5f7] dark:bg-[#2c2c2e] p-4">
                 <div className="flex items-start gap-3">
-                  <Shield className="h-5 w-5 text-blue-600 mt-0.5" />
+                  <Shield className="h-5 w-5 text-[#1d1d1f] dark:text-white mt-0.5" />
                   <div className="space-y-2">
-                    <h4 className="font-medium text-blue-900">Security & Fraud Prevention</h4>
-                    <p className="text-sm text-blue-800">
+                    <h4 className="font-medium text-[#1d1d1f] dark:text-white">Security & Fraud Prevention</h4>
+                    <p className="text-sm text-[#86868b]">
                       To protect our service and ensure fair usage, we collect a device fingerprint. 
                       This helps us prevent abuse and maintain trial integrity.
                     </p>
@@ -335,19 +330,19 @@ export default function TrialOnboarding({ open, onComplete }: TrialOnboardingPro
                 </div>
               </div>
               
-              <div className="rounded-lg border p-4 space-y-3">
-                <h4 className="font-medium">Trial Limits</h4>
-                <ul className="space-y-2 text-sm text-muted-foreground">
+              <div className="rounded-xl border border-[#e5e5e5] dark:border-[#38383a] p-4 space-y-3">
+                <h4 className="font-medium text-[#1d1d1f] dark:text-white">Trial Limits</h4>
+                <ul className="space-y-2 text-sm text-[#86868b]">
                   <li className="flex items-center gap-2">
-                    <CheckCircle2 className="h-4 w-4 text-green-500" />
+                    <CheckCircle2 className="h-4 w-4 text-[#34c759]" />
                     Up to 100 outlets
                   </li>
                   <li className="flex items-center gap-2">
-                    <CheckCircle2 className="h-4 w-4 text-green-500" />
+                    <CheckCircle2 className="h-4 w-4 text-[#34c759]" />
                     Up to 2 vehicles
                   </li>
                   <li className="flex items-center gap-2">
-                    <CheckCircle2 className="h-4 w-4 text-green-500" />
+                    <CheckCircle2 className="h-4 w-4 text-[#34c759]" />
                     14-day trial period
                   </li>
                 </ul>
@@ -359,7 +354,7 @@ export default function TrialOnboarding({ open, onComplete }: TrialOnboardingPro
                     control={consentForm.control}
                     name="consentGiven"
                     render={({ field }) => (
-                      <FormItem className="flex flex-row items-start space-x-3 space-y-0 rounded-lg border p-4">
+                      <FormItem className="flex flex-row items-start space-x-3 space-y-0 rounded-xl border border-[#e5e5e5] dark:border-[#38383a] p-4">
                         <FormControl>
                           <Checkbox
                             checked={field.value}
@@ -367,13 +362,13 @@ export default function TrialOnboarding({ open, onComplete }: TrialOnboardingPro
                           />
                         </FormControl>
                         <div className="space-y-1 leading-none">
-                          <FormLabel className="text-sm font-normal">
+                          <FormLabel className="text-sm font-normal text-[#1d1d1f] dark:text-white">
                             I consent to the collection of device information for security purposes 
                             and agree to the{" "}
                             <a 
                               href="/privacy" 
                               target="_blank" 
-                              className="text-blue-600 hover:underline"
+                              className="text-[#007aff] hover:underline"
                             >
                               Privacy Policy
                             </a>
@@ -385,7 +380,7 @@ export default function TrialOnboarding({ open, onComplete }: TrialOnboardingPro
                   />
 
                   {error && (
-                    <div className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
+                    <div className="rounded-xl bg-red-50 dark:bg-red-900/20 p-3 text-sm text-red-700 dark:text-red-400">
                       {error}
                     </div>
                   )}
@@ -430,8 +425,8 @@ export default function TrialOnboarding({ open, onComplete }: TrialOnboardingPro
         {step === "ready" && (
           <>
             <DialogHeader className="text-center">
-              <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-green-100">
-                <CheckCircle2 className="h-8 w-8 text-green-600" />
+              <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-[#34c759]/10">
+                <CheckCircle2 className="h-8 w-8 text-[#34c759]" />
               </div>
               <DialogTitle className="text-2xl">You're All Set!</DialogTitle>
               <DialogDescription className="text-base">
@@ -440,21 +435,21 @@ export default function TrialOnboarding({ open, onComplete }: TrialOnboardingPro
             </DialogHeader>
             
             <div className="space-y-4 py-4">
-              <div className="rounded-lg bg-green-50 p-4 text-center">
-                <p className="text-sm text-green-800">
+              <div className="rounded-xl bg-[#34c759]/10 p-4 text-center">
+                <p className="text-sm text-[#1d1d1f] dark:text-white">
                   You can now upload outlets, create territories, and optimize routes. 
                   Enjoy exploring RouteOptima!
                 </p>
               </div>
               
               <div className="grid grid-cols-2 gap-4 text-center">
-                <div className="rounded-lg border p-3">
-                  <div className="text-2xl font-bold text-blue-600">100</div>
-                  <div className="text-sm text-muted-foreground">Outlets Available</div>
+                <div className="rounded-xl border border-[#e5e5e5] dark:border-[#38383a] p-3">
+                  <div className="text-2xl font-bold text-[#1d1d1f] dark:text-white">100</div>
+                  <div className="text-sm text-[#86868b]">Outlets Available</div>
                 </div>
-                <div className="rounded-lg border p-3">
-                  <div className="text-2xl font-bold text-purple-600">2</div>
-                  <div className="text-sm text-muted-foreground">Vehicles Available</div>
+                <div className="rounded-xl border border-[#e5e5e5] dark:border-[#38383a] p-3">
+                  <div className="text-2xl font-bold text-[#1d1d1f] dark:text-white">2</div>
+                  <div className="text-sm text-[#86868b]">Vehicles Available</div>
                 </div>
               </div>
             </div>
