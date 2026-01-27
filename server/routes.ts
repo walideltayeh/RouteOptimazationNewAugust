@@ -1400,11 +1400,11 @@ function generateZoneBasedSchedules(rep: Rep, zones: GeographicCluster[], allClu
       const zoneOutletIds = optimizedOutlets.map(outlet => outlet.id);
       const totalDistance = calculateTotalDistance(optimizedOutlets);
       
-      // Create schedule for this day with optimized route
+      // Create schedule for this day with optimized route (dayOfWeek is 1-based: Monday=1)
       schedules.push({
         repId: rep.id,
         week: week,
-        dayOfWeek: dayIndex,
+        dayOfWeek: dayIndex + 1,
         outletIds: zoneOutletIds,
         routeOrder: zoneOutletIds, // Already optimized
         totalDistance: totalDistance,
@@ -1415,7 +1415,7 @@ function generateZoneBasedSchedules(rep: Rep, zones: GeographicCluster[], allClu
       schedules.push({
         repId: rep.id,
         week: week + 2,
-        dayOfWeek: dayIndex,
+        dayOfWeek: dayIndex + 1,
         outletIds: zoneOutletIds,
         routeOrder: zoneOutletIds, // Already optimized
         totalDistance: totalDistance,
@@ -1473,10 +1473,11 @@ function generateWeeklySchedules(rep: Rep, outlets: Outlet[]): InsertSchedule[] 
       
       if (visitOrder.length > 0) {
         // Store schedules for both the current week and its repeat (week 1 repeats as week 3, week 2 as week 4)
+        // dayOfWeek is 1-based: Monday=1
         schedules.push({
           repId: rep.id,
           week: week,
-          dayOfWeek: daysOfWeek.indexOf(dayName),
+          dayOfWeek: daysOfWeek.indexOf(dayName) + 1,
           outletIds: visitOrder,
           routeOrder: visitOrder
         });
@@ -1485,7 +1486,7 @@ function generateWeeklySchedules(rep: Rep, outlets: Outlet[]): InsertSchedule[] 
         schedules.push({
           repId: rep.id,
           week: week + 2,
-          dayOfWeek: daysOfWeek.indexOf(dayName),
+          dayOfWeek: daysOfWeek.indexOf(dayName) + 1,
           outletIds: visitOrder,
           routeOrder: visitOrder
         });
