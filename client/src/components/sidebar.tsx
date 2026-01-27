@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import LoginModal from "@/components/login-modal";
+import pinLogo from "@assets/image_1769535972472.png";
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: BarChart3 },
@@ -55,12 +56,11 @@ export default function Sidebar() {
     <aside className="w-72 bg-[#fafafa] dark:bg-[#1c1c1e] border-r border-[#e5e5e5] dark:border-[#38383a] flex flex-col">
       <div className="p-6 pb-4">
         <div className="flex items-center">
-          <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-blue-600 rounded-xl flex items-center justify-center shadow-apple">
-            <img src="/logo.png" alt="RouteOptima" className="h-6 w-6" onError={(e) => {
-              e.currentTarget.style.display = 'none';
-            }} />
-            <Route className="h-5 w-5 text-white" />
-          </div>
+          <img 
+            src={pinLogo} 
+            alt="RouteOptima" 
+            className="h-12 w-12 object-contain"
+          />
           <div className="ml-3">
             <h1 className="text-lg font-semibold text-[#1d1d1f] dark:text-white tracking-tight">
               RouteOptima
@@ -81,9 +81,9 @@ export default function Sidebar() {
                 key={item.name}
                 href={item.href}
                 className={`
-                  group flex items-center px-3 py-2.5 text-sm font-medium rounded-xl transition-all duration-200
+                  group flex items-center px-4 py-2.5 text-sm font-medium rounded-full transition-all duration-200
                   ${isActive 
-                    ? 'bg-[#007aff] text-white shadow-apple' 
+                    ? 'bg-[#1d1d1f] text-white shadow-sm' 
                     : 'text-[#1d1d1f] dark:text-[#f5f5f7] hover:bg-[#e8e8ed] dark:hover:bg-[#2c2c2e]'
                   }
                 `}
@@ -110,8 +110,8 @@ export default function Sidebar() {
             </div>
             <Button 
               variant="ghost" 
-              size="sm"
-              className="h-8 w-8 p-0 hover:bg-[#f5f5f7] dark:hover:bg-[#3a3a3c] rounded-full"
+              size="icon"
+              className="h-8 w-8 hover:bg-[#f5f5f7] dark:hover:bg-[#3a3a3c]"
               onClick={() => logoutMutation.mutate()}
               disabled={logoutMutation.isPending}
             >
@@ -121,7 +121,7 @@ export default function Sidebar() {
         ) : (
           <Button 
             variant="ghost" 
-            className="w-full justify-start h-10 text-[#1d1d1f] dark:text-white hover:bg-[#f5f5f7] dark:hover:bg-[#3a3a3c] rounded-xl"
+            className="w-full justify-start h-10 text-[#1d1d1f] dark:text-white hover:bg-[#f5f5f7] dark:hover:bg-[#3a3a3c]"
             onClick={() => setShowLoginModal(true)}
           >
             <LogIn className="mr-2 h-4 w-4 text-[#86868b]" />
