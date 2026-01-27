@@ -181,16 +181,15 @@ export default function Dashboard() {
     <div className="p-6">
       <div className="max-w-7xl mx-auto space-y-6">
         {/* Header */}
-        <header className="bg-white shadow-sm border-b border-gray-200 px-6 py-4 rounded-lg">
+        <header className="bg-white dark:bg-[#1c1c1e] shadow-apple border border-[#e5e5e5] dark:border-[#38383a] px-6 py-4 rounded-2xl">
           <div className="flex justify-between items-center">
             <div>
-              <h2 className="text-2xl font-bold text-gray-900">Route Optimization Dashboard</h2>
-              <p className="text-sm text-gray-600 mt-1">Manage your sales rep territories and optimize routes</p>
+              <h2 className="text-2xl font-bold text-[#1d1d1f] dark:text-white">Route Optimization Dashboard</h2>
+              <p className="text-sm text-[#86868b] mt-1">Manage your sales rep territories and optimize routes</p>
             </div>
             <div className="flex items-center space-x-4">
               {authStatus?.isSuperuser && (
                 <Button 
-                  className="bg-primary hover:bg-primary/90"
                   onClick={handleNewOptimization}
                   disabled={clearAllMutation.isPending}
                 >
@@ -372,16 +371,16 @@ export default function Dashboard() {
           {/* Initial Optimization Result (shown after optimization) */}
           {hasOptimization && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-500">
-              <Card className="border-blue-200 bg-blue-50">
+              <Card className="border-[#e5e5e5] dark:border-[#38383a] bg-white dark:bg-[#1c1c1e]">
                 <CardContent className="p-6">
                   <div className="flex items-center space-x-4">
-                    <div className="w-12 h-12 bg-blue-100 rounded-xl flex items-center justify-center">
-                      <Users className="h-6 w-6 text-blue-600" />
+                    <div className="w-12 h-12 bg-[#f5f5f7] dark:bg-[#2c2c2e] rounded-xl flex items-center justify-center">
+                      <Users className="h-6 w-6 text-[#1d1d1f] dark:text-white" />
                     </div>
                     <div>
-                      <p className="text-sm font-medium text-blue-900">Initial Optimization Complete</p>
-                      <p className="text-3xl font-bold text-blue-700">{reps.length} Sales Reps Required</p>
-                      <p className="text-sm text-blue-600 mt-1">Now configure which reps should have role hierarchy applied</p>
+                      <p className="text-sm font-medium text-[#1d1d1f] dark:text-white">Initial Optimization Complete</p>
+                      <p className="text-3xl font-bold text-[#1d1d1f] dark:text-white">{reps.length} Sales Reps Required</p>
+                      <p className="text-sm text-[#86868b] mt-1">Now configure which reps should have role hierarchy applied</p>
                     </div>
                   </div>
                 </CardContent>
@@ -396,8 +395,8 @@ export default function Dashboard() {
                 <CardHeader>
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 bg-purple-100 rounded-lg flex items-center justify-center">
-                        <UserCog className="h-5 w-5 text-purple-600" />
+                      <div className="w-10 h-10 bg-[#f5f5f7] dark:bg-[#2c2c2e] rounded-lg flex items-center justify-center">
+                        <UserCog className="h-5 w-5 text-[#1d1d1f] dark:text-white" />
                       </div>
                       <div>
                         <CardTitle>Step 3: Configure Role Hierarchy</CardTitle>
@@ -426,26 +425,26 @@ export default function Dashboard() {
                 
                 {roleHierarchyExpanded && (
                   <CardContent className="space-y-4">
-                    <div className="p-3 bg-blue-50 rounded-lg border border-blue-200 text-sm text-blue-800">
+                    <div className="p-3 bg-[#f5f5f7] dark:bg-[#2c2c2e] rounded-xl border border-[#e5e5e5] dark:border-[#38383a] text-sm text-[#1d1d1f] dark:text-white">
                       <strong>How it works:</strong> Sales Reps visit outlets first. Other roles (Merchandiser, Collection Agent) 
                       automatically follow the same route on subsequent days based on the day offset you configure.
                     </div>
                     
                     {/* Mode Selector */}
-                    <div className="p-4 bg-gray-50 rounded-lg border">
-                      <Label className="text-sm font-medium mb-3 block">Configuration Mode</Label>
+                    <div className="p-4 bg-[#f5f5f7] dark:bg-[#2c2c2e] rounded-xl border border-[#e5e5e5] dark:border-[#38383a]">
+                      <Label className="text-sm font-medium mb-3 block text-[#1d1d1f] dark:text-white">Configuration Mode</Label>
                       <div className="flex gap-3">
                         <button
                           onClick={() => setOffsetMode('global')}
-                          className={`flex-1 p-3 rounded-lg border-2 transition-all text-left ${
+                          className={`flex-1 p-3 rounded-xl border-2 transition-all text-left ${
                             offsetMode === 'global' 
-                              ? 'border-primary bg-primary/5' 
-                              : 'border-gray-200 hover:border-gray-300'
+                              ? 'border-[#1d1d1f] bg-white dark:bg-[#1c1c1e]' 
+                              : 'border-[#d2d2d7] dark:border-[#424245] hover:border-[#86868b]'
                           }`}
                           data-testid="btn-mode-global"
                         >
-                          <div className="font-medium text-sm">Global (Organization-wide)</div>
-                          <div className="text-xs text-gray-500 mt-1">
+                          <div className="font-medium text-sm text-[#1d1d1f] dark:text-white">Global (Organization-wide)</div>
+                          <div className="text-xs text-[#86868b] mt-1">
                             Same day offsets apply to all roles and reps uniformly
                           </div>
                         </button>
@@ -457,22 +456,22 @@ export default function Dashboard() {
                               setSelectedRepIds(reps.map(r => r.id));
                             }
                           }}
-                          className={`flex-1 p-3 rounded-lg border-2 transition-all text-left ${
+                          className={`flex-1 p-3 rounded-xl border-2 transition-all text-left ${
                             offsetMode === 'custom' 
-                              ? 'border-primary bg-primary/5' 
-                              : 'border-gray-200 hover:border-gray-300'
+                              ? 'border-[#1d1d1f] bg-white dark:bg-[#1c1c1e]' 
+                              : 'border-[#d2d2d7] dark:border-[#424245] hover:border-[#86868b]'
                           }`}
                           data-testid="btn-mode-custom"
                         >
-                          <div className="font-medium text-sm">Custom (Selected Reps Only)</div>
-                          <div className="text-xs text-gray-500 mt-1">
+                          <div className="font-medium text-sm text-[#1d1d1f] dark:text-white">Custom (Selected Reps Only)</div>
+                          <div className="text-xs text-[#86868b] mt-1">
                             Apply role hierarchy only to selected reps
                           </div>
                         </button>
                       </div>
                       {offsetMode === 'custom' && (
                         <div className="mt-4 space-y-3">
-                          <div className="p-2 bg-amber-50 border border-amber-200 rounded text-xs text-amber-800">
+                          <div className="p-2 bg-[#f5f5f7] dark:bg-[#2c2c2e] border border-[#e5e5e5] dark:border-[#38383a] rounded-xl text-xs text-[#1d1d1f] dark:text-white">
                             Select which reps should have the role hierarchy applied. Unselected reps will only have Sales Rep schedules.
                           </div>
                           <div className="border rounded-lg p-3 max-h-48 overflow-y-auto">
@@ -644,7 +643,7 @@ export default function Dashboard() {
                 {!roleHierarchyExpanded && (
                   <CardContent>
                     <div className="flex items-center gap-3 mb-2">
-                      <Badge variant="outline" className={`${offsetMode === 'global' ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>
+                      <Badge variant="outline" className={`${offsetMode === 'global' ? 'bg-[#f5f5f7] text-[#1d1d1f] border-[#d2d2d7]' : 'bg-[#f5f5f7] text-[#1d1d1f] border-[#d2d2d7]'}`}>
                         {offsetMode === 'global' ? 'Global Mode' : 'Custom Mode'}
                       </Badge>
                     </div>
