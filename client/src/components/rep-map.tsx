@@ -41,11 +41,18 @@ const DAY_COLORS = [
 
 const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
+const ZONE_COLORS = [
+  '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7',
+  '#DDA0DD', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E9',
+  '#E74C3C', '#2ECC71', '#3498DB', '#9B59B6', '#F39C12'
+];
+
 export function RepMap() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
   const [selectedReps, setSelectedReps] = useState<string[]>([]);
   const [open, setOpen] = useState(false);
+  const [viewMode, setViewMode] = useState<'schedule' | 'universe'>('schedule'); // Schedule view or Universe (all zones) view
   const [selectedDays, setSelectedDays] = useState<number[]>([1, 2, 3, 4, 5]); // Default to weekdays
   const [selectedWeeks, setSelectedWeeks] = useState<number[]>([1]); // Default to week 1
   const [selectedRoles, setSelectedRoles] = useState<string[]>(['rep']); // Default to Sales Rep, now multi-select
@@ -339,6 +346,43 @@ export function RepMap() {
     return result;
   }, [filteredSchedules, reps, outlets, selectedRoles, availableRoles, roleSchedules, schedules, schedulesLoading, showAllLinkedRoles, linkedRoleSchedules, getRoleColor]);
 
+  // Universe view: Group all outlets by zone for selected reps
+  const universeViewData = useMemo(() => {
+    if (viewMode !== 'universe' || selectedReps.length === 0) return null;
+    
+    // Get all outlets that belong to selected reps (via schedules)
+    const repOutletIds = new Set<string>();
+    schedules.forEach(schedule => {
+      if (selectedReps.includes(schedule.repId)) {
+        const ids = Array.isArray(schedule.outletIds) 
+          ? schedule.outletIds 
+          : typeof schedule.outletIds === 'string' 
+            ? JSON.parse(schedule.outletIds as string)
+            : [];
+        ids.forEach((id: string) => repOutletIds.add(id));
+      }
+    });
+    
+    // Get outlet objects and group by territory
+    const repOutlets = outlets.filter(o => repOutletIds.has(o.id));
+    const zoneGroups: Record<string, { outlets: Outlet[]; color: string }> = {};
+    const zoneList: string[] = [];
+    
+    repOutlets.forEach(outlet => {
+      const zone = outlet.territory || 'Unassigned';
+      if (!zoneGroups[zone]) {
+        zoneList.push(zone);
+        zoneGroups[zone] = {
+          outlets: [],
+          color: ZONE_COLORS[zoneList.length % ZONE_COLORS.length]
+        };
+      }
+      zoneGroups[zone].outlets.push(outlet);
+    });
+    
+    return { zoneGroups, zoneList, totalOutlets: repOutlets.length };
+  }, [viewMode, selectedReps, schedules, outlets]);
+
   // Initialize map
   useEffect(() => {
     if (!mapContainer.current || !MAPBOX_TOKEN || map.current) return;
@@ -461,6 +505,115 @@ export function RepMap() {
         });
       });
     });
+
+    // Clean up universe view layers
+    if (universeViewData) {
+      universeViewData.zoneList.forEach((zone, idx) => {
+        const safeZone = zone.replace(/[^a-zA-Z0-9]/g, '_');
+        const sourceId = `universe-zone-${safeZone}`;
+        const circleLayerId = `universe-circles-${safeZone}`;
+        const labelLayerId = `universe-labels-${safeZone}`;
+        
+        if (map.current!.getLayer(labelLayerId)) map.current!.removeLayer(labelLayerId);
+        if (map.current!.getLayer(circleLayerId)) map.current!.removeLayer(circleLayerId);
+        if (map.current!.getSource(sourceId)) map.current!.removeSource(sourceId);
+      });
+    }
+    
+    // UNIVERSE VIEW: Show all outlets grouped by zones
+    if (viewMode === 'universe' && universeViewData) {
+      console.log('Rendering Universe View with', universeViewData.totalOutlets, 'outlets across', universeViewData.zoneList.length, 'zones');
+      
+      Object.entries(universeViewData.zoneGroups).forEach(([zoneName, zoneData], idx) => {
+        const safeZone = zoneName.replace(/[^a-zA-Z0-9]/g, '_');
+        const sourceId = `universe-zone-${safeZone}`;
+        const circleLayerId = `universe-circles-${safeZone}`;
+        const labelLayerId = `universe-labels-${safeZone}`;
+        
+        const features = zoneData.outlets.map((outlet, i) => ({
+          type: 'Feature' as const,
+          geometry: {
+            type: 'Point' as const,
+            coordinates: [outlet.longitude, outlet.latitude]
+          },
+          properties: {
+            name: outlet.name,
+            address: outlet.address || '',
+            zone: zoneName,
+            color: zoneData.color,
+            vf: outlet.visitFrequency || 1,
+            order: i + 1
+          }
+        }));
+        
+        if (!map.current!.getSource(sourceId)) {
+          map.current!.addSource(sourceId, {
+            type: 'geojson',
+            data: { type: 'FeatureCollection', features }
+          });
+          
+          map.current!.addLayer({
+            id: circleLayerId,
+            type: 'circle',
+            source: sourceId,
+            paint: {
+              'circle-radius': 10,
+              'circle-color': zoneData.color,
+              'circle-stroke-width': 2,
+              'circle-stroke-color': '#ffffff'
+            }
+          });
+          
+          map.current!.addLayer({
+            id: labelLayerId,
+            type: 'symbol',
+            source: sourceId,
+            layout: {
+              'text-field': ['get', 'order'],
+              'text-size': 10,
+              'text-font': ['DIN Pro Bold', 'Arial Unicode MS Bold'],
+              'text-allow-overlap': true
+            },
+            paint: { 'text-color': '#ffffff' }
+          });
+          
+          map.current!.on('click', circleLayerId, (e) => {
+            if (!e.features?.[0]) return;
+            const props = e.features[0].properties;
+            const coords = (e.features[0].geometry as GeoJSON.Point).coordinates;
+            
+            new mapboxgl.Popup({ offset: 15 })
+              .setLngLat([coords[0], coords[1]])
+              .setHTML(`
+                <div>
+                  <strong>${props?.name}</strong><br/>
+                  ${props?.address ? `${props.address}<br/>` : ''}
+                  <span style="color: ${props?.color}">Zone: ${props?.zone}</span><br/>
+                  <span>Visit Frequency: VF${props?.vf}</span>
+                </div>
+              `)
+              .addTo(map.current!);
+          });
+          
+          map.current!.on('mouseenter', circleLayerId, () => {
+            if (map.current) map.current.getCanvas().style.cursor = 'pointer';
+          });
+          map.current!.on('mouseleave', circleLayerId, () => {
+            if (map.current) map.current.getCanvas().style.cursor = '';
+          });
+        }
+      });
+      
+      // Fit bounds to all universe outlets
+      const allOutlets = Object.values(universeViewData.zoneGroups).flatMap(z => z.outlets);
+      if (allOutlets.length > 0) {
+        const bounds = new mapboxgl.LngLatBounds();
+        allOutlets.forEach(outlet => bounds.extend([outlet.longitude, outlet.latitude]));
+        map.current.fitBounds(bounds, { padding: 50 });
+      }
+      
+      return; // Skip schedule view rendering
+    }
 
     // Add markers and routes for each selected rep and day
     // OPTIMIZED: Use GeoJSON layers for large datasets (faster than individual markers)
@@ -673,7 +826,7 @@ export function RepMap() {
         map.current.fitBounds(bounds, { padding: 50 });
       }
     }
-  }, [repDayOutlets, isMapLoaded, reps, selectedDays]);
+  }, [repDayOutlets, isMapLoaded, reps, selectedDays, viewMode, universeViewData]);
 
   const toggleRep = (repId: string) => {
     setSelectedReps(prev => 
@@ -893,6 +1046,35 @@ export function RepMap() {
             </PopoverContent>
           </Popover>
 
+          {selectedReps.length > 0 && (
+            <div className="space-y-2">
+              <label className="text-sm font-medium">View Mode</label>
+              <div className="flex gap-2">
+                <Button
+                  variant={viewMode === 'schedule' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setViewMode('schedule')}
+                  className="flex-1"
+                >
+                  Schedule View
+                </Button>
+                <Button
+                  variant={viewMode === 'universe' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setViewMode('universe')}
+                  className="flex-1"
+                >
+                  Universe View
+                </Button>
+              </div>
+              {viewMode === 'universe' && (
+                <p className="text-xs text-muted-foreground">
+                  Shows all outlets grouped by zones (ignores day/week filters)
+                </p>
+              )}
+            </div>
+          )}
+
           <div className="space-y-2">
             <label className="text-sm font-medium">Select Roles</label>
             <div className="grid grid-cols-2 gap-2">
@@ -1033,8 +1215,8 @@ export function RepMap() {
           </div>
         )}
 
-        {/* Legend */}
-        {selectedReps.length > 0 && (
+        {/* Legend - Schedule View */}
+        {selectedReps.length > 0 && viewMode === 'schedule' && (
           <div className="mt-4 p-3 border rounded-lg">
             <h4 className="font-semibold mb-2 text-sm">Selected Routes</h4>
             <div className="space-y-2">
@@ -1064,6 +1246,28 @@ export function RepMap() {
                   );
                 });
               })}
+            </div>
+          </div>
+        )}
+
+        {/* Legend - Universe View */}
+        {selectedReps.length > 0 && viewMode === 'universe' && universeViewData && (
+          <div className="mt-4 p-3 border rounded-lg">
+            <h4 className="font-semibold mb-2 text-sm">
+              Universe: {universeViewData.totalOutlets} outlets across {universeViewData.zoneList.length} zones
+            </h4>
+            <div className="space-y-1 max-h-[200px] overflow-y-auto">
+              {Object.entries(universeViewData.zoneGroups).map(([zoneName, zoneData]) => (
+                <div key={zoneName} className="flex items-center gap-2">
+                  <div 
+                    className="w-3 h-3 rounded-full flex-shrink-0" 
+                    style={{ backgroundColor: zoneData.color }}
+                  />
+                  <span className="text-xs truncate flex-1">
+                    {zoneName} - {zoneData.outlets.length} outlets
+                  </span>
+                </div>
+              ))}
             </div>
           </div>
         )}
