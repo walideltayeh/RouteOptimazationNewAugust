@@ -160,12 +160,13 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/outlets'] });
       queryClient.invalidateQueries({ queryKey: ['/api/schedules'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/role-schedules'] });
       queryClient.invalidateQueries({ queryKey: ['/api/reps'] });
       setPendingChanges([]);
       setShowReoptimizeDialog(false);
       toast({ 
         title: "Re-optimization complete", 
-        description: "All schedules have been regenerated with the new zone assignments" 
+        description: "All schedules and role schedules have been regenerated with the new zone assignments" 
       });
     },
     onError: () => {

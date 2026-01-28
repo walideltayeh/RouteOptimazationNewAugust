@@ -3848,15 +3848,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
         totalWarnings += validation.warnings.length;
       }
       
+      // Also regenerate role schedules (for Merchandisers, Collection Agents, etc.)
+      let totalRoleSchedules = 0;
+      const allHierarchies = await storage.getRoleHierarchies();
+      
+      for (const rep of reps) {
+        const repSchedules = allSchedules.filter(s => s.repId === rep.id);
+        const repHierarchies = allHierarchies
+          .filter(h => h.repId === rep.id || h.repId === 'template')
+          .filter(h => h.isActive && h.role !== 'rep' && h.role !== '_config');
+        
+        if (repSchedules.length > 0 && repHierarchies.length > 0) {
+          const generatedRoleSchedules = await generateRoleSchedulesForRep(rep.id, repSchedules, repHierarchies);
+          totalRoleSchedules += generatedRoleSchedules.length;
+        }
+      }
+      
       res.json({
         success: true,
         schedulesCreated: schedules.length,
+        roleSchedulesCreated: totalRoleSchedules,
         repsProcessed: reps.length,
         validation: {
           errors: totalErrors,
           warnings: totalWarnings
         },
-        message: `Re-optimization complete. Generated ${schedules.length} schedules for ${reps.length} reps.`
+        message: `Re-optimization complete. Generated ${schedules.length} schedules and ${totalRoleSchedules} role schedules for ${reps.length} reps.`
       });
     } catch (error) {
       console.error("Re-optimization error:", error);
