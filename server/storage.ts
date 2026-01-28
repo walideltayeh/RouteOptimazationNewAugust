@@ -51,6 +51,7 @@ export interface IStorage {
   createOutlets(outlets: InsertOutlet[]): Promise<Outlet[]>;
   updateOutlet(id: string, outlet: Partial<InsertOutlet>): Promise<Outlet | undefined>;
   updateOutlets(updates: { id: string; data: Partial<InsertOutlet> }[]): Promise<Outlet[]>;
+  deleteOutlet(id: string): Promise<boolean>;
   deleteAllOutlets(): Promise<void>;
 
   // Reps
@@ -323,6 +324,23 @@ export class MemStorage implements IStorage {
       if (updated) results.push(updated);
     }
     return results;
+  }
+
+  async deleteOutlet(id: string): Promise<boolean> {
+    const existed = this.outlets.has(id);
+    if (existed) {
+      this.outlets.delete(id);
+      // Also remove from any schedules
+      const schedules = Array.from(this.schedules.values());
+      for (const schedule of schedules) {
+        const outletIds = schedule.outletIds as string[];
+        if (outletIds && outletIds.includes(id)) {
+          const updatedOutletIds = outletIds.filter((oid: string) => oid !== id);
+          this.schedules.set(schedule.id, { ...schedule, outletIds: updatedOutletIds });
+        }
+      }
+    }
+    return existed;
   }
 
   async deleteAllOutlets(): Promise<void> {

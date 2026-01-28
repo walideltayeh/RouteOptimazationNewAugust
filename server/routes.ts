@@ -2526,6 +2526,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Delete a specific outlet
+  app.delete("/api/outlets/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const deleted = await storage.deleteOutlet(id);
+      
+      if (!deleted) {
+        return res.status(404).json({ message: "Outlet not found" });
+      }
+      
+      res.json({ success: true, message: "Outlet deleted successfully" });
+    } catch (error) {
+      console.error("Failed to delete outlet:", error);
+      res.status(500).json({ message: "Failed to delete outlet" });
+    }
+  });
+
   // Clear all data (New Optimization)
   app.delete("/api/clear", async (_req, res) => {
     try {
