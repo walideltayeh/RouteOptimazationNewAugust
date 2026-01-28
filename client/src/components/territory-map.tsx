@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { MapPin, Users, Navigation } from 'lucide-react';
+import { MapPin, Users, Navigation, Trash2, RefreshCw } from 'lucide-react';
+import { useToast } from '@/hooks/use-toast';
+import { apiRequest } from '@/lib/queryClient';
 import type { Outlet, Rep } from '@shared/schema';
 import { kMeansClustering, findOptimalClusters, enhancedKMeansClustering, workloadBasedClustering, calculateOptimalReps } from '@/lib/clustering';
 
@@ -34,6 +36,11 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   const [isRenderingMarkers, setIsRenderingMarkers] = useState(false);
   const [viewMode, setViewMode] = useState<'cluster' | 'individual'>('cluster');
   const [selectedZone, setSelectedZone] = useState<string | null>(null);
+  const [needsReoptimization, setNeedsReoptimization] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [isOptimizing, setIsOptimizing] = useState(false);
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
 
   const { data: outlets = [] } = useQuery<Outlet[]>({
     queryKey: ['/api/outlets'],
@@ -42,6 +49,54 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   const { data: reps = [] } = useQuery<Rep[]>({
     queryKey: ['/api/reps'],
   });
+
+  // Delete outlet mutation
+  const deleteMutation = useMutation({
+    mutationFn: async (outletId: string) => {
+      await apiRequest("DELETE", `/api/outlets/${outletId}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/outlets'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/schedules'] });
+      toast({ title: "Success", description: "Outlet deleted successfully" });
+      setSelectedOutlet(null);
+      setShowDeleteConfirm(false);
+      setNeedsReoptimization(true);
+    },
+    onError: () => {
+      toast({ title: "Error", description: "Failed to delete outlet", variant: "destructive" });
+    }
+  });
+
+  // Reoptimize mutation
+  const reoptimizeMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest("POST", "/api/optimize", {
+        minVisitsPerDay: 15,
+        maxVisitsPerDay: 25,
+        workingDaysPerWeek: 5,
+        calculationMode: 'manual'
+      });
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/outlets'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/schedules'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/reps'] });
+      toast({ title: "Success", description: "Routes reoptimized successfully" });
+      setNeedsReoptimization(false);
+      setIsOptimizing(false);
+    },
+    onError: () => {
+      toast({ title: "Error", description: "Failed to reoptimize routes", variant: "destructive" });
+      setIsOptimizing(false);
+    }
+  });
+
+  const handleDeleteOutlet = () => {
+    if (!selectedOutlet) return;
+    deleteMutation.mutate(selectedOutlet.id);
+  };
 
   // Initialize map
   useEffect(() => {
@@ -396,6 +451,32 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
             </CardContent>
           </Card>
 
+          {/* Reoptimize Button - appears after changes */}
+          {needsReoptimization && (
+            <Card className="border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20">
+              <CardContent className="py-4">
+                <p className="text-sm text-amber-800 dark:text-amber-200 mb-3">
+                  Changes detected. Reoptimize to update all routes and schedules.
+                </p>
+                <Button
+                  onClick={() => {
+                    setIsOptimizing(true);
+                    reoptimizeMutation.mutate();
+                  }}
+                  disabled={isOptimizing}
+                  className="w-full"
+                >
+                  {isOptimizing ? (
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                  ) : (
+                    <RefreshCw className="h-4 w-4 mr-2" />
+                  )}
+                  Reoptimize All Routes
+                </Button>
+              </CardContent>
+            </Card>
+          )}
+
           {/* Selected Outlet Info */}
           {selectedOutlet && (
             <Card>
@@ -428,14 +509,49 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                   <div>Lng: {selectedOutlet.longitude.toFixed(6)}</div>
                 </div>
 
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setSelectedOutlet(null)}
-                  className="w-full"
-                >
-                  Close Details
-                </Button>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => { setSelectedOutlet(null); setShowDeleteConfirm(false); }}
+                    className="flex-1"
+                  >
+                    Close
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={() => setShowDeleteConfirm(true)}
+                    className="flex-1"
+                    disabled={deleteMutation.isPending}
+                  >
+                    <Trash2 className="h-4 w-4 mr-1" />
+                    Delete
+                  </Button>
+                </div>
+                
+                {/* Delete Confirmation */}
+                {showDeleteConfirm && (
+                  <div className="p-3 bg-red-50 dark:bg-red-900/20 rounded-lg border border-red-200 dark:border-red-800">
+                    <p className="text-sm text-red-800 dark:text-red-200 mb-3">
+                      Delete this outlet? This cannot be undone.
+                    </p>
+                    <div className="flex gap-2">
+                      <Button variant="outline" size="sm" className="flex-1" onClick={() => setShowDeleteConfirm(false)}>
+                        Cancel
+                      </Button>
+                      <Button 
+                        variant="destructive" 
+                        size="sm"
+                        className="flex-1"
+                        onClick={handleDeleteOutlet}
+                        disabled={deleteMutation.isPending}
+                      >
+                        {deleteMutation.isPending ? "Deleting..." : "Confirm Delete"}
+                      </Button>
+                    </div>
+                  </div>
+                )}
               </CardContent>
             </Card>
           )}
