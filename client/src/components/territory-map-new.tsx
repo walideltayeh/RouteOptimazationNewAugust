@@ -9,7 +9,7 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem } from '
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { MapPin, Users, Navigation, Layers, Grid3X3, Check, ChevronsUpDown, RefreshCw, Edit2, AlertCircle, Download } from 'lucide-react';
+import { MapPin, Users, Navigation, Layers, Grid3X3, Check, ChevronsUpDown, RefreshCw, Edit2, AlertCircle, Download, Trash2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { apiRequest } from '@/lib/queryClient';
 import type { Outlet, Rep } from '@shared/schema';
@@ -46,6 +46,8 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   const [showReoptimizeDialog, setShowReoptimizeDialog] = useState(false);
   const [vfFilters, setVfFilters] = useState<{vf1: boolean, vf2: boolean, vf4: boolean}>({vf1: true, vf2: true, vf4: true});
   const [isExporting, setIsExporting] = useState(false);
+  const [deletingOutletId, setDeletingOutletId] = useState<string | null>(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -168,6 +170,29 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
       toast({ title: "Error", description: "Failed to re-optimize schedules", variant: "destructive" });
     }
   });
+
+  // Delete outlet mutation
+  const deleteMutation = useMutation({
+    mutationFn: async (outletId: string) => {
+      await apiRequest("DELETE", `/api/outlets/${outletId}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/outlets'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/schedules'] });
+      toast({ title: "Success", description: "Outlet deleted successfully" });
+      setDeletingOutletId(null);
+      setShowDeleteConfirm(false);
+      setShowReoptimizeDialog(true);
+    },
+    onError: () => {
+      toast({ title: "Error", description: "Failed to delete outlet", variant: "destructive" });
+    }
+  });
+
+  const handleDeleteOutlet = () => {
+    if (!deletingOutletId) return;
+    deleteMutation.mutate(deletingOutletId);
+  };
 
   const handleReassignOutlet = () => {
     if (!editingOutlet || !newTerritory) return;
@@ -505,15 +530,22 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                   ${vfLabel}
                 </span>
               </div>
-              <button 
-                data-outlet-id="${escapeHtml(id || '')}"
-                data-outlet-name="${safeName}"
-                data-outlet-territory="${safeTerritory}"
-                data-outlet-lat="${outletLat}"
-                data-outlet-lng="${outletLng}"
-                class="edit-outlet-btn mt-2 w-full px-3 py-1 bg-blue-500 text-white text-xs rounded hover:bg-blue-600 cursor-pointer">
-                Reassign to Different Zone
-              </button>
+              <div style="display: flex; gap: 4px; margin-top: 8px;">
+                <button 
+                  data-outlet-id="${escapeHtml(id || '')}"
+                  data-outlet-name="${safeName}"
+                  data-outlet-territory="${safeTerritory}"
+                  data-outlet-lat="${outletLat}"
+                  data-outlet-lng="${outletLng}"
+                  class="edit-outlet-btn flex-1 px-2 py-1 bg-blue-500 text-white text-xs rounded hover:bg-blue-600 cursor-pointer">
+                  Reassign
+                </button>
+                <button 
+                  data-outlet-id="${escapeHtml(id || '')}"
+                  class="delete-outlet-btn flex-1 px-2 py-1 bg-red-600 text-white text-xs rounded hover:bg-red-700 cursor-pointer">
+                  Delete
+                </button>
+              </div>
             </div>
           `)
           .addTo(map.current!);
@@ -521,9 +553,9 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
         // Use popup's DOM element to scope the query
         const popupEl = popup.getElement();
         if (popupEl) {
-          const btn = popupEl.querySelector('.edit-outlet-btn');
-          if (btn) {
-            btn.addEventListener('click', (evt) => {
+          const editBtn = popupEl.querySelector('.edit-outlet-btn');
+          if (editBtn) {
+            editBtn.addEventListener('click', (evt) => {
               const target = evt.target as HTMLElement;
               const outletId = target.dataset.outletId || '';
               const outletName = target.dataset.outletName || '';
@@ -531,6 +563,16 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
               const lat = parseFloat(target.dataset.outletLat || '0');
               const lng = parseFloat(target.dataset.outletLng || '0');
               setEditingOutlet({ id: outletId, name: outletName, territory: outletTerritory, lat, lng });
+              popup.remove();
+            });
+          }
+          const deleteBtn = popupEl.querySelector('.delete-outlet-btn');
+          if (deleteBtn) {
+            deleteBtn.addEventListener('click', (evt) => {
+              const target = evt.target as HTMLElement;
+              const outletId = target.dataset.outletId || '';
+              setDeletingOutletId(outletId);
+              setShowDeleteConfirm(true);
               popup.remove();
             });
           }
@@ -862,15 +904,22 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                     ${vfLabel}
                   </span>
                 </div>
-                <button 
-                  data-outlet-id="${escapeHtml(id || '')}"
-                  data-outlet-name="${safeName}"
-                  data-outlet-territory="${safeTerritory}"
-                  data-outlet-lat="${outletLat}"
-                  data-outlet-lng="${outletLng}"
-                  class="edit-outlet-btn mt-2 w-full px-3 py-1 bg-blue-500 text-white text-xs rounded hover:bg-blue-600 cursor-pointer">
-                  Reassign to Different Zone
-                </button>
+                <div style="display: flex; gap: 4px; margin-top: 8px;">
+                  <button 
+                    data-outlet-id="${escapeHtml(id || '')}"
+                    data-outlet-name="${safeName}"
+                    data-outlet-territory="${safeTerritory}"
+                    data-outlet-lat="${outletLat}"
+                    data-outlet-lng="${outletLng}"
+                    class="edit-outlet-btn flex-1 px-2 py-1 bg-blue-500 text-white text-xs rounded hover:bg-blue-600 cursor-pointer">
+                    Reassign
+                  </button>
+                  <button 
+                    data-outlet-id="${escapeHtml(id || '')}"
+                    class="delete-outlet-btn flex-1 px-2 py-1 bg-red-600 text-white text-xs rounded hover:bg-red-700 cursor-pointer">
+                    Delete
+                  </button>
+                </div>
               </div>
             `)
             .addTo(map.current!);
@@ -878,9 +927,9 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
           // Use popup's DOM element to scope the query
           const popupEl = popup.getElement();
           if (popupEl) {
-            const btn = popupEl.querySelector('.edit-outlet-btn');
-            if (btn) {
-              btn.addEventListener('click', (evt) => {
+            const editBtn = popupEl.querySelector('.edit-outlet-btn');
+            if (editBtn) {
+              editBtn.addEventListener('click', (evt) => {
                 const target = evt.target as HTMLElement;
                 const outletId = target.dataset.outletId || '';
                 const outletName = target.dataset.outletName || '';
@@ -888,6 +937,16 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                 const lat = parseFloat(target.dataset.outletLat || '0');
                 const lng = parseFloat(target.dataset.outletLng || '0');
                 setEditingOutlet({ id: outletId, name: outletName, territory: outletTerritory, lat, lng });
+                popup.remove();
+              });
+            }
+            const deleteBtn = popupEl.querySelector('.delete-outlet-btn');
+            if (deleteBtn) {
+              deleteBtn.addEventListener('click', (evt) => {
+                const target = evt.target as HTMLElement;
+                const outletId = target.dataset.outletId || '';
+                setDeletingOutletId(outletId);
+                setShowDeleteConfirm(true);
                 popup.remove();
               });
             }
@@ -1358,6 +1417,40 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
               data-testid="button-confirm-reassign"
             >
               {reassignMutation.isPending ? "Reassigning..." : "Reassign"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center text-red-600">
+              <Trash2 className="mr-2 h-5 w-5" />
+              Delete Outlet
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-sm text-gray-600">
+              Are you sure you want to delete this outlet? This action cannot be undone.
+            </p>
+            <div className="p-3 bg-red-50 dark:bg-red-900/20 rounded-lg border border-red-200 dark:border-red-800">
+              <p className="text-sm text-red-700 dark:text-red-300">
+                The outlet will be permanently removed from all schedules and routes.
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setShowDeleteConfirm(false); setDeletingOutletId(null); }}>
+              Cancel
+            </Button>
+            <Button 
+              variant="destructive"
+              onClick={handleDeleteOutlet}
+              disabled={deleteMutation.isPending}
+            >
+              {deleteMutation.isPending ? "Deleting..." : "Delete Outlet"}
             </Button>
           </DialogFooter>
         </DialogContent>
