@@ -2543,6 +2543,38 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Bulk delete outlets by zone/territory
+  app.delete("/api/outlets/zone/:zoneName", async (req, res) => {
+    try {
+      const { zoneName } = req.params;
+      const decodedZoneName = decodeURIComponent(zoneName);
+      
+      // Get all outlets in the zone
+      const allOutlets = await storage.getOutlets();
+      const outletsInZone = allOutlets.filter(o => o.territory === decodedZoneName);
+      
+      if (outletsInZone.length === 0) {
+        return res.status(404).json({ message: "No outlets found in this zone" });
+      }
+      
+      // Delete each outlet in the zone
+      let deletedCount = 0;
+      for (const outlet of outletsInZone) {
+        const deleted = await storage.deleteOutlet(outlet.id);
+        if (deleted) deletedCount++;
+      }
+      
+      res.json({ 
+        success: true, 
+        message: `Successfully deleted ${deletedCount} outlets from zone "${decodedZoneName}"`,
+        deletedCount
+      });
+    } catch (error) {
+      console.error("Failed to bulk delete outlets:", error);
+      res.status(500).json({ message: "Failed to bulk delete outlets" });
+    }
+  });
+
   // Clear all data (New Optimization)
   app.delete("/api/clear", async (_req, res) => {
     try {

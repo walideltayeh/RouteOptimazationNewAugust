@@ -48,6 +48,8 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   const [isExporting, setIsExporting] = useState(false);
   const [deletingOutletId, setDeletingOutletId] = useState<string | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deletingZone, setDeletingZone] = useState<{name: string, count: number} | null>(null);
+  const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false);
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -192,6 +194,30 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   const handleDeleteOutlet = () => {
     if (!deletingOutletId) return;
     deleteMutation.mutate(deletingOutletId);
+  };
+
+  // Bulk delete zone mutation
+  const bulkDeleteMutation = useMutation({
+    mutationFn: async (zoneName: string) => {
+      await apiRequest("DELETE", `/api/outlets/zone/${encodeURIComponent(zoneName)}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/outlets'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/schedules'] });
+      toast({ title: "Success", description: `Zone "${deletingZone?.name}" deleted successfully (${deletingZone?.count} outlets)` });
+      setDeletingZone(null);
+      setShowBulkDeleteConfirm(false);
+      setSelectedZones(prev => prev.filter(z => z !== deletingZone?.name));
+      setShowReoptimizeDialog(true);
+    },
+    onError: () => {
+      toast({ title: "Error", description: "Failed to delete zone", variant: "destructive" });
+    }
+  });
+
+  const handleBulkDeleteZone = () => {
+    if (!deletingZone) return;
+    bulkDeleteMutation.mutate(deletingZone.name);
   };
 
   const handleReassignOutlet = () => {
@@ -1307,10 +1333,23 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                       <div key={territory} className="p-3 bg-gray-50 rounded-lg">
                         <div className="flex items-center justify-between mb-2">
                           <h4 className="font-semibold text-sm">{territory}</h4>
-                          <div
-                            className="w-3 h-3 rounded-full"
-                            style={{ backgroundColor: getTerritoryColor(territory) }}
-                          />
+                          <div className="flex items-center gap-2">
+                            <div
+                              className="w-3 h-3 rounded-full"
+                              style={{ backgroundColor: getTerritoryColor(territory) }}
+                            />
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 w-6 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+                              onClick={() => {
+                                setDeletingZone({ name: territory, count: territoryOutlets?.length || 0 });
+                                setShowBulkDeleteConfirm(true);
+                              }}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
                         </div>
                         {rep && (
                           <p className="text-xs text-gray-600 mb-1">{rep.name}</p>
@@ -1451,6 +1490,43 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
               disabled={deleteMutation.isPending}
             >
               {deleteMutation.isPending ? "Deleting..." : "Delete Outlet"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk Delete Zone Confirmation Dialog */}
+      <Dialog open={showBulkDeleteConfirm} onOpenChange={setShowBulkDeleteConfirm}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center text-red-600">
+              <Trash2 className="mr-2 h-5 w-5" />
+              Delete Entire Zone
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-sm text-gray-600">
+              Are you sure you want to delete the entire zone <strong>"{deletingZone?.name}"</strong>?
+            </p>
+            <div className="p-4 bg-red-50 dark:bg-red-900/20 rounded-lg border border-red-200 dark:border-red-800">
+              <p className="text-lg font-bold text-red-700 dark:text-red-300 mb-2">
+                {deletingZone?.count} outlets will be permanently deleted
+              </p>
+              <p className="text-sm text-red-600 dark:text-red-400">
+                This action cannot be undone. All outlets in this zone will be removed from schedules and routes.
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setShowBulkDeleteConfirm(false); setDeletingZone(null); }}>
+              Cancel
+            </Button>
+            <Button 
+              variant="destructive"
+              onClick={handleBulkDeleteZone}
+              disabled={bulkDeleteMutation.isPending}
+            >
+              {bulkDeleteMutation.isPending ? "Deleting..." : `Delete ${deletingZone?.count} Outlets`}
             </Button>
           </DialogFooter>
         </DialogContent>
