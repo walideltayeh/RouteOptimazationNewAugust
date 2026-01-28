@@ -16,8 +16,12 @@ import type { Outlet, Rep } from '@shared/schema';
 
 // Set a default token or use environment variable
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || import.meta.env.VITE_MAPBOX_PUBLIC_KEY;
+console.log('Mapbox token check:', MAPBOX_TOKEN ? `Found (length: ${MAPBOX_TOKEN.length}, prefix: ${MAPBOX_TOKEN.substring(0, 5)}...)` : 'NOT FOUND');
 if (MAPBOX_TOKEN && MAPBOX_TOKEN !== 'demo_token' && !MAPBOX_TOKEN.includes('your_') && MAPBOX_TOKEN.length > 10) {
   mapboxgl.accessToken = MAPBOX_TOKEN;
+  console.log('Mapbox access token SET');
+} else {
+  console.log('Mapbox token invalid or not set');
 }
 
 interface TerritoryMapProps {
