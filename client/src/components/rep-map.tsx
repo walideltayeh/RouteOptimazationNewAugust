@@ -16,7 +16,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { Check, ChevronsUpDown, Zap, Save, Download, GripVertical, Edit2 } from "lucide-react";
+import { Check, ChevronsUpDown, Zap, Save, Download, GripVertical, Edit2, Trash2, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -76,6 +76,8 @@ export function RepMap() {
   } | null>(null);
   const [newZone, setNewZone] = useState<string>('');
   const [newRepId, setNewRepId] = useState<string>('');
+  const [needsReoptimization, setNeedsReoptimization] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const markersRef = useRef<mapboxgl.Marker[]>([]);
   // Track GeoJSON layer IDs for cleanup
   const geoJSONLayersRef = useRef<{ circleLayerId: string; handlers: { click: any; mouseenter: any; mouseleave: any } }[]>([]);
@@ -513,11 +515,35 @@ export function RepMap() {
       setEditingOutlet(null);
       setNewZone('');
       setNewRepId('');
+      setNeedsReoptimization(true);
     },
     onError: () => {
       toast({ title: "Error", description: "Failed to reassign outlet", variant: "destructive" });
     }
   });
+
+  // Delete outlet mutation
+  const deleteMutation = useMutation({
+    mutationFn: async (outletId: string) => {
+      await apiRequest("DELETE", `/api/outlets/${outletId}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/outlets'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/schedules'] });
+      toast({ title: "Success", description: "Outlet deleted successfully" });
+      setEditingOutlet(null);
+      setShowDeleteConfirm(false);
+      setNeedsReoptimization(true);
+    },
+    onError: () => {
+      toast({ title: "Error", description: "Failed to delete outlet", variant: "destructive" });
+    }
+  });
+
+  const handleDeleteOutlet = () => {
+    if (!editingOutlet) return;
+    deleteMutation.mutate(editingOutlet.id);
+  };
 
   const handleReassignOutlet = () => {
     if (!editingOutlet || !newZone) return;
@@ -1225,6 +1251,35 @@ export function RepMap() {
             </Button>
           </div>
         )}
+        
+        {/* Reoptimize Button - appears after changes */}
+        {needsReoptimization && (
+          <div className="mt-4 p-3 bg-amber-50 dark:bg-amber-900/20 rounded-xl border border-amber-200 dark:border-amber-800">
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-amber-800 dark:text-amber-200">
+                Changes detected. Reoptimize to update all routes and schedules.
+              </p>
+              <Button
+                onClick={() => {
+                  setIsOptimizing(true);
+                  optimizeRouteMutation.mutate();
+                  setNeedsReoptimization(false);
+                }}
+                disabled={isOptimizing}
+                size="sm"
+                className="ml-4"
+              >
+                {isOptimizing ? (
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                ) : (
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                )}
+                Reoptimize All Routes
+              </Button>
+            </div>
+          </div>
+        )}
+        
         <div className="flex flex-col gap-4 mt-4">
           <Popover open={open} onOpenChange={setOpen}>
             <PopoverTrigger asChild>
@@ -1566,17 +1621,49 @@ export function RepMap() {
                 </Select>
               </div>
             </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => { setEditingOutlet(null); setNewZone(''); setNewRepId(''); }}>
-                Cancel
-              </Button>
+            <DialogFooter className="flex justify-between sm:justify-between">
               <Button 
-                onClick={handleReassignOutlet} 
-                disabled={!newZone || reassignMutation.isPending}
+                variant="destructive" 
+                onClick={() => setShowDeleteConfirm(true)}
+                disabled={deleteMutation.isPending}
               >
-                {reassignMutation.isPending ? "Reassigning..." : "Reassign"}
+                <Trash2 className="h-4 w-4 mr-2" />
+                Delete Outlet
               </Button>
+              <div className="flex gap-2">
+                <Button variant="outline" onClick={() => { setEditingOutlet(null); setNewZone(''); setNewRepId(''); setShowDeleteConfirm(false); }}>
+                  Cancel
+                </Button>
+                <Button 
+                  onClick={handleReassignOutlet} 
+                  disabled={!newZone || reassignMutation.isPending}
+                >
+                  {reassignMutation.isPending ? "Reassigning..." : "Reassign"}
+                </Button>
+              </div>
             </DialogFooter>
+            
+            {/* Delete Confirmation */}
+            {showDeleteConfirm && (
+              <div className="mt-4 p-4 bg-red-50 dark:bg-red-900/20 rounded-lg border border-red-200 dark:border-red-800">
+                <p className="text-sm text-red-800 dark:text-red-200 mb-3">
+                  Are you sure you want to delete this outlet? This action cannot be undone.
+                </p>
+                <div className="flex gap-2 justify-end">
+                  <Button variant="outline" size="sm" onClick={() => setShowDeleteConfirm(false)}>
+                    No, Keep It
+                  </Button>
+                  <Button 
+                    variant="destructive" 
+                    size="sm" 
+                    onClick={handleDeleteOutlet}
+                    disabled={deleteMutation.isPending}
+                  >
+                    {deleteMutation.isPending ? "Deleting..." : "Yes, Delete"}
+                  </Button>
+                </div>
+              </div>
+            )}
           </DialogContent>
         </Dialog>
       </CardContent>
