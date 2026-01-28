@@ -35,6 +35,7 @@ const TERRITORY_COLORS = [
 ];
 
 export default function TerritoryMap({ className }: TerritoryMapProps) {
+  console.log('TerritoryMap component rendering');
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
   const [selectedOutlet, setSelectedOutlet] = useState<Outlet | null>(null);
@@ -272,7 +273,13 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
 
   // Initialize map
   useEffect(() => {
-    if (map.current || !mapContainer.current) return;
+    console.log('Map useEffect running, map.current:', !!map.current, 'mapContainer.current:', !!mapContainer.current);
+    if (map.current || !mapContainer.current) {
+      console.log('Skipping map init - already initialized or no container');
+      return;
+    }
+
+    console.log('Initializing map...');
 
     try {
       if (!MAPBOX_TOKEN || MAPBOX_TOKEN === 'demo_token' || MAPBOX_TOKEN.includes('your_') || MAPBOX_TOKEN.length <= 10) {
@@ -283,9 +290,11 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
       // Set Lebanon as default center since that's the data we're working with
       const lebanonCenter: [number, number] = [35.8623, 33.8938]; // Beirut coordinates
       
+      console.log('Creating Mapbox map with token:', MAPBOX_TOKEN.substring(0, 10) + '...');
+      
       map.current = new mapboxgl.Map({
         container: mapContainer.current,
-        style: 'mapbox://styles/mapbox/light-v11',
+        style: 'mapbox://styles/mapbox/streets-v12',
         center: lebanonCenter,
         zoom: 8
       });
@@ -295,9 +304,17 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
         console.log('Map loaded successfully');
       });
 
+      map.current.on('style.load', () => {
+        console.log('Map style loaded');
+      });
+
       map.current.on('error', (e) => {
         console.error('Map error:', e);
         setMapError('Failed to load map. Please check your Mapbox token.');
+      });
+
+      map.current.on('sourcedata', () => {
+        console.log('Map sourcedata event');
       });
 
       return () => {
