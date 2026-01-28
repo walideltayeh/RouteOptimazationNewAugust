@@ -200,12 +200,29 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
       `);
 
       clusterEl.addEventListener('click', () => {
-        // Zoom to territory bounds on click
+        // Zoom to territory bounds and show individual outlet markers
         const territoryBounds = new mapboxgl.LngLatBounds();
         territoryOutlets.forEach(outlet => {
           territoryBounds.extend([outlet.longitude, outlet.latitude]);
         });
         map.current!.fitBounds(territoryBounds, { padding: 50 });
+        
+        // Render individual outlet markers for this territory
+        territoryOutlets.forEach((outlet) => {
+          const markerEl = document.createElement('div');
+          markerEl.className = 'outlet-marker w-4 h-4 rounded-full border-2 border-white shadow-md cursor-pointer hover:scale-150 transition-transform';
+          markerEl.style.backgroundColor = getTerritoryColor(territory);
+          markerEl.title = outlet.name;
+
+          markerEl.addEventListener('click', (e) => {
+            e.stopPropagation();
+            setSelectedOutlet(outlet);
+          });
+
+          new mapboxgl.Marker(markerEl)
+            .setLngLat([outlet.longitude, outlet.latitude])
+            .addTo(map.current!);
+        });
       });
 
       new mapboxgl.Marker(clusterEl)
