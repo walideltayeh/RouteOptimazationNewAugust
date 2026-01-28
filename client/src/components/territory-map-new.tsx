@@ -270,9 +270,18 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
 
   // Initialize map
   useEffect(() => {
-    if (map.current || !mapContainer.current) return;
+    console.log('[MAP] useEffect - map.current:', !!map.current, 'container:', !!mapContainer.current);
+    if (map.current) {
+      console.log('[MAP] Skipping - map already exists');
+      return;
+    }
+    if (!mapContainer.current) {
+      console.log('[MAP] Skipping - no container');
+      return;
+    }
 
     try {
+      console.log('[MAP] Creating map instance...');
       if (!MAPBOX_TOKEN || MAPBOX_TOKEN === 'demo_token' || MAPBOX_TOKEN.includes('your_') || MAPBOX_TOKEN.length <= 10) {
         setMapError('Mapbox token not configured. Please set VITE_MAPBOX_PUBLIC_KEY environment variable.');
         return;
@@ -288,13 +297,20 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
         zoom: 8
       });
 
+      console.log('[MAP] Map instance created, waiting for load event...');
+
       map.current.on('load', () => {
+        console.log('[MAP] Map loaded successfully!');
         setIsMapLoaded(true);
       });
 
       map.current.on('error', (e) => {
-        console.error('Map error:', e);
+        console.error('[MAP] Map error:', e);
         setMapError('Failed to load map. Please check your Mapbox token.');
+      });
+
+      map.current.on('idle', () => {
+        console.log('[MAP] Map is idle (fully rendered)');
       });
 
       return () => {
