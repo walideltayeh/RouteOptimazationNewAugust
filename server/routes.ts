@@ -2218,11 +2218,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
         data = parsed.data as any[];
         console.log('Parsed data sample:', data.slice(0, 3));
         console.log('Total parsed rows:', data.length);
-      } else if (mimetype === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" || originalname.endsWith(".xlsx")) {
-        const workbook = XLSX.read(buffer, { type: "buffer" });
-        const sheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[sheetName];
-        data = XLSX.utils.sheet_to_json(worksheet);
+      } else if (mimetype === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" || originalname.endsWith(".xlsx") || originalname.endsWith(".xls")) {
+        try {
+          const workbook = XLSX.read(buffer, { type: "buffer" });
+          const sheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[sheetName];
+          data = XLSX.utils.sheet_to_json(worksheet);
+          
+          // Check if data looks like encrypted content
+          if (data.length > 0) {
+            const firstRow = data[0] as Record<string, any>;
+            const keys = Object.keys(firstRow);
+            // Check for encryption markers
+            if (keys.some(k => k.includes('CRYPT') || k.includes('\u0000') || k.includes('ÿ'))) {
+              console.error('Excel file appears to be encrypted or password-protected');
+              return res.status(400).json({ 
+                message: "This Excel file appears to be password-protected or encrypted. Please save it without password protection and try again." 
+              });
+            }
+          }
+          
+          console.log('Excel parsed - columns:', data.length > 0 ? Object.keys(data[0] as any).join(', ') : 'none');
+          console.log('Excel parsed - total rows:', data.length);
+        } catch (xlsxError: any) {
+          console.error('Excel parsing error:', xlsxError.message);
+          if (xlsxError.message?.includes('password') || xlsxError.message?.includes('encrypt')) {
+            return res.status(400).json({ 
+              message: "This Excel file is password-protected. Please remove the password and try again." 
+            });
+          }
+          return res.status(400).json({ 
+            message: "Failed to read Excel file. Please ensure it's a valid .xlsx file and not password-protected." 
+          });
+        }
       } else {
         return res.status(400).json({ message: "Unsupported file format. Please upload CSV or Excel files." });
       }
