@@ -2279,23 +2279,56 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // Normalize row keys to lowercase for consistent matching
           const normalizedRow: Record<string, string> = {};
           Object.keys(row).forEach(key => {
-            normalizedRow[key.toLowerCase().trim()] = row[key];
+            normalizedRow[key.toLowerCase().trim().replace(/[_\s]+/g, '')] = row[key];
           });
           
+          // Log column headers on first row for debugging
+          if (outlets.length === 0) {
+            console.log('Available columns:', Object.keys(row).join(', '));
+            console.log('Normalized keys:', Object.keys(normalizedRow).join(', '));
+          }
+          
+          // Parse latitude - support many common column name variations
+          const latValue = normalizedRow['latitude'] || normalizedRow['lat'] || 
+                          normalizedRow['y'] || normalizedRow['gpslat'] || normalizedRow['gpslatitude'] ||
+                          normalizedRow['geolat'] || normalizedRow['geolatitude'] ||
+                          normalizedRow['coordlat'] || normalizedRow['coordy'] ||
+                          normalizedRow['poslat'] || normalizedRow['posy'] ||
+                          row.latitude || row.Latitude || row.lat || row.Lat || row.LAT ||
+                          row.Y || row.y || row['GPS Lat'] || row['GPS Latitude'] || 
+                          row['Geo Lat'] || row['Geo Latitude'] || "0";
+          
+          // Parse longitude - support many common column name variations  
+          const lngValue = normalizedRow['longitude'] || normalizedRow['lng'] || normalizedRow['lon'] ||
+                          normalizedRow['x'] || normalizedRow['gpslong'] || normalizedRow['gpslongitude'] || normalizedRow['gpslng'] ||
+                          normalizedRow['geolong'] || normalizedRow['geolongitude'] || normalizedRow['geolng'] ||
+                          normalizedRow['coordlong'] || normalizedRow['coordx'] || normalizedRow['coordlng'] ||
+                          normalizedRow['poslong'] || normalizedRow['posx'] || normalizedRow['poslng'] ||
+                          row.longitude || row.Longitude || row.lng || row.Lng || row.LNG ||
+                          row.lon || row.Lon || row.LON ||
+                          row.X || row.x || row['GPS Long'] || row['GPS Longitude'] || row['GPS Lng'] ||
+                          row['Geo Long'] || row['Geo Longitude'] || row['Geo Lng'] || "0";
+          
           const outlet: typeof insertOutletSchema._type = {
-            name: normalizedRow['outlet name'] || normalizedRow['outletname'] || normalizedRow['outlet_name'] ||
-                  normalizedRow['name'] || normalizedRow['outlet'] ||
-                  normalizedRow['shop name'] || normalizedRow['shopname'] || normalizedRow['shop_name'] || normalizedRow['shop'] ||
-                  normalizedRow['store name'] || normalizedRow['storename'] || normalizedRow['store_name'] || normalizedRow['store'] ||
-                  normalizedRow['customer name'] || normalizedRow['customername'] || normalizedRow['customer_name'] || normalizedRow['customer'] ||
-                  normalizedRow['location'] || normalizedRow['site'] ||
+            name: normalizedRow['outletname'] || normalizedRow['name'] || normalizedRow['outlet'] ||
+                  normalizedRow['shopname'] || normalizedRow['shop'] ||
+                  normalizedRow['storename'] || normalizedRow['store'] ||
+                  normalizedRow['customername'] || normalizedRow['customer'] ||
+                  normalizedRow['location'] || normalizedRow['site'] || normalizedRow['account'] ||
+                  row['Outlet Name'] || row['Shop Name'] || row['Store Name'] || row['Customer Name'] ||
+                  row.Name || row.name || row.Outlet || row.outlet ||
                   `Outlet ${outlets.length + 1}`,
-            address: `${row.District || ''} - ${row.Region || ''} - ${row.Area || ''}`.replace(/^- |- $|^-$/, '').trim() || row.address || row.Address || "",
-            latitude: parseFloat(row.latitude || row.Latitude || row.lat || row.Lat || "0"),
-            longitude: parseFloat(row.longitude || row.Longitude || row.lng || row.Lng || row.lon || row.Lon || "0"),
-            visitFrequency: parseInt(row.vf || row.VF || row.visit_frequency || row["Visit Frequency"] || "2"),
+            address: normalizedRow['address'] || normalizedRow['addr'] || normalizedRow['streetaddress'] ||
+                    normalizedRow['fulladdress'] || normalizedRow['location'] ||
+                    `${row.District || ''} - ${row.Region || ''} - ${row.Area || ''}`.replace(/^- |- $|^-$/, '').trim() || 
+                    row.address || row.Address || "",
+            latitude: parseFloat(latValue),
+            longitude: parseFloat(lngValue),
+            visitFrequency: parseInt(normalizedRow['vf'] || normalizedRow['visitfrequency'] || 
+                                    row.vf || row.VF || row.visit_frequency || row["Visit Frequency"] || "2"),
             timePerVisit: isNaN(timePerVisit) ? 30 : Math.max(5, Math.min(120, timePerVisit)),
-            territory: row.District || row.territory || row.Territory || row.zone || row.Zone || null,
+            territory: normalizedRow['district'] || normalizedRow['territory'] || normalizedRow['zone'] || normalizedRow['region'] ||
+                      row.District || row.territory || row.Territory || row.zone || row.Zone || null,
             repId: null,
             cluster: null
           };
