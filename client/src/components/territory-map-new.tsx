@@ -1,6 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import mapboxgl from 'mapbox-gl';
-import 'mapbox-gl/dist/mapbox-gl.css';
+import { useEffect, useState, useCallback, useMemo } from 'react';
+import { GoogleMap, LoadScript, Marker, InfoWindow, MarkerClusterer } from '@react-google-maps/api';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -14,31 +13,34 @@ import { useToast } from '@/hooks/use-toast';
 import { apiRequest } from '@/lib/queryClient';
 import type { Outlet, Rep } from '@shared/schema';
 
-// Set a default token or use environment variable
-const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || import.meta.env.VITE_MAPBOX_PUBLIC_KEY;
-console.log('[MAP] Token available:', !!MAPBOX_TOKEN, MAPBOX_TOKEN ? `(${MAPBOX_TOKEN.length} chars)` : '');
-if (MAPBOX_TOKEN && MAPBOX_TOKEN !== 'demo_token' && !MAPBOX_TOKEN.includes('your_') && MAPBOX_TOKEN.length > 10) {
-  mapboxgl.accessToken = MAPBOX_TOKEN;
-  console.log('[MAP] Token set successfully');
-}
+const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '';
 
 interface TerritoryMapProps {
   className?: string;
 }
 
-// Territory colors for visual distinction
 const TERRITORY_COLORS = [
   '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7',
   '#DDA0DD', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E9'
 ];
 
+const mapContainerStyle = {
+  width: '100%',
+  height: '500px',
+  borderRadius: '0.5rem'
+};
+
+const defaultCenter = {
+  lat: 33.8938,
+  lng: 35.8623
+};
+
 export default function TerritoryMap({ className }: TerritoryMapProps) {
-  const mapContainer = useRef<HTMLDivElement>(null);
-  const map = useRef<mapboxgl.Map | null>(null);
+  const [map, setMap] = useState<google.maps.Map | null>(null);
   const [selectedOutlet, setSelectedOutlet] = useState<Outlet | null>(null);
+  const [selectedCluster, setSelectedCluster] = useState<{territory: string, lat: number, lng: number, count: number, outlets: Outlet[]} | null>(null);
   const [mapError, setMapError] = useState<string | null>(null);
   const [isMapLoaded, setIsMapLoaded] = useState(false);
-  const [isRenderingMarkers, setIsRenderingMarkers] = useState(false);
   const [viewMode, setViewMode] = useState<'cluster' | 'individual'>('cluster');
   const [selectedZones, setSelectedZones] = useState<string[]>([]);
   const [open, setOpen] = useState(false);
@@ -55,7 +57,6 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  // Export functions
   const exportAllClusters = async () => {
     setIsExporting(true);
     try {
@@ -135,11 +136,10 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     mutationFn: async (updates: Array<{id: string, territory: string, repId?: string, outletData: {name: string, oldTerritory: string}}>) => {
       const apiUpdates = updates.map(u => ({ id: u.id, territory: u.territory, repId: u.repId }));
       await apiRequest("POST", "/api/outlets/bulk-reassign", { updates: apiUpdates });
-      return updates; // Return the full data for onSuccess
+      return updates;
     },
     onSuccess: (updates) => {
       queryClient.invalidateQueries({ queryKey: ['/api/outlets'] });
-      // Only add to pending changes after successful mutation
       updates.forEach(update => {
         setPendingChanges(prev => [...prev, {
           id: update.id,
@@ -176,7 +176,6 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     }
   });
 
-  // Delete outlet mutation
   const deleteMutation = useMutation({
     mutationFn: async (outletId: string) => {
       await apiRequest("DELETE", `/api/outlets/${outletId}`);
@@ -199,7 +198,6 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     deleteMutation.mutate(deletingOutletId);
   };
 
-  // Bulk delete zone mutation
   const bulkDeleteMutation = useMutation({
     mutationFn: async (zoneName: string) => {
       await apiRequest("DELETE", `/api/outlets/zone/${encodeURIComponent(zoneName)}`);
@@ -234,7 +232,6 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
       outletData: { name: editingOutlet.name, oldTerritory: editingOutlet.territory }
     }];
     
-    // Pending changes are now added in onSuccess callback
     reassignMutation.mutate(updates);
     setEditingOutlet(null);
     setNewTerritory('');
@@ -244,781 +241,158 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     reoptimizeMutation.mutate();
   };
 
-  // Group outlets by territory/rep for clustering
-  const territoryGroups = outlets.reduce((acc, outlet) => {
-    const key = outlet.territory || outlet.repId || 'unassigned';
-    if (!acc[key]) {
-      acc[key] = [];
-    }
-    acc[key].push(outlet);
-    return acc;
-  }, {} as Record<string, Outlet[]>);
+  const territoryGroups = useMemo(() => {
+    return outlets.reduce((acc, outlet) => {
+      const key = outlet.territory || outlet.repId || 'unassigned';
+      if (!acc[key]) {
+        acc[key] = [];
+      }
+      acc[key].push(outlet);
+      return acc;
+    }, {} as Record<string, Outlet[]>);
+  }, [outlets]);
 
-  // Get territory color
-  const getTerritoryColor = (territory: string) => {
+  const getTerritoryColor = useCallback((territory: string) => {
     const territories = Object.keys(territoryGroups);
     const index = territories.indexOf(territory);
     return TERRITORY_COLORS[index % TERRITORY_COLORS.length];
-  };
+  }, [territoryGroups]);
 
-  // Get rep for territory
   const getRepForTerritory = (territory: string) => {
     const territoryOutlets = territoryGroups[territory];
     if (!territoryOutlets || territoryOutlets.length === 0) return null;
     return reps.find(r => r.id === territoryOutlets[0].repId);
   };
 
-  // Initialize map
-  useEffect(() => {
-    console.log('[MAP] useEffect - map.current:', !!map.current, 'container:', !!mapContainer.current);
-    if (map.current) {
-      console.log('[MAP] Skipping - map already exists');
-      return;
-    }
-    if (!mapContainer.current) {
-      console.log('[MAP] Skipping - no container');
-      return;
-    }
-
-    try {
-      console.log('[MAP] Creating map instance...');
-      if (!MAPBOX_TOKEN || MAPBOX_TOKEN === 'demo_token' || MAPBOX_TOKEN.includes('your_') || MAPBOX_TOKEN.length <= 10) {
-        setMapError('Mapbox token not configured. Please set VITE_MAPBOX_PUBLIC_KEY environment variable.');
-        return;
-      }
-
-      // Set Lebanon as default center since that's the data we're working with
-      const lebanonCenter: [number, number] = [35.8623, 33.8938]; // Beirut coordinates
-      
-      map.current = new mapboxgl.Map({
-        container: mapContainer.current,
-        style: 'mapbox://styles/mapbox/light-v11',
-        center: lebanonCenter,
-        zoom: 8
-      });
-
-      console.log('[MAP] Map instance created, waiting for load event...');
-
-      map.current.on('load', () => {
-        console.log('[MAP] Map loaded successfully!');
-        setIsMapLoaded(true);
-      });
-
-      map.current.on('error', (e) => {
-        console.error('[MAP] Map error:', e);
-        setMapError('Failed to load map. Please check your Mapbox token.');
-      });
-
-      map.current.on('idle', () => {
-        console.log('[MAP] Map is idle (fully rendered)');
-      });
-
-      return () => {
-        if (map.current) {
-          map.current.remove();
-          map.current = null;
-        }
-      };
-    } catch (error) {
-      console.error('Failed to initialize map:', error);
-      setMapError('Failed to initialize map. Please check your configuration.');
-    }
-  }, []);
-
-  // Render map markers based on view mode
-  useEffect(() => {
-    if (!map.current || !isMapLoaded || outlets.length === 0) return;
-
-    console.log(`Rendering ${outlets.length} outlets in ${viewMode} mode, VF filters: VF1=${vfFilters.vf1}, VF2=${vfFilters.vf2}, VF4=${vfFilters.vf4}`);
-    setIsRenderingMarkers(true);
-    
-    // For very large datasets, force cluster view and use GeoJSON rendering
-    const isLargeDataset = outlets.length > 5000;
-    if (isLargeDataset && viewMode === 'individual') {
-      console.log('Large dataset detected, forcing cluster view for performance');
-      setViewMode('cluster');
-      return; // Will re-render with cluster mode
-    }
-    
-    // Clear existing sources and layers properly
-    const mapInstance = map.current;
-    try {
-      if (mapInstance.getLayer('territory-clusters')) mapInstance.removeLayer('territory-clusters');
-      if (mapInstance.getLayer('territory-labels')) mapInstance.removeLayer('territory-labels');
-      if (mapInstance.getSource('territories')) mapInstance.removeSource('territories');
-      if (mapInstance.getLayer('individual-markers')) mapInstance.removeLayer('individual-markers');
-      if (mapInstance.getSource('individual-outlets')) mapInstance.removeSource('individual-outlets');
-    } catch (error) {
-      console.log('Source/layer cleanup:', error);
-    }
-
-    // Capture current filter state for use in render functions
-    const currentVfFilters = { ...vfFilters };
-    const currentSelectedZones = [...selectedZones];
-
-    // Helper to filter outlets by VF
-    const filterByVf = (outletList: typeof outlets) => {
-      return outletList.filter(outlet => {
-        const vf = outlet.visitFrequency;
-        if (vf === 1 && !currentVfFilters.vf1) return false;
-        if (vf === 2 && !currentVfFilters.vf2) return false;
-        if (vf === 4 && !currentVfFilters.vf4) return false;
-        return true;
-      });
-    };
-
-    if (viewMode === 'cluster') {
-      // Render cluster view with VF filtering
-      const filteredTerritoryGroups: Record<string, typeof outlets> = {};
-      
-      Object.entries(territoryGroups).forEach(([territory, territoryOutlets]) => {
-        const filtered = filterByVf(territoryOutlets);
-        if (filtered.length > 0) {
-          filteredTerritoryGroups[territory] = filtered;
-        }
-      });
-
-      const territoryFeatures = Object.entries(filteredTerritoryGroups).map(([territory, filteredOutlets], index) => {
-        const avgLat = filteredOutlets.reduce((sum, o) => sum + o.latitude, 0) / filteredOutlets.length;
-        const avgLng = filteredOutlets.reduce((sum, o) => sum + o.longitude, 0) / filteredOutlets.length;
-        
-        return {
-          type: 'Feature' as const,
-          properties: {
-            territory,
-            count: filteredOutlets.length,
-            color: TERRITORY_COLORS[index % TERRITORY_COLORS.length],
-            outlets: JSON.stringify(filteredOutlets.slice(0, 10).map(o => ({ id: o.id, name: o.name })))
-          },
-          geometry: {
-            type: 'Point' as const,
-            coordinates: [avgLng, avgLat]
-          }
-        };
-      });
-
-      try {
-        mapInstance.addSource('territories', {
-          type: 'geojson',
-          data: {
-            type: 'FeatureCollection',
-            features: territoryFeatures
-          }
-        });
-
-        mapInstance.addLayer({
-          id: 'territory-clusters',
-          type: 'circle',
-          source: 'territories',
-          paint: {
-            'circle-radius': {
-              type: 'exponential',
-              property: 'count',
-              stops: [[1, 15], [10, 25], [50, 35], [100, 45]]
-            },
-            'circle-color': ['get', 'color'],
-            'circle-opacity': 0.8,
-            'circle-stroke-width': 2,
-            'circle-stroke-color': '#ffffff'
-          }
-        });
-
-        mapInstance.addLayer({
-          id: 'territory-labels',
-          type: 'symbol',
-          source: 'territories',
-          layout: {
-            'text-field': ['get', 'count'],
-            'text-font': ['Open Sans Semibold', 'Arial Unicode MS Bold'],
-            'text-size': 12,
-            'text-offset': [0, 0],
-            'text-anchor': 'center'
-          },
-          paint: {
-            'text-color': '#ffffff'
-          }
-        });
-
-        // Attach cluster click handler
-        attachClusterClickHandler();
-
-        if (territoryFeatures.length > 0) {
-          const coordinates = territoryFeatures.map(f => f.geometry.coordinates);
-          const bounds = coordinates.reduce((bounds, coord) => {
-            return bounds.extend(coord as [number, number]);
-          }, new mapboxgl.LngLatBounds(coordinates[0] as [number, number], coordinates[0] as [number, number]));
-          mapInstance.fitBounds(bounds, { padding: 50 });
-        }
-
-        console.log(`Successfully rendered ${territoryFeatures.length} territory clusters (VF filtered)`);
-      } catch (error) {
-        console.error('Error adding territory clusters:', error);
-      }
-    } else {
-      // Inline rendering for individual view to ensure fresh filter state
-      let outletsToShow = currentSelectedZones.length > 0
-        ? currentSelectedZones.flatMap(zone => territoryGroups[zone] || [])
-        : outlets.length > 500 ? outlets.slice(0, 500) : outlets;
-      
-      // Apply VF filters with current state
-      outletsToShow = outletsToShow.filter(outlet => {
-        const vf = outlet.visitFrequency;
-        if (vf === 1 && !currentVfFilters.vf1) return false;
-        if (vf === 2 && !currentVfFilters.vf2) return false;
-        if (vf === 4 && !currentVfFilters.vf4) return false;
-        return true;
-      });
-      
-      console.log(`Filtered to ${outletsToShow.length} outlets after VF filter`);
-
-      const outletFeatures = outletsToShow.map((outlet) => ({
-        type: 'Feature' as const,
-        properties: {
-          id: outlet.id,
-          name: outlet.name,
-          territory: outlet.territory,
-          visitFrequency: outlet.visitFrequency,
-          color: getTerritoryColor(outlet.territory || outlet.repId || 'unassigned')
-        },
-        geometry: {
-          type: 'Point' as const,
-          coordinates: [outlet.longitude, outlet.latitude]
-        }
-      }));
-
-      try {
-        mapInstance.addSource('individual-outlets', {
-          type: 'geojson',
-          data: {
-            type: 'FeatureCollection',
-            features: outletFeatures
-          }
-        });
-
-        mapInstance.addLayer({
-          id: 'individual-markers',
-          type: 'circle',
-          source: 'individual-outlets',
-          paint: {
-            'circle-radius': 8,
-            'circle-color': ['get', 'color'],
-            'circle-opacity': 0.8,
-            'circle-stroke-width': 2,
-            'circle-stroke-color': '#ffffff'
-          }
-        });
-
-        // Attach click handler inline
-        attachIndividualMarkerClickHandler();
-
-        if (outletFeatures.length > 0) {
-          const coordinates = outletFeatures.map(f => f.geometry.coordinates);
-          const bounds = coordinates.reduce((bounds, coord) => {
-            return bounds.extend(coord as [number, number]);
-          }, new mapboxgl.LngLatBounds(coordinates[0] as [number, number], coordinates[0] as [number, number]));
-          mapInstance.fitBounds(bounds, { padding: 50 });
-        }
-        
-        console.log(`Successfully rendered ${outletFeatures.length} individual markers`);
-      } catch (error) {
-        console.error('Error adding individual markers:', error);
-      }
-    }
-
-    setIsRenderingMarkers(false);
-  }, [outlets, reps, isMapLoaded, viewMode, selectedZones, vfFilters]);
-
-  // Helper function to attach click handler for individual markers
-  const attachIndividualMarkerClickHandler = () => {
-    if (!map.current) return;
-    
-    map.current.on('click', 'individual-markers', (e) => {
-      if (e.features && e.features[0]) {
-        const feature = e.features[0];
-        const properties = feature.properties as any;
-        const { id, name, territory, visitFrequency } = properties;
-        const coords = (feature.geometry as any).coordinates as [number, number];
-        const outletLng = coords[0];
-        const outletLat = coords[1];
-        
-        const escapeHtml = (str: string) => str
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;')
-          .replace(/"/g, '&quot;')
-          .replace(/'/g, '&#039;');
-        
-        const safeName = escapeHtml(name || '');
-        const safeTerritory = escapeHtml(territory || '');
-        
-        const getVfBadgeStyle = (vf: number) => {
-          switch (vf) {
-            case 1: return 'background-color: #dcfce7; color: #15803d; border: 1px solid #86efac;';
-            case 2: return 'background-color: #ffedd5; color: #c2410c; border: 1px solid #fdba74;';
-            case 4: return 'background-color: #fee2e2; color: #b91c1c; border: 1px solid #fca5a5;';
-            default: return 'background-color: #f3f4f6; color: #374151; border: 1px solid #d1d5db;';
-          }
-        };
-        
-        const vfLabel = visitFrequency === 1 ? 'VF1 (Monthly)' : visitFrequency === 2 ? 'VF2 (Bi-weekly)' : 'VF4 (Weekly)';
-        
-        const popup = new mapboxgl.Popup()
-          .setLngLat(e.lngLat)
-          .setHTML(`
-            <div class="p-3" style="min-width: 220px;">
-              <h3 class="font-bold text-base mb-2">${safeName}</h3>
-              <div style="font-size: 12px; color: #6b7280; margin-bottom: 8px;">
-                <div style="margin-bottom: 4px;"><strong>Code:</strong> ${escapeHtml(id || '')}</div>
-                <div style="margin-bottom: 4px;"><strong>Zone:</strong> ${safeTerritory}</div>
-                <div style="margin-bottom: 4px;"><strong>Visit Frequency:</strong></div>
-                <span style="display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; ${getVfBadgeStyle(visitFrequency)}">
-                  ${vfLabel}
-                </span>
-              </div>
-              <div style="display: flex; gap: 4px; margin-top: 8px;">
-                <button 
-                  data-outlet-id="${escapeHtml(id || '')}"
-                  data-outlet-name="${safeName}"
-                  data-outlet-territory="${safeTerritory}"
-                  data-outlet-lat="${outletLat}"
-                  data-outlet-lng="${outletLng}"
-                  class="edit-outlet-btn flex-1 px-2 py-1 bg-blue-500 text-white text-xs rounded hover:bg-blue-600 cursor-pointer">
-                  Reassign
-                </button>
-                <button 
-                  data-outlet-id="${escapeHtml(id || '')}"
-                  class="delete-outlet-btn flex-1 px-2 py-1 bg-red-600 text-white text-xs rounded hover:bg-red-700 cursor-pointer">
-                  Delete
-                </button>
-              </div>
-            </div>
-          `)
-          .addTo(map.current!);
-        
-        // Use popup's DOM element to scope the query
-        const popupEl = popup.getElement();
-        if (popupEl) {
-          const editBtn = popupEl.querySelector('.edit-outlet-btn');
-          if (editBtn) {
-            editBtn.addEventListener('click', (evt) => {
-              const target = evt.target as HTMLElement;
-              const outletId = target.dataset.outletId || '';
-              const outletName = target.dataset.outletName || '';
-              const outletTerritory = target.dataset.outletTerritory || '';
-              const lat = parseFloat(target.dataset.outletLat || '0');
-              const lng = parseFloat(target.dataset.outletLng || '0');
-              setEditingOutlet({ id: outletId, name: outletName, territory: outletTerritory, lat, lng });
-              popup.remove();
-            });
-          }
-          const deleteBtn = popupEl.querySelector('.delete-outlet-btn');
-          if (deleteBtn) {
-            deleteBtn.addEventListener('click', (evt) => {
-              const target = evt.target as HTMLElement;
-              const outletId = target.dataset.outletId || '';
-              setDeletingOutletId(outletId);
-              setShowDeleteConfirm(true);
-              popup.remove();
-            });
-          }
-        }
-      }
-    });
-  };
-
-  // Helper function to attach click handler for cluster view
-  const attachClusterClickHandler = () => {
-    if (!map.current) return;
-    
-    map.current.on('click', 'territory-clusters', (e) => {
-      if (e.features && e.features[0]) {
-        const feature = e.features[0];
-        const properties = feature.properties as any;
-        const { territory, count, outlets } = properties;
-        
-        const escapeHtml = (str: string) => str
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;')
-          .replace(/"/g, '&quot;')
-          .replace(/'/g, '&#039;');
-        
-        const safeTerritory = escapeHtml(territory || '');
-        let outletList: { id: string; name: string }[] = [];
-        try {
-          outletList = JSON.parse(outlets || '[]');
-        } catch { outletList = []; }
-        
-        const outletNames = outletList.map(o => escapeHtml(o.name)).join('<br>');
-        
-        const popup = new mapboxgl.Popup()
-          .setLngLat(e.lngLat)
-          .setHTML(`
-            <div class="p-2">
-              <h3 class="font-bold text-sm mb-1">${safeTerritory}</h3>
-              <p class="text-xs text-gray-600 mb-2">${count} outlets</p>
-              <div class="text-xs text-gray-500 max-h-32 overflow-y-auto">
-                ${outletNames}${outletList.length < count ? '<br>...' : ''}
-              </div>
-              <button 
-                data-territory="${safeTerritory}"
-                class="view-zone-btn mt-2 w-full px-2 py-1 bg-blue-500 text-white text-xs rounded hover:bg-blue-600 cursor-pointer">
-                View Individual Outlets
-              </button>
-            </div>
-          `)
-          .addTo(map.current!);
-        
-        // Use popup's DOM element to scope the query
-        const popupEl = popup.getElement();
-        if (popupEl) {
-          const btn = popupEl.querySelector('.view-zone-btn');
-          if (btn) {
-            btn.addEventListener('click', (evt) => {
-              const target = evt.target as HTMLElement;
-              const territoryName = target.dataset.territory || '';
-              setSelectedZones([territoryName]);
-              setViewMode('individual');
-              popup.remove();
-            });
-          }
-        }
-      }
-    });
-  };
-
-  const renderClusterView = () => {
-    // Create territory cluster data
-    const territoryFeatures = Object.entries(territoryGroups).map(([territory, outlets], index) => {
-      // Calculate center point of outlets in this territory
-      const avgLat = outlets.reduce((sum, o) => sum + o.latitude, 0) / outlets.length;
-      const avgLng = outlets.reduce((sum, o) => sum + o.longitude, 0) / outlets.length;
-      
-      return {
-        type: 'Feature' as const,
-        properties: {
-          territory,
-          count: outlets.length,
-          color: TERRITORY_COLORS[index % TERRITORY_COLORS.length],
-          outlets: JSON.stringify(outlets.slice(0, 10).map(o => ({ id: o.id, name: o.name }))) // Limit to 10 for performance
-        },
-        geometry: {
-          type: 'Point' as const,
-          coordinates: [avgLng, avgLat]
-        }
-      };
-    });
-
-    try {
-      // Add source
-      map.current!.addSource('territories', {
-        type: 'geojson',
-        data: {
-          type: 'FeatureCollection',
-          features: territoryFeatures
-        }
-      });
-
-      // Add cluster layer
-      map.current!.addLayer({
-        id: 'territory-clusters',
-        type: 'circle',
-        source: 'territories',
-        paint: {
-          'circle-radius': {
-            type: 'exponential',
-            property: 'count',
-            stops: [
-              [1, 15],
-              [10, 25],
-              [50, 35],
-              [100, 45]
-            ]
-          },
-          'circle-color': ['get', 'color'],
-          'circle-opacity': 0.8,
-          'circle-stroke-width': 2,
-          'circle-stroke-color': '#ffffff'
-        }
-      });
-
-      // Add count labels
-      map.current!.addLayer({
-        id: 'territory-labels',
-        type: 'symbol',
-        source: 'territories',
-        layout: {
-          'text-field': ['get', 'count'],
-          'text-font': ['Open Sans Semibold', 'Arial Unicode MS Bold'],
-          'text-size': 12,
-          'text-offset': [0, 0],
-          'text-anchor': 'center'
-        },
-        paint: {
-          'text-color': '#ffffff'
-        }
-      });
-
-      // Add click handler for clusters - using safe data attributes to avoid XSS
-      map.current!.on('click', 'territory-clusters', (e) => {
-        if (e.features && e.features[0]) {
-          const feature = e.features[0];
-          const properties = feature.properties as any;
-          const { territory, count, outlets } = properties;
-          
-          // Escape HTML special characters for display
-          const escapeHtml = (str: string) => str
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
-          
-          const safeTerritory = escapeHtml(territory || '');
-          
-          setSelectedZones(prev => {
-            if (prev.includes(territory)) {
-              return prev.filter(z => z !== territory);
-            } else {
-              return [...prev, territory];
-            }
-          });
-          
-          // Parse outlets and escape their names
-          let outletsList: any[] = [];
-          try {
-            outletsList = JSON.parse(outlets);
-          } catch (e) {
-            outletsList = [];
-          }
-          
-          // Show popup with territory info and button to view individual outlets
-          const popup = new mapboxgl.Popup()
-            .setLngLat(e.lngLat)
-            .setHTML(`
-              <div class="p-3">
-                <h3 class="font-bold mb-2">${safeTerritory}</h3>
-                <p class="text-sm text-gray-600 mb-2">${count} outlets</p>
-                <div class="mb-3 max-h-32 overflow-y-auto">
-                  ${outletsList.map((o: any) => 
-                    `<div class="text-xs text-gray-700">${escapeHtml(o.name || '')}</div>`
-                  ).join('')}
-                  ${count > 10 ? `<div class="text-xs text-gray-500">...and ${count - 10} more</div>` : ''}
-                </div>
-                <button 
-                  data-territory="${safeTerritory}"
-                  class="view-territory-btn w-full px-3 py-1 bg-blue-500 text-white text-xs rounded hover:bg-blue-600 cursor-pointer">
-                  View Individual Outlets
-                </button>
-              </div>
-            `)
-            .addTo(map.current!);
-          
-          // Attach click handler after popup is added
-          setTimeout(() => {
-            const btn = document.querySelector('.view-territory-btn');
-            if (btn) {
-              btn.addEventListener('click', (evt) => {
-                const target = evt.target as HTMLElement;
-                const territoryName = target.dataset.territory || '';
-                setSelectedZones([territoryName]);
-                setViewMode('individual');
-                popup.remove();
-              });
-            }
-          }, 0);
-        }
-      });
-
-      // Fit map to show all territories
-      if (territoryFeatures.length > 0) {
-        const coordinates = territoryFeatures.map(f => f.geometry.coordinates);
-        const bounds = coordinates.reduce((bounds, coord) => {
-          return bounds.extend(coord as [number, number]);
-        }, new mapboxgl.LngLatBounds(coordinates[0] as [number, number], coordinates[0] as [number, number]));
-        
-        map.current!.fitBounds(bounds, { padding: 50 });
-      }
-
-      console.log(`Successfully rendered ${territoryFeatures.length} territory clusters`);
-      
-    } catch (error) {
-      console.error('Error adding territory clusters:', error);
-      setMapError('Failed to render territories. The dataset might be too large.');
-    }
-  };
-
-  const renderIndividualView = () => {
-    // Filter outlets by selected zones if any
-    let outletsToShow = selectedZones.length > 0
-      ? selectedZones.flatMap(zone => territoryGroups[zone] || [])
-      : outlets.length > 500 ? outlets.slice(0, 500) : outlets; // Limit for very large datasets
-    
-    // Apply VF filters (visualization only, doesn't affect scheduling)
-    outletsToShow = outletsToShow.filter(outlet => {
+  const filterByVf = useCallback((outletList: Outlet[]) => {
+    return outletList.filter(outlet => {
       const vf = outlet.visitFrequency;
       if (vf === 1 && !vfFilters.vf1) return false;
       if (vf === 2 && !vfFilters.vf2) return false;
       if (vf === 4 && !vfFilters.vf4) return false;
       return true;
     });
+  }, [vfFilters]);
 
-    const outletFeatures = outletsToShow.map((outlet, index) => ({
-      type: 'Feature' as const,
-      properties: {
-        id: outlet.id,
-        name: outlet.name,
-        territory: outlet.territory,
-        visitFrequency: outlet.visitFrequency,
-        color: getTerritoryColor(outlet.territory || outlet.repId || 'unassigned')
-      },
-      geometry: {
-        type: 'Point' as const,
-        coordinates: [outlet.longitude, outlet.latitude]
+  const clusterData = useMemo(() => {
+    const data: Array<{territory: string, lat: number, lng: number, count: number, color: string, outlets: Outlet[]}> = [];
+    
+    Object.entries(territoryGroups).forEach(([territory, territoryOutlets], index) => {
+      const filtered = filterByVf(territoryOutlets);
+      if (filtered.length > 0) {
+        const avgLat = filtered.reduce((sum, o) => sum + o.latitude, 0) / filtered.length;
+        const avgLng = filtered.reduce((sum, o) => sum + o.longitude, 0) / filtered.length;
+        data.push({
+          territory,
+          lat: avgLat,
+          lng: avgLng,
+          count: filtered.length,
+          color: TERRITORY_COLORS[index % TERRITORY_COLORS.length],
+          outlets: filtered
+        });
       }
-    }));
+    });
+    
+    return data;
+  }, [territoryGroups, filterByVf]);
 
-    try {
-      // Add source
-      map.current!.addSource('individual-outlets', {
-        type: 'geojson',
-        data: {
-          type: 'FeatureCollection',
-          features: outletFeatures
-        }
+  const individualOutlets = useMemo(() => {
+    let outletsToShow = selectedZones.length > 0
+      ? selectedZones.flatMap(zone => territoryGroups[zone] || [])
+      : outlets.length > 500 ? outlets.slice(0, 500) : outlets;
+    
+    return filterByVf(outletsToShow);
+  }, [outlets, selectedZones, territoryGroups, filterByVf]);
+
+  const onMapLoad = useCallback((mapInstance: google.maps.Map) => {
+    setMap(mapInstance);
+    setIsMapLoaded(true);
+  }, []);
+
+  useEffect(() => {
+    if (!map || !isMapLoaded) return;
+    
+    const bounds = new google.maps.LatLngBounds();
+    let hasPoints = false;
+    
+    if (viewMode === 'cluster') {
+      clusterData.forEach(cluster => {
+        bounds.extend({ lat: cluster.lat, lng: cluster.lng });
+        hasPoints = true;
       });
-
-      // Add individual outlet markers
-      map.current!.addLayer({
-        id: 'individual-markers',
-        type: 'circle',
-        source: 'individual-outlets',
-        paint: {
-          'circle-radius': 8,
-          'circle-color': ['get', 'color'],
-          'circle-opacity': 0.8,
-          'circle-stroke-width': 2,
-          'circle-stroke-color': '#ffffff'
-        }
+    } else {
+      individualOutlets.forEach(outlet => {
+        bounds.extend({ lat: outlet.latitude, lng: outlet.longitude });
+        hasPoints = true;
       });
+    }
+    
+    if (hasPoints) {
+      map.fitBounds(bounds, { top: 50, right: 50, bottom: 50, left: 50 });
+    }
+  }, [map, isMapLoaded, viewMode, clusterData, individualOutlets]);
 
-      // Add click handler for individual outlets - using safe data attributes to avoid XSS
-      map.current!.on('click', 'individual-markers', (e) => {
-        if (e.features && e.features[0]) {
-          const feature = e.features[0];
-          const properties = feature.properties as any;
-          const { id, name, territory, visitFrequency } = properties;
-          const coords = (feature.geometry as any).coordinates as [number, number];
-          const outletLng = coords[0];
-          const outletLat = coords[1];
-          
-          // Escape HTML special characters for display
-          const escapeHtml = (str: string) => str
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
-          
-          const safeName = escapeHtml(name || '');
-          const safeTerritory = escapeHtml(territory || '');
-          
-          // Get VF badge color based on visit frequency
-          const getVfBadgeStyle = (vf: number) => {
-            switch (vf) {
-              case 1: return 'background-color: #dcfce7; color: #15803d; border: 1px solid #86efac;'; // Green
-              case 2: return 'background-color: #ffedd5; color: #c2410c; border: 1px solid #fdba74;'; // Orange
-              case 4: return 'background-color: #fee2e2; color: #b91c1c; border: 1px solid #fca5a5;'; // Red
-              default: return 'background-color: #f3f4f6; color: #374151; border: 1px solid #d1d5db;';
-            }
-          };
-          
-          const vfLabel = visitFrequency === 1 ? 'VF1 (Monthly)' : visitFrequency === 2 ? 'VF2 (Bi-weekly)' : 'VF4 (Weekly)';
-          
-          // Use data attributes instead of inline onclick to prevent XSS
-          const popup = new mapboxgl.Popup()
-            .setLngLat(e.lngLat)
-            .setHTML(`
-              <div class="p-3" style="min-width: 220px;">
-                <h3 class="font-bold text-base mb-2">${safeName}</h3>
-                <div style="font-size: 12px; color: #6b7280; margin-bottom: 8px;">
-                  <div style="margin-bottom: 4px;"><strong>Code:</strong> ${escapeHtml(id || '')}</div>
-                  <div style="margin-bottom: 4px;"><strong>Zone:</strong> ${safeTerritory}</div>
-                  <div style="margin-bottom: 4px;"><strong>Visit Frequency:</strong></div>
-                  <span style="display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; ${getVfBadgeStyle(visitFrequency)}">
-                    ${vfLabel}
-                  </span>
-                </div>
-                <div style="display: flex; gap: 4px; margin-top: 8px;">
-                  <button 
-                    data-outlet-id="${escapeHtml(id || '')}"
-                    data-outlet-name="${safeName}"
-                    data-outlet-territory="${safeTerritory}"
-                    data-outlet-lat="${outletLat}"
-                    data-outlet-lng="${outletLng}"
-                    class="edit-outlet-btn flex-1 px-2 py-1 bg-blue-500 text-white text-xs rounded hover:bg-blue-600 cursor-pointer">
-                    Reassign
-                  </button>
-                  <button 
-                    data-outlet-id="${escapeHtml(id || '')}"
-                    class="delete-outlet-btn flex-1 px-2 py-1 bg-red-600 text-white text-xs rounded hover:bg-red-700 cursor-pointer">
-                    Delete
-                  </button>
-                </div>
-              </div>
-            `)
-            .addTo(map.current!);
-          
-          // Use popup's DOM element to scope the query
-          const popupEl = popup.getElement();
-          if (popupEl) {
-            const editBtn = popupEl.querySelector('.edit-outlet-btn');
-            if (editBtn) {
-              editBtn.addEventListener('click', (evt) => {
-                const target = evt.target as HTMLElement;
-                const outletId = target.dataset.outletId || '';
-                const outletName = target.dataset.outletName || '';
-                const outletTerritory = target.dataset.outletTerritory || '';
-                const lat = parseFloat(target.dataset.outletLat || '0');
-                const lng = parseFloat(target.dataset.outletLng || '0');
-                setEditingOutlet({ id: outletId, name: outletName, territory: outletTerritory, lat, lng });
-                popup.remove();
-              });
-            }
-            const deleteBtn = popupEl.querySelector('.delete-outlet-btn');
-            if (deleteBtn) {
-              deleteBtn.addEventListener('click', (evt) => {
-                const target = evt.target as HTMLElement;
-                const outletId = target.dataset.outletId || '';
-                setDeletingOutletId(outletId);
-                setShowDeleteConfirm(true);
-                popup.remove();
-              });
-            }
-          }
-        }
-      });
+  const createClusterIcon = (color: string, count: number) => {
+    const size = Math.min(60, Math.max(30, 20 + count / 5));
+    const svg = `
+      <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="${size/2}" cy="${size/2}" r="${size/2 - 2}" fill="${color}" stroke="white" stroke-width="2" opacity="0.85"/>
+        <text x="${size/2}" y="${size/2 + 4}" text-anchor="middle" fill="white" font-size="12" font-weight="bold">${count}</text>
+      </svg>
+    `;
+    return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+  };
 
-      // Fit map to show outlets
-      if (outletFeatures.length > 0) {
-        const coordinates = outletFeatures.map(f => f.geometry.coordinates);
-        const bounds = coordinates.reduce((bounds, coord) => {
-          return bounds.extend(coord as [number, number]);
-        }, new mapboxgl.LngLatBounds(coordinates[0] as [number, number], coordinates[0] as [number, number]));
-        
-        map.current!.fitBounds(bounds, { padding: 50 });
-      }
+  const createOutletIcon = (color: string) => {
+    const svg = `
+      <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="12" cy="12" r="10" fill="${color}" stroke="white" stroke-width="2" opacity="0.85"/>
+      </svg>
+    `;
+    return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+  };
 
-      console.log(`Successfully rendered ${outletFeatures.length} individual outlets`);
-      
-    } catch (error) {
-      console.error('Error adding individual outlets:', error);
-      setMapError('Failed to render individual outlets.');
+  const getVfBadgeClass = (vf: number) => {
+    switch (vf) {
+      case 1: return 'bg-green-100 text-green-800 border-green-200';
+      case 2: return 'bg-orange-100 text-orange-800 border-orange-200';
+      case 4: return 'bg-red-100 text-red-800 border-red-200';
+      default: return 'bg-gray-100 text-gray-800 border-gray-200';
     }
   };
 
-  // Note: Individual outlet view switching is now handled via data attributes and event delegation
-  // to prevent XSS vulnerabilities with user-supplied territory names
+  const getVfLabel = (vf: number) => {
+    switch (vf) {
+      case 1: return 'VF1 (Monthly)';
+      case 2: return 'VF2 (Bi-weekly)';
+      case 4: return 'VF4 (Weekly)';
+      default: return 'Unknown';
+    }
+  };
+
+  if (!GOOGLE_MAPS_API_KEY) {
+    return (
+      <div className={`flex flex-col h-full ${className}`}>
+        <Card className="mb-4">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center">
+              <Navigation className="mr-2 h-5 w-5" />
+              Territory Map
+            </CardTitle>
+          </CardHeader>
+        </Card>
+        <div className="flex flex-1 gap-4">
+          <div className="w-full h-[500px] rounded-lg bg-gray-100 flex items-center justify-center">
+            <div className="text-center p-4">
+              <AlertCircle className="h-12 w-12 text-red-500 mx-auto mb-4" />
+              <p className="text-gray-600 mb-2">Google Maps API key is not configured.</p>
+              <p className="text-sm text-gray-500">Please set VITE_GOOGLE_MAPS_API_KEY environment variable.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (mapError) {
     return (
@@ -1031,14 +405,10 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
             </CardTitle>
           </CardHeader>
         </Card>
-
         <div className="flex flex-1 gap-4">
           <div className="w-full h-[500px] rounded-lg bg-gray-100 flex items-center justify-center">
             <div className="text-center p-4">
               <p className="text-gray-600 mb-2">{mapError}</p>
-              {outlets.length > 5000 && (
-                <p className="text-sm text-gray-500">Use Dashboard Analytics for data insights</p>
-              )}
             </div>
           </div>
         </div>
@@ -1048,7 +418,6 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
 
   return (
     <div className={`flex flex-col h-full ${className}`}>
-      {/* Map Header */}
       <Card className="mb-4">
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between">
@@ -1057,7 +426,6 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
               Territory Map
             </CardTitle>
             <div className="flex items-center space-x-4">
-              {/* View Mode Toggle */}
               <div className="flex bg-gray-100 rounded-lg p-1">
                 <Button
                   variant={viewMode === 'cluster' ? 'default' : 'ghost'}
@@ -1066,6 +434,8 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                   onClick={() => {
                     setViewMode('cluster');
                     setSelectedZones([]);
+                    setSelectedOutlet(null);
+                    setSelectedCluster(null);
                   }}
                 >
                   <Layers className="mr-1 h-4 w-4" />
@@ -1075,7 +445,10 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                   variant={viewMode === 'individual' ? 'default' : 'ghost'}
                   size="sm"
                   className="h-8 px-3"
-                  onClick={() => setViewMode('individual')}
+                  onClick={() => {
+                    setViewMode('individual');
+                    setSelectedCluster(null);
+                  }}
                   disabled={outlets.length > 5000}
                   title={outlets.length > 5000 ? 'Individual view disabled for large datasets (>5000 outlets). Click on a cluster to view its outlets.' : ''}
                 >
@@ -1084,7 +457,6 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                 </Button>
               </div>
               
-              {/* Stats */}
               <div className="flex items-center space-x-4 text-sm text-gray-600">
                 <div className="flex items-center">
                   <MapPin className="mr-1 h-4 w-4" />
@@ -1096,7 +468,6 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                 </div>
               </div>
 
-              {/* Export buttons */}
               <div className="flex items-center space-x-2">
                 <Button
                   variant="outline"
@@ -1126,7 +497,6 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                 )}
               </div>
 
-              {/* Re-optimize button */}
               {pendingChanges.length > 0 && (
                 <Button 
                   variant="default" 
@@ -1144,30 +514,147 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
       </Card>
 
       <div className="flex flex-1 gap-4">
-        {/* Map */}
         <Card className="flex-1">
           <CardContent className="p-0 h-full relative">
-            <div 
-              ref={mapContainer}
-              className="w-full h-[500px] rounded-lg"
-            />
-            {isRenderingMarkers && (
+            <LoadScript 
+              googleMapsApiKey={GOOGLE_MAPS_API_KEY}
+              onError={() => setMapError('Failed to load Google Maps. Please check your API key.')}
+            >
+              <GoogleMap
+                mapContainerStyle={mapContainerStyle}
+                center={defaultCenter}
+                zoom={8}
+                onLoad={onMapLoad}
+                options={{
+                  mapTypeControl: false,
+                  streetViewControl: false,
+                  fullscreenControl: true,
+                  zoomControl: true,
+                }}
+              >
+                {viewMode === 'cluster' && clusterData.map((cluster) => (
+                  <Marker
+                    key={cluster.territory}
+                    position={{ lat: cluster.lat, lng: cluster.lng }}
+                    icon={{
+                      url: createClusterIcon(cluster.color, cluster.count),
+                      scaledSize: new google.maps.Size(
+                        Math.min(60, Math.max(30, 20 + cluster.count / 5)),
+                        Math.min(60, Math.max(30, 20 + cluster.count / 5))
+                      ),
+                      anchor: new google.maps.Point(
+                        Math.min(60, Math.max(30, 20 + cluster.count / 5)) / 2,
+                        Math.min(60, Math.max(30, 20 + cluster.count / 5)) / 2
+                      )
+                    }}
+                    onClick={() => {
+                      setSelectedCluster(cluster);
+                      setSelectedOutlet(null);
+                    }}
+                  />
+                ))}
+
+                {viewMode === 'individual' && individualOutlets.map((outlet) => (
+                  <Marker
+                    key={outlet.id}
+                    position={{ lat: outlet.latitude, lng: outlet.longitude }}
+                    icon={{
+                      url: createOutletIcon(getTerritoryColor(outlet.territory || outlet.repId || 'unassigned')),
+                      scaledSize: new google.maps.Size(24, 24),
+                      anchor: new google.maps.Point(12, 12)
+                    }}
+                    onClick={() => {
+                      setSelectedOutlet(outlet);
+                      setSelectedCluster(null);
+                    }}
+                  />
+                ))}
+
+                {selectedCluster && (
+                  <InfoWindow
+                    position={{ lat: selectedCluster.lat, lng: selectedCluster.lng }}
+                    onCloseClick={() => setSelectedCluster(null)}
+                  >
+                    <div className="p-2 min-w-[200px]">
+                      <h3 className="font-bold text-base mb-2">{selectedCluster.territory}</h3>
+                      <p className="text-sm text-gray-600 mb-2">{selectedCluster.count} outlets</p>
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          onClick={() => {
+                            setSelectedZones([selectedCluster.territory]);
+                            setViewMode('individual');
+                            setSelectedCluster(null);
+                          }}
+                        >
+                          View Outlets
+                        </Button>
+                      </div>
+                    </div>
+                  </InfoWindow>
+                )}
+
+                {selectedOutlet && (
+                  <InfoWindow
+                    position={{ lat: selectedOutlet.latitude, lng: selectedOutlet.longitude }}
+                    onCloseClick={() => setSelectedOutlet(null)}
+                  >
+                    <div className="p-2 min-w-[220px]">
+                      <h3 className="font-bold text-base mb-2">{selectedOutlet.name}</h3>
+                      <div className="text-xs text-gray-600 space-y-1 mb-3">
+                        <div><strong>Code:</strong> {selectedOutlet.id}</div>
+                        <div><strong>Zone:</strong> {selectedOutlet.territory}</div>
+                        <div><strong>Visit Frequency:</strong></div>
+                        <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium border ${getVfBadgeClass(selectedOutlet.visitFrequency)}`}>
+                          {getVfLabel(selectedOutlet.visitFrequency)}
+                        </span>
+                      </div>
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setEditingOutlet({
+                              id: selectedOutlet.id,
+                              name: selectedOutlet.name,
+                              territory: selectedOutlet.territory || '',
+                              lat: selectedOutlet.latitude,
+                              lng: selectedOutlet.longitude
+                            });
+                            setSelectedOutlet(null);
+                          }}
+                        >
+                          <Edit2 className="h-3 w-3 mr-1" />
+                          Edit
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          onClick={() => {
+                            setDeletingOutletId(selectedOutlet.id);
+                            setShowDeleteConfirm(true);
+                            setSelectedOutlet(null);
+                          }}
+                        >
+                          <Trash2 className="h-3 w-3 mr-1" />
+                          Delete
+                        </Button>
+                      </div>
+                    </div>
+                  </InfoWindow>
+                )}
+              </GoogleMap>
+            </LoadScript>
+            
+            {!isMapLoaded && (
               <div className="absolute inset-0 bg-white bg-opacity-90 flex items-center justify-center rounded-lg">
                 <div className="text-center">
                   <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
-                  <p className="mt-2 text-sm text-gray-600">
-                    Loading {viewMode === 'cluster' ? 'territory clusters' : 'individual outlets'}...
-                  </p>
-                  {outlets.length > 1000 && (
-                    <p className="text-xs text-gray-500 mt-1">
-                      Processing {outlets.length} outlets...
-                    </p>
-                  )}
+                  <p className="mt-2 text-sm text-gray-600">Loading map...</p>
                 </div>
               </div>
             )}
             
-            {/* Large Dataset Info */}
             {outlets.length > 5000 && viewMode === 'cluster' && (
               <div className="absolute top-4 left-4 right-4 bg-blue-50 border border-blue-200 rounded-lg p-3 z-10">
                 <div className="flex items-start">
@@ -1183,9 +670,8 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
               </div>
             )}
             
-            {/* Selected Zones Info */}
             {selectedZones.length > 0 && viewMode === 'individual' && (
-              <div className="absolute top-4 left-4 bg-white rounded-lg shadow-lg p-3 max-w-xs">
+              <div className="absolute top-4 left-4 bg-white rounded-lg shadow-lg p-3 max-w-xs z-10">
                 <div className="flex items-center justify-between mb-2">
                   <h4 className="font-semibold text-sm">Viewing Zones</h4>
                   <Button
@@ -1213,8 +699,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
               </div>
             )}
             
-            {/* VF Legend and Filter */}
-            <div className="absolute bottom-4 left-4 bg-white rounded-lg shadow-lg p-3">
+            <div className="absolute bottom-4 left-4 bg-white rounded-lg shadow-lg p-3 z-10">
               <h4 className="font-semibold text-sm mb-2">Visit Frequency Legend</h4>
               <div className="space-y-2">
                 <label className="flex items-center space-x-2 cursor-pointer">
@@ -1256,9 +741,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
           </CardContent>
         </Card>
 
-        {/* Territory Legend and Info */}
         <div className="w-80 space-y-4">
-          {/* Territory Selector */}
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-lg">Territories</CardTitle>
@@ -1338,7 +821,6 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                 </PopoverContent>
               </Popover>
 
-              {/* Selected Territories Details */}
               {selectedZones.length > 0 && (
                 <div className="mt-4 space-y-3">
                   {selectedZones.map(territory => {
@@ -1409,7 +891,6 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
         </div>
       </div>
 
-      {/* Outlet Reassignment Dialog */}
       <Dialog open={!!editingOutlet} onOpenChange={(open) => !open && setEditingOutlet(null)}>
         <DialogContent>
           <DialogHeader>
@@ -1480,7 +961,6 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
         </DialogContent>
       </Dialog>
 
-      {/* Delete Confirmation Dialog */}
       <Dialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
         <DialogContent>
           <DialogHeader>
@@ -1514,7 +994,6 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
         </DialogContent>
       </Dialog>
 
-      {/* Bulk Delete Zone Confirmation Dialog */}
       <Dialog open={showBulkDeleteConfirm} onOpenChange={setShowBulkDeleteConfirm}>
         <DialogContent>
           <DialogHeader>
@@ -1525,13 +1004,10 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
           </DialogHeader>
           <div className="space-y-4">
             <p className="text-sm text-gray-600">
-              Are you sure you want to delete the entire zone <strong>"{deletingZone?.name}"</strong>?
+              Are you sure you want to delete the zone <strong>"{deletingZone?.name}"</strong> and all <strong>{deletingZone?.count}</strong> outlets in it?
             </p>
-            <div className="p-4 bg-red-50 dark:bg-red-900/20 rounded-lg border border-red-200 dark:border-red-800">
-              <p className="text-lg font-bold text-red-700 dark:text-red-300 mb-2">
-                {deletingZone?.count} outlets will be permanently deleted
-              </p>
-              <p className="text-sm text-red-600 dark:text-red-400">
+            <div className="p-3 bg-red-50 dark:bg-red-900/20 rounded-lg border border-red-200 dark:border-red-800">
+              <p className="text-sm text-red-700 dark:text-red-300">
                 This action cannot be undone. All outlets in this zone will be removed from schedules and routes.
               </p>
             </div>
@@ -1545,58 +1021,49 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
               onClick={handleBulkDeleteZone}
               disabled={bulkDeleteMutation.isPending}
             >
-              {bulkDeleteMutation.isPending ? "Deleting..." : `Delete ${deletingZone?.count} Outlets`}
+              {bulkDeleteMutation.isPending ? "Deleting..." : `Delete Zone (${deletingZone?.count} outlets)`}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Re-optimization Confirmation Dialog */}
       <Dialog open={showReoptimizeDialog} onOpenChange={setShowReoptimizeDialog}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle className="flex items-center">
-              <AlertCircle className="mr-2 h-5 w-5 text-orange-500" />
-              Apply Re-optimization
+              <RefreshCw className="mr-2 h-5 w-5" />
+              Re-optimize Schedules
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <p className="text-sm text-gray-600">
-              You have made {pendingChanges.length} zone reassignment(s). Re-optimizing will regenerate all schedules with the VF-aware algorithm.
+              You have made changes that affect outlet assignments. Would you like to re-optimize all schedules now?
             </p>
-            <div className="bg-gray-50 rounded-lg p-3 max-h-48 overflow-y-auto">
-              <p className="text-xs font-medium text-gray-700 mb-2">Changes to apply:</p>
-              {pendingChanges.map((change, idx) => (
-                <div key={idx} className="text-xs text-gray-600 py-1 border-b border-gray-200 last:border-0">
-                  <span className="font-medium">{change.name}</span>: {change.oldTerritory} → {change.newTerritory}
-                </div>
-              ))}
-            </div>
-            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
-              <p className="text-sm text-yellow-800">
-                This will regenerate all rep schedules. The process ensures VF4 outlets are visited weekly, VF2 bi-weekly, and VF1 monthly.
+            {pendingChanges.length > 0 && (
+              <div className="max-h-40 overflow-y-auto space-y-2">
+                {pendingChanges.map((change, i) => (
+                  <div key={i} className="text-xs p-2 bg-gray-50 rounded">
+                    <span className="font-medium">{change.name}</span>: {change.oldTerritory} → {change.newTerritory}
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="p-3 bg-orange-50 dark:bg-orange-900/20 rounded-lg border border-orange-200 dark:border-orange-800">
+              <p className="text-sm text-orange-700 dark:text-orange-300">
+                Re-optimization will regenerate all schedules and routes based on current zone assignments.
               </p>
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowReoptimizeDialog(false)}>Cancel</Button>
+            <Button variant="outline" onClick={() => setShowReoptimizeDialog(false)}>
+              Later
+            </Button>
             <Button 
               onClick={handleApplyReoptimization}
               disabled={reoptimizeMutation.isPending}
               className="bg-orange-500 hover:bg-orange-600"
-              data-testid="button-apply-reoptimize"
             >
-              {reoptimizeMutation.isPending ? (
-                <>
-                  <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                  Re-optimizing...
-                </>
-              ) : (
-                <>
-                  <RefreshCw className="mr-2 h-4 w-4" />
-                  Apply Re-optimization
-                </>
-              )}
+              {reoptimizeMutation.isPending ? "Optimizing..." : "Re-optimize Now"}
             </Button>
           </DialogFooter>
         </DialogContent>
