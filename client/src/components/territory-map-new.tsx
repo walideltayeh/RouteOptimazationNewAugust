@@ -532,29 +532,26 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                   zoomControl: true,
                 }}
               >
-                {viewMode === 'cluster' && clusterData.map((cluster) => (
-                  <Marker
-                    key={cluster.territory}
-                    position={{ lat: cluster.lat, lng: cluster.lng }}
-                    icon={{
-                      url: createClusterIcon(cluster.color, cluster.count),
-                      scaledSize: new google.maps.Size(
-                        Math.min(60, Math.max(30, 20 + cluster.count / 5)),
-                        Math.min(60, Math.max(30, 20 + cluster.count / 5))
-                      ),
-                      anchor: new google.maps.Point(
-                        Math.min(60, Math.max(30, 20 + cluster.count / 5)) / 2,
-                        Math.min(60, Math.max(30, 20 + cluster.count / 5)) / 2
-                      )
-                    }}
-                    onClick={() => {
-                      setSelectedCluster(cluster);
-                      setSelectedOutlet(null);
-                    }}
-                  />
-                ))}
+                {viewMode === 'cluster' && isMapLoaded && typeof google !== 'undefined' && clusterData.map((cluster) => {
+                  const size = Math.min(60, Math.max(30, 20 + cluster.count / 5));
+                  return (
+                    <Marker
+                      key={cluster.territory}
+                      position={{ lat: cluster.lat, lng: cluster.lng }}
+                      icon={{
+                        url: createClusterIcon(cluster.color, cluster.count),
+                        scaledSize: new google.maps.Size(size, size),
+                        anchor: new google.maps.Point(size / 2, size / 2)
+                      }}
+                      onClick={() => {
+                        setSelectedCluster(cluster);
+                        setSelectedOutlet(null);
+                      }}
+                    />
+                  );
+                })}
 
-                {viewMode === 'individual' && individualOutlets.map((outlet) => (
+                {viewMode === 'individual' && isMapLoaded && typeof google !== 'undefined' && individualOutlets.map((outlet) => (
                   <Marker
                     key={outlet.id}
                     position={{ lat: outlet.latitude, lng: outlet.longitude }}
