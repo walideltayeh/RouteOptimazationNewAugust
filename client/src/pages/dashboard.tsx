@@ -5,7 +5,7 @@ import RepScheduleTable from "@/components/rep-schedule-table";
 import OptimizationSettings from "@/components/optimization-settings";
 import AnalyticsCharts from "@/components/analytics-charts";
 import MLInsights from "@/components/ml-insights";
-import TerritoryMap from "@/components/territory-map-new";
+import TerritoryMap from "@/components/territory-map";
 import TerritoryCustomization from "@/components/territory-customization";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
