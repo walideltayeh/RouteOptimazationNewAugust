@@ -100,6 +100,10 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
             </Button>
           </div>
         </form>
+        
+        <div className="mt-6 pt-4 border-t text-center">
+          <p className="text-xs text-gray-500">Solution developed by Walid El Tayeh</p>
+        </div>
       </DialogContent>
     </Dialog>
   );
