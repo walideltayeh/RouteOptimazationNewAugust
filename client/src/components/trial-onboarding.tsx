@@ -220,7 +220,7 @@ export default function TrialOnboarding({ open, onComplete }: TrialOnboardingPro
               Admin / Super User Login
             </Button>
             
-            <p className="text-xs text-gray-500 text-center mt-4">Developed by Walid El Tayeh</p>
+            <p className="text-xs text-gray-500 text-center mt-4">Solution developed by Walid El Tayeh</p>
           </>
         )}
 
