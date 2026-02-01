@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
-import { MapPin, Route, ArrowRight, LogIn } from 'lucide-react';
+import { ArrowRight, LogIn } from 'lucide-react';
 
 interface LandingPageProps {
   onStartTrial: () => void;
@@ -88,13 +88,6 @@ export default function LandingPage({ onStartTrial, onAdminLogin }: LandingPageP
         </div>
         
         <div className={`relative z-10 text-center max-w-2xl transition-all duration-1000 ${mounted ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-8'}`}>
-          <div className="flex items-center justify-center gap-3 mb-6">
-            <div className="relative">
-              <Route className="h-10 w-10 text-[#8B0000]" />
-              <MapPin className="h-5 w-5 text-[#1d1d1f] absolute -top-1 -right-1" />
-            </div>
-          </div>
-          
           <h1 className="text-5xl md:text-6xl font-semibold text-[#1d1d1f] tracking-tight mb-4">
             RouteOptima
           </h1>
