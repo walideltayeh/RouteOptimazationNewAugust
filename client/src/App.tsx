@@ -45,6 +45,7 @@ function AppContent() {
   const handleAdminLoginSuccess = () => {
     setShowAdminLogin(false);
     setShowLanding(false);
+    setOnboardingComplete(true);
     refetch();
   };
 
