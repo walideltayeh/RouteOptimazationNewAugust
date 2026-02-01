@@ -58,10 +58,11 @@ type OnboardingStep = "welcome" | "account" | "consent" | "ready";
 interface TrialOnboardingProps {
   open: boolean;
   onComplete: () => void;
+  onClose?: () => void;
   skipWelcome?: boolean;
 }
 
-export default function TrialOnboarding({ open, onComplete, skipWelcome = false }: TrialOnboardingProps) {
+export default function TrialOnboarding({ open, onComplete, onClose, skipWelcome = false }: TrialOnboardingProps) {
   const [step, setStep] = useState<OnboardingStep>("welcome");
   const [accountData, setAccountData] = useState<AccountFormValues | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -158,7 +159,7 @@ export default function TrialOnboarding({ open, onComplete, skipWelcome = false 
   };
 
   return (
-    <Dialog open={open} modal>
+    <Dialog open={open} onOpenChange={(isOpen) => { if (!isOpen && onClose) onClose(); }}>
       <DialogContent className="sm:max-w-lg" onPointerDownOutside={(e) => e.preventDefault()}>
         {step === "welcome" && (
           <>
@@ -302,7 +303,7 @@ export default function TrialOnboarding({ open, onComplete, skipWelcome = false 
                   <Button 
                     type="button" 
                     variant="outline" 
-                    onClick={() => setStep("welcome")}
+                    onClick={() => { if (skipWelcome && onClose) onClose(); else setStep("welcome"); }}
                     className="flex-1"
                   >
                     Back

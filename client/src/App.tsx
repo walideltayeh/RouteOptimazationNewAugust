@@ -71,6 +71,7 @@ function AppContent() {
       <TrialOnboarding 
         open={showOnboarding && !showLanding} 
         onComplete={handleOnboardingComplete}
+        onClose={() => { setShowTrialOnboarding(false); setShowLanding(true); }}
         skipWelcome={showTrialOnboarding}
       />
       
