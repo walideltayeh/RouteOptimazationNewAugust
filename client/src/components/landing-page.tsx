@@ -27,17 +27,53 @@ export default function LandingPage({ onStartTrial, onAdminLogin }: LandingPageP
               </linearGradient>
             </defs>
             
+            <style>{`
+              @keyframes drawPath1 {
+                0% { stroke-dashoffset: 2000; }
+                50% { stroke-dashoffset: 0; }
+                100% { stroke-dashoffset: -2000; }
+              }
+              @keyframes drawPath2 {
+                0% { stroke-dashoffset: 2000; }
+                50% { stroke-dashoffset: 0; }
+                100% { stroke-dashoffset: -2000; }
+              }
+              @keyframes drawPath3 {
+                0% { stroke-dashoffset: 2000; }
+                50% { stroke-dashoffset: 0; }
+                100% { stroke-dashoffset: -2000; }
+              }
+              @keyframes pulseCircle {
+                0%, 100% { opacity: 0.2; transform: scale(1); }
+                50% { opacity: 0.5; transform: scale(1.2); }
+              }
+              .route-path-1 {
+                stroke-dasharray: 2000;
+                animation: drawPath1 6s ease-in-out infinite;
+              }
+              .route-path-2 {
+                stroke-dasharray: 2000;
+                animation: drawPath2 7s ease-in-out infinite;
+                animation-delay: 0.5s;
+              }
+              .route-path-3 {
+                stroke-dasharray: 2000;
+                animation: drawPath3 8s ease-in-out infinite;
+                animation-delay: 1s;
+              }
+              .pulse-circle {
+                animation: pulseCircle 3s ease-in-out infinite;
+                transform-origin: center;
+                transform-box: fill-box;
+              }
+            `}</style>
+            
             <path
               d="M-100,400 Q200,200 400,350 T700,300 T1000,400 T1300,350"
               fill="none"
               stroke="url(#routeGradient)"
               strokeWidth="2"
-              className={`transition-all duration-[3000ms] ease-out ${mounted ? 'opacity-100' : 'opacity-0'}`}
-              style={{
-                strokeDasharray: 2000,
-                strokeDashoffset: mounted ? 0 : 2000,
-                transition: 'stroke-dashoffset 3s ease-out, opacity 1s ease-out'
-              }}
+              className="route-path-1"
             />
             
             <path
@@ -45,12 +81,7 @@ export default function LandingPage({ onStartTrial, onAdminLogin }: LandingPageP
               fill="none"
               stroke="url(#routeGradient)"
               strokeWidth="1.5"
-              className={`transition-all duration-[3500ms] ease-out ${mounted ? 'opacity-100' : 'opacity-0'}`}
-              style={{
-                strokeDasharray: 2000,
-                strokeDashoffset: mounted ? 0 : 2000,
-                transition: 'stroke-dashoffset 3.5s ease-out 0.3s, opacity 1s ease-out 0.3s'
-              }}
+              className="route-path-2"
             />
             
             <path
@@ -58,20 +89,15 @@ export default function LandingPage({ onStartTrial, onAdminLogin }: LandingPageP
               fill="none"
               stroke="url(#routeGradient)"
               strokeWidth="1"
-              className={`transition-all duration-[4000ms] ease-out ${mounted ? 'opacity-100' : 'opacity-0'}`}
-              style={{
-                strokeDasharray: 2000,
-                strokeDashoffset: mounted ? 0 : 2000,
-                transition: 'stroke-dashoffset 4s ease-out 0.6s, opacity 1s ease-out 0.6s'
-              }}
+              className="route-path-3"
             />
             
             {[
-              { cx: 400, cy: 350, delay: '1s' },
-              { cx: 700, cy: 300, delay: '1.3s' },
-              { cx: 1000, cy: 400, delay: '1.6s' },
-              { cx: 500, cy: 450, delay: '1.9s' },
-              { cx: 850, cy: 500, delay: '2.2s' },
+              { cx: 400, cy: 350, delay: '0s' },
+              { cx: 700, cy: 300, delay: '0.5s' },
+              { cx: 1000, cy: 400, delay: '1s' },
+              { cx: 500, cy: 450, delay: '1.5s' },
+              { cx: 850, cy: 500, delay: '2s' },
               { cx: 550, cy: 280, delay: '2.5s' },
             ].map((point, i) => (
               <circle
@@ -80,8 +106,8 @@ export default function LandingPage({ onStartTrial, onAdminLogin }: LandingPageP
                 cy={point.cy}
                 r="6"
                 fill="#8B0000"
-                className={`transition-all duration-500 ${mounted ? 'opacity-40' : 'opacity-0'}`}
-                style={{ transitionDelay: point.delay }}
+                className="pulse-circle"
+                style={{ animationDelay: point.delay }}
               />
             ))}
           </svg>
