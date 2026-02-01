@@ -50,7 +50,16 @@ function AppContent() {
 
   const showOnboarding = (needsOnboarding && !onboardingComplete && !isLoading) || showTrialOnboarding;
 
-  if (showLanding && needsOnboarding && !isLoading) {
+  // Show loading state while checking trial status to prevent flicker
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-white flex items-center justify-center">
+        <div className="animate-pulse text-[#8B0000] text-xl font-semibold">RouteOptima</div>
+      </div>
+    );
+  }
+
+  if (showLanding && needsOnboarding) {
     return (
       <>
         <LandingPage 
