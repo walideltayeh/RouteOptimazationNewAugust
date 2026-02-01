@@ -11,27 +11,65 @@ import RepMapPage from "@/pages/rep-map";
 import VehiclesPage from "@/pages/vehicles";
 import VehicleDetailPage from "@/pages/vehicle-detail";
 import NotFound from "@/pages/not-found";
+import LandingPage from "@/components/landing-page";
 import TrialOnboarding from "@/components/trial-onboarding";
 import TrialBanner from "@/components/trial-banner";
 import UpgradeModal from "@/components/upgrade-modal";
+import LoginModal from "@/components/login-modal";
 import { useTrial } from "@/hooks/use-trial";
 
 function AppContent() {
   const { needsOnboarding, isTrialActive, isLoading, refetch, status } = useTrial();
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   const [onboardingComplete, setOnboardingComplete] = useState(false);
+  const [showLanding, setShowLanding] = useState(true);
+  const [showTrialOnboarding, setShowTrialOnboarding] = useState(false);
+  const [showAdminLogin, setShowAdminLogin] = useState(false);
 
   const handleOnboardingComplete = () => {
     setOnboardingComplete(true);
+    setShowTrialOnboarding(false);
+    setShowLanding(false);
     refetch();
   };
 
-  const showOnboarding = needsOnboarding && !onboardingComplete && !isLoading;
+  const handleStartTrial = () => {
+    setShowLanding(false);
+    setShowTrialOnboarding(true);
+  };
+
+  const handleAdminLogin = () => {
+    setShowAdminLogin(true);
+  };
+
+  const handleAdminLoginSuccess = () => {
+    setShowAdminLogin(false);
+    setShowLanding(false);
+    refetch();
+  };
+
+  const showOnboarding = (needsOnboarding && !onboardingComplete && !isLoading) || showTrialOnboarding;
+
+  if (showLanding && needsOnboarding && !isLoading) {
+    return (
+      <>
+        <LandingPage 
+          onStartTrial={handleStartTrial}
+          onAdminLogin={handleAdminLogin}
+        />
+        <LoginModal 
+          isOpen={showAdminLogin}
+          onClose={() => setShowAdminLogin(false)}
+          onLoginSuccess={handleAdminLoginSuccess}
+        />
+      </>
+    );
+  }
 
   return (
     <>
       <TrialOnboarding 
-        open={showOnboarding} 
+        open={showOnboarding && !showLanding} 
         onComplete={handleOnboardingComplete} 
       />
       
