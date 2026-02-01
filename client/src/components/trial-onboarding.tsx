@@ -219,6 +219,8 @@ export default function TrialOnboarding({ open, onComplete }: TrialOnboardingPro
               <LogIn className="mr-2 h-4 w-4" />
               Admin / Super User Login
             </Button>
+            
+            <p className="text-xs text-gray-500 text-center mt-4">Developed by Walid El Tayeh</p>
           </>
         )}
 
