@@ -62,11 +62,18 @@ interface TrialOnboardingProps {
 }
 
 export default function TrialOnboarding({ open, onComplete, skipWelcome = false }: TrialOnboardingProps) {
-  const [step, setStep] = useState<OnboardingStep>(skipWelcome ? "account" : "welcome");
+  const [step, setStep] = useState<OnboardingStep>("welcome");
   const [accountData, setAccountData] = useState<AccountFormValues | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showLoginModal, setShowLoginModal] = useState(false);
   const { toast } = useToast();
+
+  // Reset step when dialog opens based on skipWelcome prop
+  useEffect(() => {
+    if (open) {
+      setStep(skipWelcome ? "account" : "welcome");
+    }
+  }, [open, skipWelcome]);
 
   const handleAdminLoginSuccess = () => {
     setShowLoginModal(false);
