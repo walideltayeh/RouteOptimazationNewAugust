@@ -58,10 +58,11 @@ type OnboardingStep = "welcome" | "account" | "consent" | "ready";
 interface TrialOnboardingProps {
   open: boolean;
   onComplete: () => void;
+  skipWelcome?: boolean;
 }
 
-export default function TrialOnboarding({ open, onComplete }: TrialOnboardingProps) {
-  const [step, setStep] = useState<OnboardingStep>("welcome");
+export default function TrialOnboarding({ open, onComplete, skipWelcome = false }: TrialOnboardingProps) {
+  const [step, setStep] = useState<OnboardingStep>(skipWelcome ? "account" : "welcome");
   const [accountData, setAccountData] = useState<AccountFormValues | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showLoginModal, setShowLoginModal] = useState(false);
