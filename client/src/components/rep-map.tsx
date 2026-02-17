@@ -16,7 +16,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { Check, ChevronsUpDown, Zap, Save, Download, GripVertical, Edit2, Trash2, RefreshCw } from "lucide-react";
+import { Check, ChevronsUpDown, Zap, Save, Download, GripVertical, Edit2, Trash2, RefreshCw, MapPin, Upload, BarChart3, Search, Maximize2, Minimize2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -78,6 +78,10 @@ export function RepMap() {
   const [newRepId, setNewRepId] = useState<string>('');
   const [needsReoptimization, setNeedsReoptimization] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [outletSearchOpen, setOutletSearchOpen] = useState(false);
+  const [outletSearchQuery, setOutletSearchQuery] = useState("");
+  const mapContainerWrapperRef = useRef<HTMLDivElement>(null);
   const markersRef = useRef<mapboxgl.Marker[]>([]);
   // Track GeoJSON layer IDs for cleanup
   const geoJSONLayersRef = useRef<{ circleLayerId: string; handlers: { click: any; mouseenter: any; mouseleave: any } }[]>([]);
@@ -362,6 +366,26 @@ export function RepMap() {
     return result;
   }, [filteredSchedules, reps, outlets, selectedRoles, availableRoles, roleSchedules, schedules, schedulesLoading, showAllLinkedRoles, linkedRoleSchedules, getRoleColor]);
 
+  const routeStats = useMemo(() => {
+    let totalOutlets = 0;
+    let totalDistance = 0;
+    let totalDuration = 0;
+    Object.values(repDayOutlets).forEach(repData => {
+      Object.values(repData.daySchedules).forEach(dayData => {
+        totalOutlets += dayData.outlets.length;
+        if (dayData.schedule.totalDistance) totalDistance += dayData.schedule.totalDistance;
+        if (dayData.schedule.estimatedDuration) totalDuration += dayData.schedule.estimatedDuration;
+      });
+    });
+    return { totalOutlets, totalDistance, totalDuration };
+  }, [repDayOutlets]);
+
+  const filteredSearchOutlets = useMemo(() => {
+    if (!outletSearchQuery.trim()) return [];
+    const q = outletSearchQuery.toLowerCase();
+    return outlets.filter(o => o.name.toLowerCase().includes(q)).slice(0, 20);
+  }, [outlets, outletSearchQuery]);
+
   // Universe view: Group all outlets by zone for selected reps
   const universeViewData = useMemo(() => {
     if (viewMode !== 'universe' || selectedReps.length === 0) return null;
@@ -584,6 +608,35 @@ export function RepMap() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    const handler = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+      // Call map.resize when fullscreen state changes
+      setTimeout(() => { map.current?.resize(); }, 100);
+    };
+    document.addEventListener('fullscreenchange', handler);
+    return () => document.removeEventListener('fullscreenchange', handler);
+  }, []);
+
+  const toggleFullscreen = () => {
+    if (!mapContainerWrapperRef.current) return;
+    if (!document.fullscreenElement) {
+      mapContainerWrapperRef.current.requestFullscreen();
+    } else {
+      document.exitFullscreen();
+    }
+    // Call map.resize after fullscreen state change
+    setTimeout(() => { map.current?.resize(); }, 100);
+  };
+
+  const handleOutletSearch = (outlet: Outlet) => {
+    if (map.current) {
+      map.current.flyTo({ center: [outlet.longitude, outlet.latitude], zoom: 15 });
+    }
+    setOutletSearchOpen(false);
+    setOutletSearchQuery("");
+  };
 
   // Update map when data changes
   useEffect(() => {
@@ -1482,7 +1535,71 @@ export function RepMap() {
         </div>
       </CardHeader>
       <CardContent className="flex-1 p-4">
-        <div ref={mapContainer} className="h-full min-h-[400px] rounded-lg overflow-hidden border" />
+        {/* Outlet Search */}
+        <div className="mb-3">
+          <Popover open={outletSearchOpen} onOpenChange={setOutletSearchOpen}>
+            <PopoverTrigger asChild>
+              <Button variant="outline" className="w-full justify-start text-muted-foreground">
+                <Search className="mr-2 h-4 w-4" />
+                Search outlets...
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-[400px] p-0" align="start">
+              <Command>
+                <CommandInput
+                  placeholder="Type outlet name..."
+                  value={outletSearchQuery}
+                  onValueChange={setOutletSearchQuery}
+                />
+                <CommandEmpty>No outlet found.</CommandEmpty>
+                <CommandGroup className="max-h-[200px] overflow-y-auto">
+                  {filteredSearchOutlets.map((outlet) => (
+                    <CommandItem
+                      key={outlet.id}
+                      value={outlet.name}
+                      onSelect={() => handleOutletSearch(outlet)}
+                    >
+                      <MapPin className="mr-2 h-4 w-4 text-muted-foreground" />
+                      <div className="flex flex-col">
+                        <span className="text-sm">{outlet.name}</span>
+                        <span className="text-xs text-muted-foreground">{outlet.territory || 'No zone'}</span>
+                      </div>
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              </Command>
+            </PopoverContent>
+          </Popover>
+        </div>
+
+        {/* Map Container with fullscreen and loading overlay */}
+        <div
+          ref={mapContainerWrapperRef}
+          className={cn("relative", isFullscreen ? "fixed inset-0 z-50 bg-white" : "")}
+        >
+          <div ref={mapContainer} className={cn("rounded-lg overflow-hidden border", isFullscreen ? "h-full" : "h-full min-h-[400px]")} />
+
+          {/* Fullscreen Toggle */}
+          <Button
+            variant="secondary"
+            size="icon"
+            className="absolute top-3 right-3 z-10 shadow-md"
+            onClick={toggleFullscreen}
+            title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+          >
+            {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+          </Button>
+
+          {/* Loading Skeleton */}
+          {(schedulesLoading || !isMapLoaded) && (
+            <div className="absolute inset-0 bg-white/80 dark:bg-gray-900/80 flex flex-col items-center justify-center rounded-lg z-20">
+              <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-primary mb-3"></div>
+              <div className="animate-pulse space-y-2 text-center">
+                <p className="text-sm font-medium text-muted-foreground">Loading map data...</p>
+              </div>
+            </div>
+          )}
+        </div>
 
         {/* Help message when nothing is selected */}
         {selectedReps.length === 0 && (
@@ -1493,22 +1610,78 @@ export function RepMap() {
           </div>
         )}
 
+        {/* Empty state when no reps or schedules exist */}
+        {reps.length === 0 || schedules.length === 0 ? (
+          <div className="mt-4 p-6 bg-gray-50 border border-dashed border-gray-300 rounded-lg text-center space-y-4">
+            <MapPin className="h-10 w-10 text-gray-400 mx-auto" />
+            <div>
+              <h4 className="text-sm font-semibold text-gray-700 mb-1">No route data available</h4>
+              <p className="text-xs text-gray-500">Get started by uploading outlet data and running route optimization.</p>
+            </div>
+            <div className="flex items-center justify-center gap-6 text-xs text-gray-500">
+              <div className="flex items-center gap-1.5">
+                <Upload className="h-4 w-4" />
+                <span>Upload outlets</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <BarChart3 className="h-4 w-4" />
+                <span>Run optimization</span>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {/* Route Statistics Summary Bar */}
+        {selectedReps.length > 0 && routeStats.totalOutlets > 0 && (
+          <div className="mt-3 px-4 py-2.5 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg flex items-center justify-between">
+            <div className="flex items-center gap-6 text-sm">
+              <div className="flex items-center gap-1.5">
+                <MapPin className="h-4 w-4 text-blue-600" />
+                <span className="font-semibold text-blue-900 dark:text-blue-200">{routeStats.totalOutlets}</span>
+                <span className="text-blue-700 dark:text-blue-300">outlets</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <BarChart3 className="h-4 w-4 text-blue-600" />
+                <span className="font-semibold text-blue-900 dark:text-blue-200">{routeStats.totalDistance.toFixed(1)}</span>
+                <span className="text-blue-700 dark:text-blue-300">km</span>
+              </div>
+              {routeStats.totalDuration > 0 && (
+                <div className="flex items-center gap-1.5">
+                  <span className="font-semibold text-blue-900 dark:text-blue-200">{Math.round(routeStats.totalDuration)}</span>
+                  <span className="text-blue-700 dark:text-blue-300">min est.</span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Legend - Schedule View */}
         {selectedReps.length > 0 && viewMode === 'schedule' && (
           <div className="mt-4 p-3 border rounded-lg">
             <h4 className="font-semibold mb-2 text-sm">Selected Routes</h4>
-            <div className="space-y-2">
+            <div className="space-y-2.5">
               {Object.entries(repDayOutlets).map(([repId, repData]) => {
                 return Object.entries(repData.daySchedules).map(([scheduleKey, dayData]) => {
                   return (
-                    <div key={`${repId}-${scheduleKey}`} className="flex items-center gap-2">
-                      <div 
-                        className="w-3 h-3 rounded-full flex-shrink-0" 
-                        style={{ backgroundColor: dayData.color }}
-                      />
-                      <span className="text-xs truncate flex-1">
-                        {repData.rep.name} - {dayData.roleName ? `${dayData.roleName} - ` : ''}{daysOfWeek[dayData.dayOfWeek - 1] || `Day ${dayData.dayOfWeek}`} (Week {dayData.week}) - {dayData.outlets.length} outlets
-                        {dayData.schedule.totalDistance && ` (${dayData.schedule.totalDistance.toFixed(1)}km)`}
+                    <div key={`${repId}-${scheduleKey}`} className="flex items-center gap-2.5">
+                      <div className="flex items-center gap-1 flex-shrink-0">
+                        <div 
+                          className="w-3.5 h-3.5 rounded-full" 
+                          style={{ backgroundColor: dayData.color }}
+                        />
+                        <div
+                          className="w-5 h-0.5 rounded"
+                          style={{ backgroundColor: dayData.color }}
+                        />
+                      </div>
+                      <span className="text-sm truncate flex-1">
+                        <span className="font-medium">{repData.rep.name}</span>
+                        {dayData.roleName ? ` · ${dayData.roleName}` : ''}
+                        {' · '}{daysOfWeek[dayData.dayOfWeek - 1] || `Day ${dayData.dayOfWeek}`} (W{dayData.week})
+                        {' · '}{dayData.outlets.length} outlets
+                        {dayData.schedule.totalDistance && (
+                          <> · <span className="font-bold">{dayData.schedule.totalDistance.toFixed(1)} km</span></>
+                        )}
                       </span>
                       <Button
                         variant="ghost"
