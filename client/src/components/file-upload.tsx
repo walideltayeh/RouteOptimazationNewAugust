@@ -311,8 +311,11 @@ export default function FileUpload() {
               <p className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-1">
                 Drop your CSV or Excel file here
               </p>
-              <p className="text-xs text-gray-500 mb-3">
-                Supports .csv, .xlsx, .xls files up to 50MB
+              <p className="text-xs text-gray-500 mb-1">
+                Required: <span className="font-semibold text-gray-700 dark:text-gray-300">Outlet Name</span>, <span className="font-semibold text-gray-700 dark:text-gray-300">Latitude</span>, <span className="font-semibold text-gray-700 dark:text-gray-300">Longitude</span>
+              </p>
+              <p className="text-xs text-gray-400 mb-3">
+                .csv, .xlsx, .xls up to 50MB
               </p>
               <div className="flex items-center justify-center gap-2">
                 <Button variant="outline" size="sm">

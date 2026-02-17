@@ -2338,21 +2338,52 @@ export async function registerRoutes(app: Express): Promise<Server> {
                           row.X || row.x || row['GPS Long'] || row['GPS Longitude'] || row['GPS Lng'] ||
                           row['Geo Long'] || row['Geo Longitude'] || row['Geo Lng'] || "0";
           
-          const outlet: typeof insertOutletSchema._type = {
-            name: normalizedRow['outletname'] || normalizedRow['name'] || normalizedRow['outlet'] ||
+          const rowNum = outlets.length + skippedRows.length + 2;
+
+          const outletName = normalizedRow['outletname'] || normalizedRow['name'] || normalizedRow['outlet'] ||
                   normalizedRow['shopname'] || normalizedRow['shop'] ||
                   normalizedRow['storename'] || normalizedRow['store'] ||
                   normalizedRow['customername'] || normalizedRow['customer'] ||
                   normalizedRow['location'] || normalizedRow['site'] || normalizedRow['account'] ||
                   row['Outlet Name'] || row['Shop Name'] || row['Store Name'] || row['Customer Name'] ||
-                  row.Name || row.name || row.Outlet || row.outlet ||
-                  `Outlet ${outlets.length + 1}`,
+                  row.Name || row.name || row.Outlet || row.outlet || "";
+
+          const parsedLat = parseFloat(latValue);
+          const parsedLng = parseFloat(lngValue);
+
+          if (!outletName || !outletName.toString().trim()) {
+            skippedRows.push({ row: rowNum, reason: `Missing outlet name (required)` });
+            continue;
+          }
+
+          if (!latValue || latValue === "0" || isNaN(parsedLat)) {
+            skippedRows.push({ row: rowNum, reason: `Missing latitude for "${outletName}"` });
+            continue;
+          }
+
+          if (!lngValue || lngValue === "0" || isNaN(parsedLng)) {
+            skippedRows.push({ row: rowNum, reason: `Missing longitude for "${outletName}"` });
+            continue;
+          }
+
+          if (parsedLat < -90 || parsedLat > 90) {
+            skippedRows.push({ row: rowNum, reason: `Latitude out of range (-90 to 90) for "${outletName}": ${parsedLat}` });
+            continue;
+          }
+
+          if (parsedLng < -180 || parsedLng > 180) {
+            skippedRows.push({ row: rowNum, reason: `Longitude out of range (-180 to 180) for "${outletName}": ${parsedLng}` });
+            continue;
+          }
+
+          const outlet: typeof insertOutletSchema._type = {
+            name: outletName.toString().trim(),
             address: normalizedRow['address'] || normalizedRow['addr'] || normalizedRow['streetaddress'] ||
                     normalizedRow['fulladdress'] || normalizedRow['location'] ||
                     `${row.District || ''} - ${row.Region || ''} - ${row.Area || ''}`.replace(/^- |- $|^-$/, '').trim() || 
                     row.address || row.Address || "",
-            latitude: parseFloat(latValue),
-            longitude: parseFloat(lngValue),
+            latitude: parsedLat,
+            longitude: parsedLng,
             visitFrequency: parseInt(normalizedRow['vf'] || normalizedRow['visitfrequency'] || 
                                     row.vf || row.VF || row.visit_frequency || row["Visit Frequency"] || "2"),
             timePerVisit: isNaN(timePerVisit) ? 30 : Math.max(5, Math.min(120, timePerVisit)),
@@ -2361,13 +2392,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
             repId: null,
             cluster: null
           };
-
-          // Validate required fields
-          if (outlet.latitude === 0 || outlet.longitude === 0) {
-            console.warn(`Skipping outlet ${outlet.name} - invalid coordinates`);
-            skippedRows.push({ row: outlets.length + skippedRows.length + 2, reason: `Invalid coordinates for "${outlet.name}"` });
-            continue;
-          }
 
           // Support VF1 (monthly), VF2 (bi-weekly), VF4 (weekly)
           if (![1, 2, 4].includes(outlet.visitFrequency)) {
@@ -2382,7 +2406,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       if (outlets.length === 0) {
-        return res.status(400).json({ message: "No valid outlets found in file" });
+        const topReasons = skippedRows.slice(0, 5).map(s => s.reason).join('; ');
+        return res.status(400).json({ 
+          message: `No valid outlets found. Each row must have Outlet Name, Latitude, and Longitude. ${topReasons ? 'Issues found: ' + topReasons : ''}`,
+          skippedRows: skippedRows.length,
+          skippedDetails: skippedRows.slice(0, 20)
+        });
       }
 
       // Create outlets in storage
