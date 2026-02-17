@@ -277,7 +277,7 @@ export function detectFileType(file: File): 'csv' | 'excel' | 'unknown' {
 
 // File validation
 export function validateFile(file: File): { isValid: boolean; error?: string } {
-  const maxSize = 10 * 1024 * 1024; // 10MB
+  const maxSize = 50 * 1024 * 1024; // 50MB
   const fileType = detectFileType(file);
   
   if (fileType === 'unknown') {
@@ -285,7 +285,7 @@ export function validateFile(file: File): { isValid: boolean; error?: string } {
   }
   
   if (file.size > maxSize) {
-    return { isValid: false, error: 'File size exceeds 10MB limit.' };
+    return { isValid: false, error: 'File size exceeds 50MB limit.' };
   }
   
   return { isValid: true };

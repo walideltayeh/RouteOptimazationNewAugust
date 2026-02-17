@@ -123,7 +123,7 @@ interface MulterRequest extends Request {
   file?: Express.Multer.File;
 }
 
-const upload = multer({ storage: multer.memoryStorage() });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 // Spatial Grid Index for efficient neighbor lookups (O(1) instead of O(n))
 class SpatialGrid {
@@ -2296,6 +2296,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Process and validate data
       const outlets = [];
+      const skippedRows: { row: number; reason: string }[] = [];
       for (const row of data) {
         try {
           // Parse time per visit (default 30 minutes if not provided)
@@ -2364,6 +2365,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // Validate required fields
           if (outlet.latitude === 0 || outlet.longitude === 0) {
             console.warn(`Skipping outlet ${outlet.name} - invalid coordinates`);
+            skippedRows.push({ row: outlets.length + skippedRows.length + 2, reason: `Invalid coordinates for "${outlet.name}"` });
             continue;
           }
 
@@ -2373,8 +2375,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
 
           outlets.push(outlet);
-        } catch (error) {
+        } catch (error: any) {
           console.warn(`Error processing row:`, row, error);
+          skippedRows.push({ row: outlets.length + skippedRows.length + 2, reason: error?.message || 'Unknown error' });
         }
       }
 
@@ -2433,6 +2436,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
           vf1: vf1Count,
           vf2: vf2Count,
           vf4: vf4Count,
+          avgTimePerVisit,
+          recommendedReps
+        },
+        report: {
+          totalRowsProcessed: data.length,
+          validOutlets: outlets.length,
+          skippedRows: skippedRows.length,
+          skippedDetails: skippedRows.slice(0, 20),
+          vf1Count,
+          vf2Count,
+          vf4Count,
           avgTimePerVisit,
           recommendedReps
         }
