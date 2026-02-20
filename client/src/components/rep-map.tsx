@@ -146,11 +146,6 @@ export function RepMap() {
     return Array.from(roleMap.values());
   }, [roleHierarchies, roleSchedules]);
 
-  // Get color for a specific role
-  const getRoleColor = (role: string) => {
-    const roleInfo = availableRoles.find(r => r.role === role);
-    return roleInfo?.colorHex || '#3B82F6';
-  };
 
   // Filter schedules for selected reps, days, weeks, and roles (now multi-select)
   const filteredSchedules = useMemo(() => {
@@ -174,7 +169,6 @@ export function RepMap() {
     // Include other selected roles from role schedules
     const otherRoles = selectedRoles.filter(r => r !== 'rep');
     if (otherRoles.length > 0) {
-      console.log('Role filtering - Selected roles:', otherRoles, 'Selected reps:', selectedReps, 'Total role schedules:', roleSchedules.length);
       
       const filteredRoleSchedules = roleSchedules.filter(rs => {
         if (!otherRoles.includes(rs.role)) return false;
@@ -192,8 +186,6 @@ export function RepMap() {
         return matchingWeeks;
       });
       
-      console.log('Filtered role schedules:', filteredRoleSchedules.length);
-      
       allSchedules.push(...filteredRoleSchedules.map(rs => ({
         id: rs.id,
         repId: rs.repId,
@@ -209,7 +201,7 @@ export function RepMap() {
     }
     
     return allSchedules;
-  }, [schedules, roleSchedules, roleHierarchies, selectedReps, selectedDays, selectedWeeks, selectedRoles]);
+  }, [schedules, roleSchedules, selectedReps, selectedDays, selectedWeeks, selectedRoles]);
 
   // Filter all linked role schedules for "Show All Linked Roles" mode (when only 'rep' selected)
   const linkedRoleSchedules = useMemo(() => {
@@ -301,7 +293,7 @@ export function RepMap() {
       // Use role-specific color or day color based on role
       const displayColor = scheduleRole === 'rep' 
         ? DAY_COLORS[(schedule.dayOfWeek - 1) % DAY_COLORS.length]
-        : getRoleColor(scheduleRole);
+        : (availableRoles.find(r => r.role === scheduleRole)?.colorHex || '#3B82F6');
       
       result[rep.id].daySchedules[scheduleKey] = {
         outlets: scheduleOutlets,
@@ -364,7 +356,7 @@ export function RepMap() {
     }
 
     return result;
-  }, [filteredSchedules, reps, outlets, selectedRoles, availableRoles, roleSchedules, schedules, schedulesLoading, showAllLinkedRoles, linkedRoleSchedules, getRoleColor]);
+  }, [filteredSchedules, reps, outlets, selectedRoles, availableRoles, roleSchedules, schedules, schedulesLoading, showAllLinkedRoles, linkedRoleSchedules]);
 
   const routeStats = useMemo(() => {
     let totalOutlets = 0;

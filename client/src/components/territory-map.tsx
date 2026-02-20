@@ -483,7 +483,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
             <CardHeader className="pb-3">
               <CardTitle className="text-lg">Territories</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-3">
+            <CardContent className="space-y-3 max-h-[500px] overflow-y-auto">
               {Object.entries(territoryGroups).map(([territory, territoryOutlets]) => {
                 const rep = getRepForTerritory(territory);
                 const vf2Count = territoryOutlets.filter(o => o.visitFrequency === 2).length;
