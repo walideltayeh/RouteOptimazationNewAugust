@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useMemo } from 'react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -9,7 +9,6 @@ import { MapPin, Users, Navigation, Trash2, RefreshCw } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { apiRequest } from '@/lib/queryClient';
 import type { Outlet, Rep } from '@shared/schema';
-import { kMeansClustering, findOptimalClusters, enhancedKMeansClustering, workloadBasedClustering, calculateOptimalReps } from '@/lib/clustering';
 
 // Set a default token or use environment variable
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || import.meta.env.VITE_MAPBOX_PUBLIC_KEY;
@@ -30,6 +29,9 @@ const TERRITORY_COLORS = [
 export default function TerritoryMap({ className }: TerritoryMapProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
+  const markersRef = useRef<mapboxgl.Marker[]>([]);
+  const drilldownLayersRef = useRef<string[]>([]);
+  const drilldownHandlersRef = useRef<{ layerId: string; click: any; mouseenter: any; mouseleave: any }[]>([]);
   const [selectedOutlet, setSelectedOutlet] = useState<Outlet | null>(null);
   const [mapError, setMapError] = useState<string | null>(null);
   const [isMapLoaded, setIsMapLoaded] = useState(false);
@@ -153,9 +155,21 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     console.log(`Rendering ${outlets.length} outlets using cluster visualization`);
     setIsRenderingMarkers(true);
 
-    // Clear existing markers and sources
-    const existingMarkers = document.querySelectorAll('.outlet-marker, .cluster-marker');
-    existingMarkers.forEach(marker => marker.remove());
+    markersRef.current.forEach(m => m.remove());
+    markersRef.current = [];
+    drilldownHandlersRef.current.forEach(({ layerId, click, mouseenter, mouseleave }) => {
+      if (map.current) {
+        map.current.off('click', layerId, click);
+        map.current.off('mouseenter', layerId, mouseenter);
+        map.current.off('mouseleave', layerId, mouseleave);
+      }
+    });
+    drilldownHandlersRef.current = [];
+    drilldownLayersRef.current.forEach(id => {
+      if (map.current?.getLayer(id)) map.current.removeLayer(id);
+      if (map.current?.getSource(id)) map.current.removeSource(id);
+    });
+    drilldownLayersRef.current = [];
 
     // For very large datasets, use territory cluster visualization instead of individual markers
     if (outlets.length > 100) {
@@ -200,35 +214,98 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
       `);
 
       clusterEl.addEventListener('click', () => {
-        // Zoom to territory bounds and show individual outlet markers
         const territoryBounds = new mapboxgl.LngLatBounds();
         territoryOutlets.forEach(outlet => {
           territoryBounds.extend([outlet.longitude, outlet.latitude]);
         });
         map.current!.fitBounds(territoryBounds, { padding: 50 });
-        
-        // Render individual outlet markers for this territory
-        territoryOutlets.forEach((outlet) => {
-          const markerEl = document.createElement('div');
-          markerEl.className = 'outlet-marker w-4 h-4 rounded-full border-2 border-white shadow-md cursor-pointer hover:scale-150 transition-transform';
-          markerEl.style.backgroundColor = getTerritoryColor(territory);
-          markerEl.title = outlet.name;
 
-          markerEl.addEventListener('click', (e) => {
-            e.stopPropagation();
-            setSelectedOutlet(outlet);
-          });
+        drilldownHandlersRef.current.forEach(({ layerId, click, mouseenter, mouseleave }) => {
+          if (map.current) {
+            map.current.off('click', layerId, click);
+            map.current.off('mouseenter', layerId, mouseenter);
+            map.current.off('mouseleave', layerId, mouseleave);
+          }
+        });
+        drilldownHandlersRef.current = [];
+        drilldownLayersRef.current.forEach(id => {
+          if (map.current?.getLayer(id)) map.current.removeLayer(id);
+          if (map.current?.getSource(id)) map.current.removeSource(id);
+        });
+        drilldownLayersRef.current = [];
 
-          new mapboxgl.Marker(markerEl)
-            .setLngLat([outlet.longitude, outlet.latitude])
-            .addTo(map.current!);
+        const sourceId = `drilldown-source-${territory}`;
+        const circleLayerId = `drilldown-circles-${territory}`;
+        const symbolLayerId = `drilldown-labels-${territory}`;
+        const color = getTerritoryColor(territory);
+
+        const geojson: GeoJSON.FeatureCollection = {
+          type: 'FeatureCollection',
+          features: territoryOutlets.map((outlet, idx) => ({
+            type: 'Feature' as const,
+            geometry: { type: 'Point' as const, coordinates: [outlet.longitude, outlet.latitude] },
+            properties: { id: outlet.id, name: outlet.name, index: idx + 1, outletJson: JSON.stringify(outlet) }
+          }))
+        };
+
+        map.current!.addSource(sourceId, { type: 'geojson', data: geojson });
+        map.current!.addLayer({
+          id: circleLayerId,
+          type: 'circle',
+          source: sourceId,
+          paint: {
+            'circle-radius': 6,
+            'circle-color': color,
+            'circle-stroke-width': 2,
+            'circle-stroke-color': '#ffffff'
+          }
+        });
+        map.current!.addLayer({
+          id: symbolLayerId,
+          type: 'symbol',
+          source: sourceId,
+          layout: {
+            'text-field': ['get', 'index'],
+            'text-size': 9,
+            'text-offset': [0, -1.2]
+          },
+          paint: { 'text-color': color }
+        });
+
+        drilldownLayersRef.current.push(circleLayerId, symbolLayerId, sourceId);
+
+        const clickHandler = (e: any) => {
+          if (e.features && e.features[0]) {
+            const props = e.features[0].properties;
+            if (props?.outletJson) {
+              setSelectedOutlet(JSON.parse(props.outletJson));
+            }
+          }
+        };
+        const mouseenterHandler = () => {
+          if (map.current) map.current.getCanvas().style.cursor = 'pointer';
+        };
+        const mouseleaveHandler = () => {
+          if (map.current) map.current.getCanvas().style.cursor = '';
+        };
+
+        map.current!.on('click', circleLayerId, clickHandler);
+        map.current!.on('mouseenter', circleLayerId, mouseenterHandler);
+        map.current!.on('mouseleave', circleLayerId, mouseleaveHandler);
+
+        drilldownHandlersRef.current.push({
+          layerId: circleLayerId,
+          click: clickHandler,
+          mouseenter: mouseenterHandler,
+          mouseleave: mouseleaveHandler
         });
       });
 
-      new mapboxgl.Marker(clusterEl)
+      const marker = new mapboxgl.Marker(clusterEl)
         .setLngLat([centerLng, centerLat])
         .setPopup(popup)
         .addTo(map.current!);
+      markersRef.current.push(marker);
     });
 
     // Fit map to show all territories
@@ -260,9 +337,10 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
               setSelectedOutlet(outlet);
             });
 
-            new mapboxgl.Marker(markerEl)
+            const m = new mapboxgl.Marker(markerEl)
               .setLngLat([outlet.longitude, outlet.latitude])
               .addTo(map.current!);
+            markersRef.current.push(m);
           });
           resolve(void 0);
         });
@@ -276,46 +354,18 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     setIsRenderingMarkers(false);
   };
 
-  // Use clustering to create proper territory groups
   const createTerritoryGroups = () => {
     if (outlets.length === 0) return {};
-
-    // Convert outlets to points for clustering
-    const points = outlets.map(outlet => ({
-      id: outlet.id,
-      latitude: outlet.latitude,
-      longitude: outlet.longitude,
-      data: outlet
-    }));
-
-    // Calculate optimal number of reps based on workload
-    const optimalReps = reps.length > 0 ? reps.length : calculateOptimalReps(outlets);
-
-    // Use workload-based clustering for better territory distribution
-    const clusters = workloadBasedClustering(points, optimalReps);
-
-    // Create territory groups from clusters
-    const territoryGroups: Record<string, Outlet[]> = {};
-
-    clusters.forEach((cluster, index) => {
-      const territoryName = `Zone ${String.fromCharCode(65 + index)}`; // Zone A, B, C, etc.
-      territoryGroups[territoryName] = cluster.points.map(point => point.data);
+    const groups: Record<string, Outlet[]> = {};
+    outlets.forEach(outlet => {
+      const territory = outlet.territory || 'Unassigned';
+      if (!groups[territory]) groups[territory] = [];
+      groups[territory].push(outlet);
     });
-
-    // Handle any outlets not assigned to clusters
-    const assignedOutletIds = new Set(
-      Object.values(territoryGroups).flat().map(outlet => outlet.id)
-    );
-
-    const unassignedOutlets = outlets.filter(outlet => !assignedOutletIds.has(outlet.id));
-    if (unassignedOutlets.length > 0) {
-      territoryGroups['Unassigned'] = unassignedOutlets;
-    }
-
-    return territoryGroups;
+    return groups;
   };
 
-  const territoryGroups = createTerritoryGroups();
+  const territoryGroups = useMemo(() => createTerritoryGroups(), [outlets, reps]);
 
   const getColorForTerritory = (outletId: string) => {
     // Find which territory this outlet belongs to

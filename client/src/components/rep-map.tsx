@@ -85,6 +85,7 @@ export function RepMap() {
   const markersRef = useRef<mapboxgl.Marker[]>([]);
   // Track GeoJSON layer IDs for cleanup
   const geoJSONLayersRef = useRef<{ circleLayerId: string; handlers: { click: any; mouseenter: any; mouseleave: any } }[]>([]);
+  const createdLayersRef = useRef<Set<string>>(new Set());
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -251,6 +252,8 @@ export function RepMap() {
     if (schedulesLoading || !outlets.length) {
       return result;
     }
+
+    const outletMap = new Map(outlets.map(o => [o.id, o]));
     
     // Check if we have any relevant data
     const hasRepRole = selectedRoles.includes('rep');
@@ -278,10 +281,7 @@ export function RepMap() {
           : [];
       
       const scheduleOutlets = outletIdArray
-        .map((id: string) => {
-          const outlet = outlets.find((o: Outlet) => o.id === id);
-          return outlet;
-        })
+        .map((id: string) => outletMap.get(id))
         .filter((o: Outlet | undefined): o is Outlet => o !== undefined);
 
       if (!result[rep.id]) {
@@ -326,7 +326,7 @@ export function RepMap() {
             : [];
         
         const scheduleOutlets = outletIdArray
-          .map((id: string) => outlets.find((o: Outlet) => o.id === id))
+          .map((id: string) => outletMap.get(id))
           .filter((o: Outlet | undefined): o is Outlet => o !== undefined);
 
         if (!result[rep.id]) {
@@ -454,6 +454,7 @@ export function RepMap() {
 
   // Get rep territories (zones assigned to each rep via schedules)
   const repTerritories = useMemo(() => {
+    const outletMap = new Map(outlets.map(o => [o.id, o]));
     const repZones: Record<string, Set<string>> = {};
     schedules.forEach(schedule => {
       if (!repZones[schedule.repId]) {
@@ -465,7 +466,7 @@ export function RepMap() {
           ? JSON.parse(schedule.outletIds as string)
           : [];
       outletIds.forEach((id: string) => {
-        const outlet = outlets.find(o => o.id === id);
+        const outlet = outletMap.get(id);
         if (outlet?.territory) {
           repZones[schedule.repId].add(outlet.territory);
         }
@@ -642,13 +643,6 @@ export function RepMap() {
   useEffect(() => {
     if (!map.current || !isMapLoaded) return;
 
-    console.log('RepMap update - Selected reps:', selectedReps);
-    console.log('RepMap update - Selected days:', selectedDays);
-    console.log('RepMap update - All schedules:', schedules.length);
-    console.log('RepMap update - Filtered schedules:', filteredSchedules);
-    console.log('RepMap update - Rep outlets:', repDayOutlets);
-    console.log('RepMap update - Total outlets:', outlets.length);
-
     // Clear existing markers
     markersRef.current.forEach(marker => marker.remove());
     markersRef.current = [];
@@ -663,92 +657,18 @@ export function RepMap() {
     });
     geoJSONLayersRef.current = [];
 
-    // Clear existing layers and sources for all reps
-    reps.forEach((rep) => {
-      const sourceId = `route-${rep.id}`;
-      const layerId = `route-layer-${rep.id}`;
-      
-      if (map.current!.getLayer(layerId)) {
-        map.current!.removeLayer(layerId);
-      }
-      if (map.current!.getSource(sourceId)) {
-        map.current!.removeSource(sourceId);
-      }
+    // Clean up only previously created layers and sources (tracked via ref)
+    // Remove layers first, then sources (sources can't be removed while layers reference them)
+    createdLayersRef.current.forEach(id => {
+      if (map.current?.getLayer(id)) map.current.removeLayer(id);
     });
-
-    // Clear existing layers and sources for all reps, ALL days (1-7), and ALL weeks (1-4)
-    // This ensures stale layers are removed when toggling days/weeks
-    // Use a comprehensive list of possible role names to ensure all stale layers are cleared
-    const knownRoleNames = ['merchandiser', 'collection_agent', 'supervisor', 'driver', 'custom', 'rep'];
-    const allRoleNames = [...knownRoleNames, ...availableRoles.map(r => r.role)];
-    const uniqueRoleNames = Array.from(new Set(allRoleNames));
-    
-    reps.forEach((rep) => {
-      [1, 2, 3, 4, 5, 6, 7].forEach((day) => {
-        [1, 2, 3, 4].forEach((week) => {
-          // Clear base schedule layers
-          const sourceId = `route-${rep.id}-${day}-${week}`;
-          const layerId = `route-layer-${rep.id}-${day}-${week}`;
-          
-          if (map.current!.getLayer(layerId)) {
-            map.current!.removeLayer(layerId);
-          }
-          if (map.current!.getSource(sourceId)) {
-            map.current!.removeSource(sourceId);
-          }
-          
-          // Clear role schedule layers AND GeoJSON point layers
-          uniqueRoleNames.forEach((roleName) => {
-            // Clean up route layers for roles
-            if (roleName !== 'rep') {
-              const roleSourceId = `route-${rep.id}-${day}-${week}-${roleName}`;
-              const roleLayerId = `route-layer-${rep.id}-${day}-${week}-${roleName}`;
-              
-              if (map.current!.getLayer(roleLayerId)) {
-                map.current!.removeLayer(roleLayerId);
-              }
-              if (map.current!.getSource(roleSourceId)) {
-                map.current!.removeSource(roleSourceId);
-              }
-            }
-            
-            // Clean up GeoJSON point layers (for optimized rendering)
-            const scheduleKey = `${day}-${week}-${roleName}`;
-            const pointSourceId = `points-${rep.id}-${scheduleKey}`;
-            const circleLayerId = `circles-${rep.id}-${scheduleKey}`;
-            const labelLayerId = `labels-${rep.id}-${scheduleKey}`;
-            
-            if (map.current!.getLayer(labelLayerId)) {
-              map.current!.removeLayer(labelLayerId);
-            }
-            if (map.current!.getLayer(circleLayerId)) {
-              map.current!.removeLayer(circleLayerId);
-            }
-            if (map.current!.getSource(pointSourceId)) {
-              map.current!.removeSource(pointSourceId);
-            }
-          });
-        });
-      });
+    createdLayersRef.current.forEach(id => {
+      if (map.current?.getSource(id)) map.current.removeSource(id);
     });
-
-    // Clean up universe view layers
-    if (universeViewData) {
-      universeViewData.zoneList.forEach((zone, idx) => {
-        const safeZone = zone.replace(/[^a-zA-Z0-9]/g, '_');
-        const sourceId = `universe-zone-${safeZone}`;
-        const circleLayerId = `universe-circles-${safeZone}`;
-        const labelLayerId = `universe-labels-${safeZone}`;
-        
-        if (map.current!.getLayer(labelLayerId)) map.current!.removeLayer(labelLayerId);
-        if (map.current!.getLayer(circleLayerId)) map.current!.removeLayer(circleLayerId);
-        if (map.current!.getSource(sourceId)) map.current!.removeSource(sourceId);
-      });
-    }
+    createdLayersRef.current.clear();
     
     // UNIVERSE VIEW: Show all outlets grouped by zones
     if (viewMode === 'universe' && universeViewData) {
-      console.log('Rendering Universe View with', universeViewData.totalOutlets, 'outlets across', universeViewData.zoneList.length, 'zones');
       
       Object.entries(universeViewData.zoneGroups).forEach(([zoneName, zoneData], idx) => {
         const safeZone = zoneName.replace(/[^a-zA-Z0-9]/g, '_');
@@ -781,6 +701,7 @@ export function RepMap() {
             type: 'geojson',
             data: { type: 'FeatureCollection', features }
           });
+          createdLayersRef.current.add(sourceId);
           
           map.current!.addLayer({
             id: circleLayerId,
@@ -793,6 +714,7 @@ export function RepMap() {
               'circle-stroke-color': '#ffffff'
             }
           });
+          createdLayersRef.current.add(circleLayerId);
           
           map.current!.addLayer({
             id: labelLayerId,
@@ -806,8 +728,9 @@ export function RepMap() {
             },
             paint: { 'text-color': '#ffffff' }
           });
+          createdLayersRef.current.add(labelLayerId);
           
-          map.current!.on('click', circleLayerId, (e) => {
+          const universeClickHandler = (e: mapboxgl.MapMouseEvent & { features?: mapboxgl.MapboxGeoJSONFeature[] }) => {
             if (!e.features?.[0]) return;
             const props = e.features[0].properties;
             const coords = (e.features[0].geometry as GeoJSON.Point).coordinates;
@@ -839,18 +762,27 @@ export function RepMap() {
                     lat: props?.lat,
                     lng: props?.lng
                   });
-                  setNewRepId('keep-current'); // Default to keep current rep
+                  setNewRepId('keep-current');
                   popup.remove();
                 });
               }
             }, 100);
-          });
+          };
           
-          map.current!.on('mouseenter', circleLayerId, () => {
+          const universeMouseenterHandler = () => {
             if (map.current) map.current.getCanvas().style.cursor = 'pointer';
-          });
-          map.current!.on('mouseleave', circleLayerId, () => {
+          };
+          const universeMouseleaveHandler = () => {
             if (map.current) map.current.getCanvas().style.cursor = '';
+          };
+
+          map.current!.on('click', circleLayerId, universeClickHandler);
+          map.current!.on('mouseenter', circleLayerId, universeMouseenterHandler);
+          map.current!.on('mouseleave', circleLayerId, universeMouseleaveHandler);
+
+          geoJSONLayersRef.current.push({
+            circleLayerId,
+            handlers: { click: universeClickHandler, mouseenter: universeMouseenterHandler, mouseleave: universeMouseleaveHandler }
           });
         }
       });
@@ -872,8 +804,6 @@ export function RepMap() {
       (sum, r) => sum + Object.values(r.daySchedules).reduce((s, d) => s + d.outlets.length, 0), 0
     );
     const useGeoJSONRendering = totalOutlets > 100; // Use optimized rendering for 100+ outlets
-    
-    console.log(`Adding ${useGeoJSONRendering ? 'GeoJSON layers' : 'markers'} for ${totalOutlets} outlets`);
     
     Object.entries(repDayOutlets).forEach(([repId, repData]) => {
       Object.entries(repData.daySchedules).forEach(([scheduleKey, dayData]) => {
@@ -916,6 +846,7 @@ export function RepMap() {
                 features
               }
             });
+            createdLayersRef.current.add(pointSourceId);
             
             // Add circle layer (faster than DOM markers)
             map.current.addLayer({
@@ -929,6 +860,7 @@ export function RepMap() {
                 'circle-stroke-color': '#ffffff'
               }
             });
+            createdLayersRef.current.add(circleLayerId);
             
             // Add label layer for outlet order numbers
             map.current.addLayer({
@@ -945,6 +877,7 @@ export function RepMap() {
                 'text-color': '#ffffff'
               }
             });
+            createdLayersRef.current.add(labelLayerId);
             
             // Store handlers for later cleanup
             const clickHandler = (e: mapboxgl.MapMouseEvent & { features?: mapboxgl.MapboxGeoJSONFeature[] }) => {
@@ -1093,6 +1026,7 @@ export function RepMap() {
                 }
               }
             });
+            createdLayersRef.current.add(sourceId);
 
             map.current.addLayer({
               id: layerId,
@@ -1110,6 +1044,7 @@ export function RepMap() {
                 'line-dasharray': dayData.week === 1 || dayData.week === 3 ? [1, 0] : [2, 2]
               }
             });
+            createdLayersRef.current.add(layerId);
           }
         }
       });
