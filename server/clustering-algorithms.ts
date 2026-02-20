@@ -832,7 +832,7 @@ async function fastClusteringLargeDataset(
   const startTime = Date.now();
   console.log(`[Fast Clustering] Starting for ${outlets.length} outlets, k=${k}`);
 
-  await emitProgress(23, 'Clustering', 'Sorting outlets geographically...');
+  await emitProgress(23, 'Clustering', 'Preparing outlet data...');
 
   const points: Point[] = outlets.map(o => ({
     lat: o.latitude,
@@ -840,24 +840,72 @@ async function fastClusteringLargeDataset(
     id: o.id
   }));
 
-  points.sort((a, b) => a.lat !== b.lat ? a.lat - b.lat : a.lng - b.lng);
-
   await emitProgress(24, 'Clustering', 'Initializing cluster centroids...');
 
   const centroids = initializeCentroidsKMeansPlusPlus(points, k);
   console.log(`[Fast Clustering] Initialized ${centroids.length} centroids in ${Date.now() - startTime}ms`);
 
-  await emitProgress(25, 'Clustering', `Assigning ${outlets.length} outlets to ${k} zones...`);
+  await emitProgress(25, 'Clustering', `Running K-means to find geographic centers...`);
 
+  // Phase 1: Standard K-means WITHOUT capacity constraints (5 iterations)
+  // This lets centroids converge to natural geographic cluster centers
+  let assignments = new Int32Array(points.length);
+  for (let kIter = 0; kIter < 5; kIter++) {
+    // Assign each point to nearest centroid (no capacity limit)
+    for (let p = 0; p < points.length; p++) {
+      let nearestIdx = 0;
+      let nearestDist = Infinity;
+      for (let c = 0; c < centroids.length; c++) {
+        const dLat = points[p].lat - centroids[c].lat;
+        const dLng = points[p].lng - centroids[c].lng;
+        const dist = dLat * dLat + dLng * dLng; // Squared euclidean for speed
+        if (dist < nearestDist) {
+          nearestDist = dist;
+          nearestIdx = c;
+        }
+      }
+      assignments[p] = nearestIdx;
+    }
+
+    // Recompute centroids
+    const sums = centroids.map(() => ({ lat: 0, lng: 0, count: 0 }));
+    for (let p = 0; p < points.length; p++) {
+      const ci = assignments[p];
+      sums[ci].lat += points[p].lat;
+      sums[ci].lng += points[p].lng;
+      sums[ci].count++;
+    }
+    for (let c = 0; c < centroids.length; c++) {
+      if (sums[c].count > 0) {
+        centroids[c].lat = sums[c].lat / sums[c].count;
+        centroids[c].lng = sums[c].lng / sums[c].count;
+      }
+    }
+
+    if (kIter % 2 === 0) await yieldToEventLoop();
+  }
+
+  console.log(`[Fast Clustering] K-means converged centroids in ${Date.now() - startTime}ms`);
+  await emitProgress(28, 'Clustering', `Assigning ${outlets.length} outlets with capacity constraints...`);
+
+  // Phase 2: Capacity-constrained assignment using converged centroids
+  // Process outlets in RANDOM order to avoid latitude bias
   let clusters: Cluster[] = centroids.map((centroid, i) => ({
     id: i,
     points: [],
-    centroid,
+    centroid: { ...centroid },
     radius: 0
   }));
 
-  for (let ptIdx = 0; ptIdx < points.length; ptIdx++) {
-    const point = points[ptIdx];
+  // Create randomized order
+  const indices = Array.from({ length: points.length }, (_, i) => i);
+  for (let i = indices.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [indices[i], indices[j]] = [indices[j], indices[i]];
+  }
+
+  for (let idx = 0; idx < indices.length; idx++) {
+    const point = points[indices[idx]];
     let nearestIdx = 0;
     let nearestDist = Infinity;
 
@@ -896,13 +944,14 @@ async function fastClusteringLargeDataset(
       }
     }
 
-    if (ptIdx % 100 === 0) await yieldToEventLoop();
-    if (ptIdx % 500 === 0) {
-      const pct = 25 + Math.floor((ptIdx / points.length) * 5);
-      await emitProgress(pct, 'Clustering', `Assigned ${ptIdx}/${points.length} outlets...`);
+    if (idx % 200 === 0) await yieldToEventLoop();
+    if (idx % 500 === 0) {
+      const pct = 28 + Math.floor((idx / indices.length) * 4);
+      await emitProgress(pct, 'Clustering', `Assigned ${idx}/${indices.length} outlets...`);
     }
   }
 
+  // Recompute centroids after capacity-constrained assignment
   clusters.forEach(cluster => {
     if (cluster.points.length > 0) {
       cluster.centroid = calculateCentroid(cluster.points);
@@ -910,100 +959,79 @@ async function fastClusteringLargeDataset(
     }
   });
 
-  const overflowClusters = clusters.filter(c => c.id >= k && c.points.length > 0);
-  if (overflowClusters.length > 0) {
-    console.log(`[Fast Clustering] ${overflowClusters.length} overflow clusters created, attempting redistribution...`);
-    const originalClusters = clusters.filter(c => c.id < k);
-    let redistributed = 0;
+  console.log(`[Fast Clustering] Capacity-constrained assignment done in ${Date.now() - startTime}ms`);
+  await emitProgress(32, 'Clustering', 'Refining zone boundaries with reassignment...');
 
-    for (const overflow of overflowClusters) {
-      const pointsToRedistribute = [...overflow.points];
-      overflow.points = [];
+  // Phase 3: Iterative reassignment - move misplaced points to closer clusters
+  // Uses a pointId→clusterIdx index for O(1) lookups instead of O(n^2) scans
+  const reassignmentStart = Date.now();
+  
+  // Build point-to-cluster index
+  const pointClusterIndex = new Map<string, number>();
+  for (let c = 0; c < clusters.length; c++) {
+    for (const pt of clusters[c].points) {
+      pointClusterIndex.set(pt.id, c);
+    }
+  }
 
-      for (const point of pointsToRedistribute) {
-        let nearestCluster: Cluster | null = null;
-        let nearestDist = Infinity;
+  for (let reassignIter = 0; reassignIter < 5; reassignIter++) {
+    if (Date.now() - reassignmentStart > 15000) break;
+    let movesMade = 0;
 
-        for (const cluster of originalClusters) {
-          if (cluster.points.length < maxVisitsPerDay) {
-            const dist = calculateDistance(point.lat, point.lng, cluster.centroid.lat, cluster.centroid.lng);
-            if (dist < nearestDist) {
-              nearestDist = dist;
-              nearestCluster = cluster;
-            }
-          }
-        }
+    for (let p = 0; p < points.length; p++) {
+      const point = points[p];
+      const currentClusterIdx = pointClusterIndex.get(point.id);
+      if (currentClusterIdx === undefined || currentClusterIdx === -1) continue;
 
-        if (nearestCluster) {
-          nearestCluster.points.push(point);
-          redistributed++;
-        } else {
-          overflow.points.push(point);
+      const currentDist = calculateDistance(point.lat, point.lng, 
+        clusters[currentClusterIdx].centroid.lat, clusters[currentClusterIdx].centroid.lng);
+
+      // Find better cluster
+      let bestClusterIdx = currentClusterIdx;
+      let bestDist = currentDist;
+      for (let c = 0; c < clusters.length; c++) {
+        if (c === currentClusterIdx) continue;
+        if (clusters[c].points.length >= maxVisitsPerDay) continue;
+        const dist = calculateDistance(point.lat, point.lng, clusters[c].centroid.lat, clusters[c].centroid.lng);
+        if (dist < bestDist * 0.8) {
+          bestDist = dist;
+          bestClusterIdx = c;
         }
       }
 
-      if (overflow.points.length > 0) {
-        overflow.centroid = calculateCentroid(overflow.points);
-        overflow.radius = calculateRadius(overflow.points, overflow.centroid);
+      if (bestClusterIdx !== currentClusterIdx) {
+        clusters[currentClusterIdx].points = clusters[currentClusterIdx].points.filter(pt => pt.id !== point.id);
+        clusters[bestClusterIdx].points.push(point);
+        pointClusterIndex.set(point.id, bestClusterIdx);
+        movesMade++;
       }
+
+      if (p % 200 === 0) await yieldToEventLoop();
     }
 
-    originalClusters.forEach(cluster => {
+    // Recompute centroids
+    clusters.forEach(cluster => {
       if (cluster.points.length > 0) {
         cluster.centroid = calculateCentroid(cluster.points);
         cluster.radius = calculateRadius(cluster.points, cluster.centroid);
       }
     });
 
-    const remainingOverflow = overflowClusters.filter(c => c.points.length > 0);
-    console.log(`[Fast Clustering] Redistributed ${redistributed} points from overflow; ${remainingOverflow.length} overflow clusters remain`);
-    clusters = [...originalClusters, ...remainingOverflow];
+    const pct = 32 + Math.floor(((reassignIter + 1) / 5) * 3);
+    await emitProgress(pct, 'Clustering', `Reassignment pass ${reassignIter + 1}/5 (${movesMade} moves)...`);
+
+    if (movesMade === 0) break;
   }
 
-  console.log(`[Fast Clustering] Initial assignment done in ${Date.now() - startTime}ms`);
-  await emitProgress(30, 'Clustering', 'Refining zone boundaries...');
+  console.log(`[Fast Clustering] Reassignment done in ${Date.now() - reassignmentStart}ms`);
+  await emitProgress(35, 'Clustering', 'Swapping boundary outlets...');
 
-  let avgInterCentroidDist = 0;
-  const activeClusters = clusters.filter(c => c.points.length > 0);
-  if (activeClusters.length > 1) {
-    let totalDist = 0;
-    let count = 0;
-    if (activeClusters.length <= 100) {
-      for (let i = 0; i < activeClusters.length; i++) {
-        for (let j = i + 1; j < activeClusters.length; j++) {
-          totalDist += calculateDistance(
-            activeClusters[i].centroid.lat, activeClusters[i].centroid.lng,
-            activeClusters[j].centroid.lat, activeClusters[j].centroid.lng
-          );
-          count++;
-        }
-      }
-    } else {
-      const pairCount = 50;
-      for (let p = 0; p < pairCount; p++) {
-        const idxA = Math.floor(Math.random() * activeClusters.length);
-        let idxB = Math.floor(Math.random() * (activeClusters.length - 1));
-        if (idxB >= idxA) idxB++;
-        totalDist += calculateDistance(
-          activeClusters[idxA].centroid.lat, activeClusters[idxA].centroid.lng,
-          activeClusters[idxB].centroid.lat, activeClusters[idxB].centroid.lng
-        );
-        count++;
-      }
-    }
-    avgInterCentroidDist = count > 0 ? totalDist / count : Infinity;
-  }
-  const neighborThreshold = avgInterCentroidDist * 2;
-
+  // Phase 4: Neighbor swap refinement (existing logic but improved)
   const refinementStart = Date.now();
-  const maxRefinementIterations = 10;
+  const activeClusters = clusters.filter(c => c.points.length > 0);
 
-  for (let iter = 0; iter < maxRefinementIterations; iter++) {
-    if (Date.now() - refinementStart > 30000) {
-      console.log(`[Fast Clustering] Refinement time limit reached at iteration ${iter}`);
-      break;
-    }
-
+  for (let iter = 0; iter < 8; iter++) {
+    if (Date.now() - refinementStart > 20000) break;
     let swapsMade = 0;
 
     for (let i = 0; i < clusters.length; i++) {
@@ -1016,15 +1044,26 @@ async function fastClusteringLargeDataset(
           clusters[i].centroid.lat, clusters[i].centroid.lng,
           clusters[j].centroid.lat, clusters[j].centroid.lng
         );
-        if (centroidDist > neighborThreshold) continue;
+        // Only consider nearby clusters
+        const maxRadius = Math.max(clusters[i].radius || 0, clusters[j].radius || 0, 2);
+        if (centroidDist > maxRadius * 3) continue;
+
+        // Sample points for large clusters instead of checking all pairs
+        const maxCheck = 15;
+        const pts1 = clusters[i].points.length > maxCheck 
+          ? clusters[i].points.slice(0, maxCheck) 
+          : clusters[i].points;
+        const pts2 = clusters[j].points.length > maxCheck 
+          ? clusters[j].points.slice(0, maxCheck) 
+          : clusters[j].points;
 
         let bestSwap: { idx1: number; idx2: number; improvement: number } | null = null;
         let bestImprovement = 0;
 
-        for (let p1 = 0; p1 < clusters[i].points.length; p1++) {
-          for (let p2 = 0; p2 < clusters[j].points.length; p2++) {
-            const point1 = clusters[i].points[p1];
-            const point2 = clusters[j].points[p2];
+        for (let p1 = 0; p1 < pts1.length; p1++) {
+          for (let p2 = 0; p2 < pts2.length; p2++) {
+            const point1 = pts1[p1];
+            const point2 = pts2[p2];
 
             const currentDist =
               calculateDistance(point1.lat, point1.lng, clusters[i].centroid.lat, clusters[i].centroid.lng) +
@@ -1037,12 +1076,14 @@ async function fastClusteringLargeDataset(
             const improvement = currentDist - swapDist;
             if (improvement > bestImprovement) {
               bestImprovement = improvement;
-              bestSwap = { idx1: p1, idx2: p2, improvement };
+              const realIdx1 = clusters[i].points.indexOf(point1);
+              const realIdx2 = clusters[j].points.indexOf(point2);
+              bestSwap = { idx1: realIdx1, idx2: realIdx2, improvement };
             }
           }
         }
 
-        if (bestSwap && bestSwap.improvement > 0.001) {
+        if (bestSwap && bestSwap.improvement > 0.01) {
           const temp = clusters[i].points[bestSwap.idx1];
           clusters[i].points[bestSwap.idx1] = clusters[j].points[bestSwap.idx2];
           clusters[j].points[bestSwap.idx2] = temp;
@@ -1050,7 +1091,7 @@ async function fastClusteringLargeDataset(
         }
       }
 
-      if (i % 3 === 0) await yieldToEventLoop();
+      if (i % 5 === 0) await yieldToEventLoop();
     }
 
     clusters.forEach(cluster => {
@@ -1060,8 +1101,8 @@ async function fastClusteringLargeDataset(
       }
     });
 
-    const pct = 30 + Math.floor(((iter + 1) / maxRefinementIterations) * 8);
-    await emitProgress(pct, 'Clustering', `Refinement iteration ${iter + 1}/${maxRefinementIterations} (${swapsMade} swaps)...`);
+    const pct = 35 + Math.floor(((iter + 1) / 8) * 3);
+    await emitProgress(pct, 'Clustering', `Swap refinement ${iter + 1}/8 (${swapsMade} swaps)...`);
 
     if (swapsMade === 0) break;
   }

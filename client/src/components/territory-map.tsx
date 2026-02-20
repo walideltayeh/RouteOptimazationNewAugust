@@ -122,19 +122,11 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
 
       map.current.on('load', () => {
         setIsMapLoaded(true);
-        console.log('Map loaded successfully');
       });
 
       map.current.on('error', (e) => {
         console.error('Map error:', e);
         setMapError('Failed to load map. Please check your Mapbox token.');
-      });
-
-      // Add performance monitoring
-      map.current.on('data', (e) => {
-        if (e.dataType === 'source' && e.isSourceLoaded) {
-          console.log('Map data loaded');
-        }
       });
 
       return () => {
@@ -152,7 +144,6 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   useEffect(() => {
     if (!map.current || !isMapLoaded || outlets.length === 0) return;
 
-    console.log(`Rendering ${outlets.length} outlets using cluster visualization`);
     setIsRenderingMarkers(true);
 
     markersRef.current.forEach(m => m.remove());
@@ -171,14 +162,13 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     });
     drilldownLayersRef.current = [];
 
-    // For very large datasets, use territory cluster visualization instead of individual markers
-    if (outlets.length > 100) {
+    if (viewMode === 'cluster') {
       renderTerritoryVisualization();
     } else {
-      renderIndividualMarkers();
+      renderGeoJSONIndividualView();
     }
 
-  }, [outlets, isMapLoaded]);
+  }, [outlets, isMapLoaded, viewMode]);
 
   // Render territory clusters instead of individual markers for performance
   const renderTerritoryVisualization = () => {
@@ -316,41 +306,72 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     setIsRenderingMarkers(false);
   };
 
-  // Render individual markers for small datasets
-  const renderIndividualMarkers = async () => {
+  const renderGeoJSONIndividualView = () => {
     const bounds = new mapboxgl.LngLatBounds();
-    const BATCH_SIZE = 25;
-    
-    for (let i = 0; i < outlets.length; i += BATCH_SIZE) {
-      const batch = outlets.slice(i, i + BATCH_SIZE);
-      
-      await new Promise(resolve => {
-        requestAnimationFrame(() => {
-          batch.forEach((outlet) => {
-            bounds.extend([outlet.longitude, outlet.latitude]);
 
-            const markerEl = document.createElement('div');
-            markerEl.className = 'outlet-marker w-3 h-3 rounded-full border border-white shadow-sm cursor-pointer hover:scale-125 transition-transform';
-            markerEl.style.backgroundColor = getColorForTerritory(outlet.id);
+    Object.entries(territoryGroups).forEach(([territory, territoryOutlets]) => {
+      if (territoryOutlets.length === 0) return;
+      const safeTerritory = territory.replace(/[^a-zA-Z0-9]/g, '_');
+      const sourceId = `individual-source-${safeTerritory}`;
+      const circleLayerId = `individual-circles-${safeTerritory}`;
+      const color = getTerritoryColor(territory);
 
-            markerEl.addEventListener('click', () => {
-              setSelectedOutlet(outlet);
-            });
+      const features = territoryOutlets.map((outlet, idx) => ({
+        type: 'Feature' as const,
+        geometry: { type: 'Point' as const, coordinates: [outlet.longitude, outlet.latitude] },
+        properties: { id: outlet.id, name: outlet.name, address: outlet.address || '', territory, index: idx + 1, outletJson: JSON.stringify(outlet) }
+      }));
 
-            const m = new mapboxgl.Marker(markerEl)
-              .setLngLat([outlet.longitude, outlet.latitude])
-              .addTo(map.current!);
-            markersRef.current.push(m);
-          });
-          resolve(void 0);
+      territoryOutlets.forEach(o => bounds.extend([o.longitude, o.latitude]));
+
+      if (!map.current!.getSource(sourceId)) {
+        map.current!.addSource(sourceId, {
+          type: 'geojson',
+          data: { type: 'FeatureCollection', features }
         });
-      });
-    }
 
-    if (outlets.length > 0) {
+        map.current!.addLayer({
+          id: circleLayerId,
+          type: 'circle',
+          source: sourceId,
+          paint: {
+            'circle-radius': 6,
+            'circle-color': color,
+            'circle-stroke-width': 1.5,
+            'circle-stroke-color': '#ffffff'
+          }
+        });
+
+        drilldownLayersRef.current.push(sourceId, circleLayerId);
+
+        const clickHandler = (e: any) => {
+          if (e.features && e.features[0]) {
+            const props = e.features[0].properties;
+            try {
+              const outlet = JSON.parse(props.outletJson);
+              setSelectedOutlet(outlet);
+            } catch {}
+          }
+        };
+        const mouseenterHandler = () => { if (map.current) map.current.getCanvas().style.cursor = 'pointer'; };
+        const mouseleaveHandler = () => { if (map.current) map.current.getCanvas().style.cursor = ''; };
+
+        map.current!.on('click', circleLayerId, clickHandler);
+        map.current!.on('mouseenter', circleLayerId, mouseenterHandler);
+        map.current!.on('mouseleave', circleLayerId, mouseleaveHandler);
+
+        drilldownHandlersRef.current.push({
+          layerId: circleLayerId,
+          click: clickHandler,
+          mouseenter: mouseenterHandler,
+          mouseleave: mouseleaveHandler
+        });
+      }
+    });
+
+    if (Object.keys(territoryGroups).length > 0) {
       map.current!.fitBounds(bounds, { padding: 50 });
     }
-    
     setIsRenderingMarkers(false);
   };
 
@@ -366,19 +387,6 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   };
 
   const territoryGroups = useMemo(() => createTerritoryGroups(), [outlets, reps]);
-
-  const getColorForTerritory = (outletId: string) => {
-    // Find which territory this outlet belongs to
-    for (const [territory, territoryOutlets] of Object.entries(territoryGroups)) {
-      if (territoryOutlets.some(outlet => outlet.id === outletId)) {
-        if (territory === 'Unassigned') return '#9CA3AF';
-        const territoryNames = Object.keys(territoryGroups).filter(t => t !== 'Unassigned').sort();
-        const index = territoryNames.indexOf(territory) % TERRITORY_COLORS.length;
-        return TERRITORY_COLORS[index];
-      }
-    }
-    return '#9CA3AF'; // Default for unassigned
-  };
 
   const getTerritoryColor = (territory: string) => {
     if (territory === 'Unassigned') return '#9CA3AF';
@@ -426,6 +434,24 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
               Territory Map
             </CardTitle>
             <div className="flex items-center space-x-4 text-sm text-gray-600">
+              <div className="flex items-center gap-1">
+                <Button
+                  size="sm"
+                  variant={viewMode === 'cluster' ? 'default' : 'outline'}
+                  className={`rounded-full text-xs px-3 h-7 ${viewMode === 'cluster' ? 'bg-[#1d1d1f] text-white hover:bg-[#1d1d1f]/90' : ''}`}
+                  onClick={() => setViewMode('cluster')}
+                >
+                  Cluster View
+                </Button>
+                <Button
+                  size="sm"
+                  variant={viewMode === 'individual' ? 'default' : 'outline'}
+                  className={`rounded-full text-xs px-3 h-7 ${viewMode === 'individual' ? 'bg-[#1d1d1f] text-white hover:bg-[#1d1d1f]/90' : ''}`}
+                  onClick={() => setViewMode('individual')}
+                >
+                  Individual View
+                </Button>
+              </div>
               <div className="flex items-center">
                 <MapPin className="mr-1 h-4 w-4" />
                 {outlets.length.toLocaleString()} Outlets
@@ -438,12 +464,6 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                 <div className="w-3 h-3 rounded-full bg-blue-500 mr-1"></div>
                 {Object.keys(territoryGroups).length} Territories
               </div>
-              {outlets.length > 100 && (
-                <div className="flex items-center text-orange-600">
-                  <div className="w-3 h-3 rounded-full bg-orange-500 mr-1"></div>
-                  Cluster View
-                </div>
-              )}
             </div>
           </div>
         </CardHeader>
@@ -462,10 +482,10 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                 <div className="text-center">
                   <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
                   <p className="mt-2 text-sm text-gray-600">
-                    {outlets.length > 100 ? 'Loading territory visualization...' : 'Loading map markers...'}
+                    {viewMode === 'cluster' ? 'Loading territory visualization...' : 'Loading individual outlets...'}
                   </p>
                   <p className="text-xs text-gray-500">
-                    {outlets.length > 100 
+                    {viewMode === 'cluster'
                       ? `${outlets.length} outlets grouped into ${Object.keys(territoryGroups).length} territories`
                       : `Loading ${outlets.length} individual markers`
                     }
