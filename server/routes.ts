@@ -209,14 +209,14 @@ function calculateDistance(lat1: number, lng1: number, lat2: number, lng2: numbe
   return calculateHaversineDistance(lat1, lng1, lat2, lng2);
 }
 
-// Helper function to optimize route using nearest neighbor with 2-opt improvement
+// Helper function to optimize route using nearest neighbor with 2-opt, Or-opt, and 3-opt improvement
 function optimizeRoute(outlets: Outlet[]): Outlet[] {
   if (outlets.length <= 1) return outlets;
-  
+
   // Step 1: Find the centroid of all outlets
   const avgLat = outlets.reduce((sum, o) => sum + o.latitude, 0) / outlets.length;
   const avgLng = outlets.reduce((sum, o) => sum + o.longitude, 0) / outlets.length;
-  
+
   // Step 2: Find the outlet farthest from centroid as starting point
   let startIdx = 0;
   let maxDist = 0;
@@ -227,51 +227,48 @@ function optimizeRoute(outlets: Outlet[]): Outlet[] {
       startIdx = idx;
     }
   });
-  
+
   // Step 3: Build initial route using nearest neighbor from the starting point
   const unvisited = [...outlets];
   const route: Outlet[] = [];
-  
-  // Start from the farthest outlet
+
   let current = unvisited[startIdx];
   route.push(current);
   unvisited.splice(startIdx, 1);
-  
-  // Nearest neighbor algorithm
+
   while (unvisited.length > 0) {
     let nearestIdx = 0;
     let nearestDist = Infinity;
-    
+
     for (let i = 0; i < unvisited.length; i++) {
       const dist = calculateDistance(
         current.latitude, current.longitude,
         unvisited[i].latitude, unvisited[i].longitude
       );
-      
       if (dist < nearestDist) {
         nearestDist = dist;
         nearestIdx = i;
       }
     }
-    
+
     current = unvisited[nearestIdx];
     route.push(current);
     unvisited.splice(nearestIdx, 1);
   }
-  
+
   // Step 4: Apply 2-opt improvement
   let improved = true;
   let iterations = 0;
   const maxIterations = 100;
-  
+
   while (improved && iterations < maxIterations) {
     improved = false;
     iterations++;
-    
+
     for (let i = 1; i < route.length - 2; i++) {
       for (let j = i + 1; j < route.length; j++) {
         if (j - i === 1) continue;
-        
+
         const currentDist = calculateDistance(
           route[i - 1].latitude, route[i - 1].longitude,
           route[i].latitude, route[i].longitude
@@ -279,7 +276,7 @@ function optimizeRoute(outlets: Outlet[]): Outlet[] {
           route[j - 1].latitude, route[j - 1].longitude,
           route[j].latitude, route[j].longitude
         );
-        
+
         const newDist = calculateDistance(
           route[i - 1].latitude, route[i - 1].longitude,
           route[j - 1].latitude, route[j - 1].longitude
@@ -287,7 +284,7 @@ function optimizeRoute(outlets: Outlet[]): Outlet[] {
           route[i].latitude, route[i].longitude,
           route[j].latitude, route[j].longitude
         );
-        
+
         if (newDist < currentDist) {
           const reversed = route.slice(i, j).reverse();
           route.splice(i, j - i, ...reversed);
@@ -296,7 +293,7 @@ function optimizeRoute(outlets: Outlet[]): Outlet[] {
       }
     }
   }
-  
+
   // Step 5: Or-opt improvement - relocate segments of 1, 2, or 3 outlets
   for (const segLen of [3, 2, 1]) {
     let orImproved = true;
@@ -304,14 +301,14 @@ function optimizeRoute(outlets: Outlet[]): Outlet[] {
     while (orImproved && orIter < 50) {
       orImproved = false;
       orIter++;
-      
+
       for (let i = 0; i < route.length - segLen + 1; i++) {
         const segStart = i;
         const segEnd = i + segLen - 1;
-        
+
         const prevIdx = segStart - 1;
         const nextIdx = segEnd + 1;
-        
+
         const removeCostBefore = (prevIdx >= 0
           ? calculateDistance(route[prevIdx].latitude, route[prevIdx].longitude, route[segStart].latitude, route[segStart].longitude)
           : 0);
@@ -321,15 +318,15 @@ function optimizeRoute(outlets: Outlet[]): Outlet[] {
         const removeCostBridge = (prevIdx >= 0 && nextIdx < route.length
           ? calculateDistance(route[prevIdx].latitude, route[prevIdx].longitude, route[nextIdx].latitude, route[nextIdx].longitude)
           : 0);
-        
+
         const removalSaving = removeCostBefore + removeCostAfter - removeCostBridge;
-        
+
         let bestInsertPos = -1;
         let bestInsertCost = Infinity;
-        
+
         for (let j = 0; j < route.length - 1; j++) {
           if (j >= segStart - 1 && j <= segEnd) continue;
-          
+
           const currentEdge = calculateDistance(
             route[j].latitude, route[j].longitude,
             route[j + 1].latitude, route[j + 1].longitude
@@ -338,13 +335,13 @@ function optimizeRoute(outlets: Outlet[]): Outlet[] {
             calculateDistance(route[j].latitude, route[j].longitude, route[segStart].latitude, route[segStart].longitude) +
             calculateDistance(route[segEnd].latitude, route[segEnd].longitude, route[j + 1].latitude, route[j + 1].longitude) -
             currentEdge;
-          
+
           if (insertCost < bestInsertCost) {
             bestInsertCost = insertCost;
             bestInsertPos = j;
           }
         }
-        
+
         if (bestInsertPos >= 0 && bestInsertCost < removalSaving - 1e-10) {
           const segment = route.splice(segStart, segLen);
           const insertAt = bestInsertPos >= segStart ? bestInsertPos - segLen + 1 : bestInsertPos + 1;
@@ -355,7 +352,77 @@ function optimizeRoute(outlets: Outlet[]): Outlet[] {
       }
     }
   }
-  
+
+  // Step 6: 3-opt improvement (only for routes with ≤ 50 outlets to keep it tractable)
+  if (route.length <= 50 && route.length >= 4) {
+    const n = route.length;
+
+    const segDist = (a: number, b: number): number => {
+      return calculateDistance(route[a].latitude, route[a].longitude, route[b].latitude, route[b].longitude);
+    };
+
+    let threeOptImproved = true;
+    let threeOptPasses = 0;
+    const maxThreeOptPasses = 5;
+
+    while (threeOptImproved && threeOptPasses < maxThreeOptPasses) {
+      threeOptImproved = false;
+      threeOptPasses++;
+
+      for (let i = 0; i < n - 4; i++) {
+        for (let j = i + 2; j < n - 2; j++) {
+          for (let kk = j + 2; kk < n; kk++) {
+            const i1 = i, i2 = i + 1;
+            const j1 = j, j2 = j + 1;
+            const k1 = kk, k2 = (kk + 1) % n;
+
+            if (k2 === 0 && kk === n - 1) {
+              continue;
+            }
+            if (k2 >= n) continue;
+
+            const d0 = segDist(i1, i2) + segDist(j1, j2) + segDist(k1, k2);
+
+            const segA = route.slice(0, i2);
+            const segB = route.slice(i2, j2);
+            const segC = route.slice(j2, k2);
+            const segD = route.slice(k2);
+
+            const reconnections: { segments: Outlet[][]; cost: number }[] = [
+              { segments: [segA, segB.slice().reverse(), segC, segD], cost: segDist(i1, j1) + segDist(i2, j2) + segDist(k1, k2) },
+              { segments: [segA, segB, segC.slice().reverse(), segD], cost: segDist(i1, i2) + segDist(j1, k1) + segDist(j2, k2) },
+              { segments: [segA, segB.slice().reverse(), segC.slice().reverse(), segD], cost: segDist(i1, j1) + segDist(i2, k1) + segDist(j2, k2) },
+              { segments: [segA, segC, segB, segD], cost: segDist(i1, j2) + segDist(k1, i2) + segDist(j1, k2) },
+              { segments: [segA, segC, segB.slice().reverse(), segD], cost: segDist(i1, j2) + segDist(k1, j1) + segDist(i2, k2) },
+              { segments: [segA, segC.slice().reverse(), segB, segD], cost: segDist(i1, k1) + segDist(j2, i2) + segDist(j1, k2) },
+              { segments: [segA, segC.slice().reverse(), segB.slice().reverse(), segD], cost: segDist(i1, k1) + segDist(j2, j1) + segDist(i2, k2) },
+            ];
+
+            let bestCost = d0;
+            let bestReconnection: Outlet[][] | null = null;
+
+            for (const r of reconnections) {
+              if (r.cost < bestCost - 1e-10) {
+                bestCost = r.cost;
+                bestReconnection = r.segments;
+              }
+            }
+
+            if (bestReconnection) {
+              const newRoute = bestReconnection.flat();
+              route.length = 0;
+              route.push(...newRoute);
+              threeOptImproved = true;
+              break;
+            }
+          }
+          if (threeOptImproved) break;
+        }
+        if (threeOptImproved) break;
+      }
+    }
+  }
+
   return route;
 }
 
@@ -1496,369 +1563,415 @@ function clusterOutletsIntoDailyGroups(outlets: Outlet[], k: number): Outlet[][]
   }
 
   const n = outlets.length;
-  const targetSize = Math.ceil(n / k);
-  const minSize = Math.floor(targetSize * 0.8);
-  const maxSize = Math.ceil(targetSize * 1.2);
+  const maxSize = Math.ceil(n / k) + 1;
+  const minSize = Math.max(1, Math.floor(n / k) - 1);
+
+  // Create outletIdxMap for O(1) lookups instead of O(n) indexOf
+  const outletIdxMap = new Map<Outlet, number>();
+  for (let i = 0; i < n; i++) {
+    outletIdxMap.set(outlets[i], i);
+  }
 
   function computeCentroid(members: Outlet[]): { lat: number; lng: number } {
+    if (members.length === 0) return { lat: 0, lng: 0 };
     const lat = members.reduce((s, o) => s + o.latitude, 0) / members.length;
     const lng = members.reduce((s, o) => s + o.longitude, 0) / members.length;
     return { lat, lng };
   }
 
-  function intraClusterCost(members: Outlet[], centroid: { lat: number; lng: number }): number {
+  function totalIntraClusterCost(groups: Outlet[][]): number {
     let total = 0;
-    for (const o of members) {
-      total += calculateDistance(o.latitude, o.longitude, centroid.lat, centroid.lng);
+    for (const g of groups) {
+      if (g.length === 0) continue;
+      const c = computeCentroid(g);
+      for (const o of g) {
+        total += calculateDistance(o.latitude, o.longitude, c.lat, c.lng);
+      }
     }
     return total;
   }
 
-  // === Phase 1: Sweep-Based Initial Clustering ===
   const globalCentroid = computeCentroid(outlets);
 
-  const outletAngles = outlets.map((o, idx) => ({
-    outlet: o,
-    idx,
-    angle: Math.atan2(o.latitude - globalCentroid.lat, o.longitude - globalCentroid.lng)
-  }));
-  outletAngles.sort((a, b) => a.angle - b.angle);
+  // === Strategy 1: Sweep (Angular) Initialization ===
+  function initSweep(): Outlet[][] {
+    const outletAngles = outlets.map((o, idx) => ({
+      outlet: o,
+      idx,
+      angle: Math.atan2(o.latitude - globalCentroid.lat, o.longitude - globalCentroid.lng)
+    }));
+    outletAngles.sort((a, b) => a.angle - b.angle);
 
-  const groups: Outlet[][] = Array.from({ length: k }, () => []);
-  const groupSize = Math.floor(n / k);
-  const remainder = n % k;
-  let pos = 0;
-  for (let g = 0; g < k; g++) {
-    const sz = groupSize + (g < remainder ? 1 : 0);
-    for (let j = 0; j < sz; j++) {
-      groups[g].push(outletAngles[pos].outlet);
-      pos++;
+    const groups: Outlet[][] = Array.from({ length: k }, () => []);
+    const groupSize = Math.floor(n / k);
+    const remainder = n % k;
+    let pos = 0;
+    for (let g = 0; g < k; g++) {
+      const sz = groupSize + (g < remainder ? 1 : 0);
+      for (let j = 0; j < sz; j++) {
+        groups[g].push(outletAngles[pos].outlet);
+        pos++;
+      }
     }
+    return groups;
   }
 
-  let centroids = groups.map(g => computeCentroid(g));
-  const assignments = new Int32Array(n);
-  const outletById = new Map<string, number>();
-  for (let i = 0; i < n; i++) {
-    outletById.set(outlets[i].id, i);
-  }
-
-  for (let g = 0; g < k; g++) {
-    for (const o of groups[g]) {
-      const idx = outletById.get(o.id)!;
-      assignments[idx] = g;
-    }
-  }
-
-  // === Phase 2: K-Means Refinement ===
-  for (let iter = 0; iter < 50; iter++) {
-    let changed = false;
-
+  // === Strategy 2: Maximin (Farthest-Point) Initialization ===
+  function initMaximin(): Outlet[][] {
+    const seeds: number[] = [];
+    let maxD = -1;
+    let farthestIdx = 0;
     for (let i = 0; i < n; i++) {
-      let bestCluster = 0;
-      let bestDist = Infinity;
-      for (let c = 0; c < k; c++) {
-        const d = calculateDistance(outlets[i].latitude, outlets[i].longitude, centroids[c].lat, centroids[c].lng);
-        if (d < bestDist) {
-          bestDist = d;
-          bestCluster = c;
-        }
-      }
-      if (assignments[i] !== bestCluster) {
-        assignments[i] = bestCluster;
-        changed = true;
-      }
+      const d = calculateDistance(outlets[i].latitude, outlets[i].longitude, globalCentroid.lat, globalCentroid.lng);
+      if (d > maxD) { maxD = d; farthestIdx = i; }
     }
+    seeds.push(farthestIdx);
 
-    if (!changed) break;
-
-    for (let c = 0; c < k; c++) {
-      let sumLat = 0, sumLng = 0, count = 0;
+    while (seeds.length < k) {
+      let bestIdx = -1;
+      let bestMinDist = -1;
       for (let i = 0; i < n; i++) {
-        if (assignments[i] === c) {
-          sumLat += outlets[i].latitude;
-          sumLng += outlets[i].longitude;
-          count++;
+        if (seeds.includes(i)) continue;
+        let minDistToSeeds = Infinity;
+        for (const s of seeds) {
+          const d = calculateDistance(outlets[i].latitude, outlets[i].longitude, outlets[s].latitude, outlets[s].longitude);
+          if (d < minDistToSeeds) minDistToSeeds = d;
+        }
+        if (minDistToSeeds > bestMinDist) {
+          bestMinDist = minDistToSeeds;
+          bestIdx = i;
         }
       }
-      if (count > 0) {
-        centroids[c] = { lat: sumLat / count, lng: sumLng / count };
-      }
+      if (bestIdx >= 0) seeds.push(bestIdx);
+      else break;
     }
-  }
 
-  function rebuildGroups(): void {
-    for (let g = 0; g < k; g++) groups[g] = [];
+    const groups: Outlet[][] = Array.from({ length: k }, () => []);
     for (let i = 0; i < n; i++) {
-      groups[assignments[i]].push(outlets[i]);
+      let bestC = 0;
+      let bestD = Infinity;
+      for (let c = 0; c < seeds.length; c++) {
+        const d = calculateDistance(outlets[i].latitude, outlets[i].longitude, outlets[seeds[c]].latitude, outlets[seeds[c]].longitude);
+        if (d < bestD) { bestD = d; bestC = c; }
+      }
+      groups[bestC].push(outlets[i]);
     }
+    return groups;
   }
 
-  rebuildGroups();
-  centroids = groups.map(g => g.length > 0 ? computeCentroid(g) : centroids[groups.indexOf(g)]);
+  // === Strategy 3: Grid-Based Initialization ===
+  function initGrid(): Outlet[][] {
+    let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+    for (const o of outlets) {
+      if (o.latitude < minLat) minLat = o.latitude;
+      if (o.latitude > maxLat) maxLat = o.latitude;
+      if (o.longitude < minLng) minLng = o.longitude;
+      if (o.longitude > maxLng) maxLng = o.longitude;
+    }
 
-  // === Phase 3: Size Balancing with Geographic Priority ===
-  for (let pass = 0; pass < 20; pass++) {
-    let moved = false;
+    const gridDim = Math.max(2, Math.ceil(Math.sqrt(k * 2)));
+    const latStep = (maxLat - minLat + 1e-9) / gridDim;
+    const lngStep = (maxLng - minLng + 1e-9) / gridDim;
 
+    const cellCounts = new Map<string, { count: number; sumLat: number; sumLng: number }>();
+    for (const o of outlets) {
+      const ci = Math.min(gridDim - 1, Math.floor((o.latitude - minLat) / latStep));
+      const cj = Math.min(gridDim - 1, Math.floor((o.longitude - minLng) / lngStep));
+      const key = `${ci},${cj}`;
+      if (!cellCounts.has(key)) cellCounts.set(key, { count: 0, sumLat: 0, sumLng: 0 });
+      const cell = cellCounts.get(key)!;
+      cell.count++;
+      cell.sumLat += o.latitude;
+      cell.sumLng += o.longitude;
+    }
+
+    const cellArr = Array.from(cellCounts.entries()).map(([key, val]) => ({
+      key,
+      count: val.count,
+      centLat: val.sumLat / val.count,
+      centLng: val.sumLng / val.count
+    }));
+    cellArr.sort((a, b) => b.count - a.count);
+
+    const seedCentroids: { lat: number; lng: number }[] = [];
+    for (let i = 0; i < Math.min(k, cellArr.length); i++) {
+      seedCentroids.push({ lat: cellArr[i].centLat, lng: cellArr[i].centLng });
+    }
+    while (seedCentroids.length < k) {
+      seedCentroids.push({ lat: globalCentroid.lat + (Math.random() - 0.5) * 0.01, lng: globalCentroid.lng + (Math.random() - 0.5) * 0.01 });
+    }
+
+    const groups: Outlet[][] = Array.from({ length: k }, () => []);
+    for (const o of outlets) {
+      let bestC = 0;
+      let bestD = Infinity;
+      for (let c = 0; c < k; c++) {
+        const d = calculateDistance(o.latitude, o.longitude, seedCentroids[c].lat, seedCentroids[c].lng);
+        if (d < bestD) { bestD = d; bestC = c; }
+      }
+      groups[bestC].push(o);
+    }
+    return groups;
+  }
+
+  // === Phase A: Balanced Constrained K-Means (Bradley et al., 2000) ===
+  function constrainedKMeans(initialGroups: Outlet[][]): Outlet[][] {
+    let centroids = initialGroups.map(g => g.length > 0 ? computeCentroid(g) : { lat: globalCentroid.lat + (Math.random() - 0.5) * 0.01, lng: globalCentroid.lng + (Math.random() - 0.5) * 0.01 });
+
+    let bestAssignments = new Int32Array(n);
     for (let g = 0; g < k; g++) {
-      while (groups[g].length > maxSize) {
-        const cent = computeCentroid(groups[g]);
-        let bestOutletIdx = -1;
-        let bestRegret = -Infinity;
-        let bestTarget = -1;
+      for (const o of initialGroups[g]) {
+        const idx = outletIdxMap.get(o);
+        if (idx !== undefined) bestAssignments[idx] = g;
+      }
+    }
 
-        for (let oi = 0; oi < groups[g].length; oi++) {
-          const o = groups[g][oi];
-          const distOwn = calculateDistance(o.latitude, o.longitude, cent.lat, cent.lng);
+    for (let iter = 0; iter < 30; iter++) {
+      const tuples: { outletIdx: number; clusterIdx: number; dist: number }[] = [];
+      for (let i = 0; i < n; i++) {
+        for (let c = 0; c < k; c++) {
+          const d = calculateDistance(outlets[i].latitude, outlets[i].longitude, centroids[c].lat, centroids[c].lng);
+          tuples.push({ outletIdx: i, clusterIdx: c, dist: d });
+        }
+      }
+      tuples.sort((a, b) => a.dist - b.dist);
 
+      const assignments = new Int32Array(n).fill(-1);
+      const clusterSizes = new Int32Array(k);
+
+      for (const t of tuples) {
+        if (assignments[t.outletIdx] !== -1) continue;
+        if (clusterSizes[t.clusterIdx] >= maxSize) continue;
+        assignments[t.outletIdx] = t.clusterIdx;
+        clusterSizes[t.clusterIdx]++;
+      }
+
+      for (let i = 0; i < n; i++) {
+        if (assignments[i] !== -1) continue;
+        let bestC = 0;
+        let bestD = Infinity;
+        for (let c = 0; c < k; c++) {
+          if (clusterSizes[c] >= maxSize) continue;
+          const d = calculateDistance(outlets[i].latitude, outlets[i].longitude, centroids[c].lat, centroids[c].lng);
+          if (d < bestD) { bestD = d; bestC = c; }
+        }
+        assignments[i] = bestC;
+        clusterSizes[bestC]++;
+      }
+
+      let converged = true;
+      for (let i = 0; i < n; i++) {
+        if (assignments[i] !== bestAssignments[i]) { converged = false; break; }
+      }
+
+      bestAssignments = assignments;
+
+      for (let c = 0; c < k; c++) {
+        let sumLat = 0, sumLng = 0, count = 0;
+        for (let i = 0; i < n; i++) {
+          if (assignments[i] === c) {
+            sumLat += outlets[i].latitude;
+            sumLng += outlets[i].longitude;
+            count++;
+          }
+        }
+        if (count > 0) {
+          centroids[c] = { lat: sumLat / count, lng: sumLng / count };
+        }
+      }
+
+      if (converged) break;
+    }
+
+    const result: Outlet[][] = Array.from({ length: k }, () => []);
+    for (let i = 0; i < n; i++) {
+      result[bestAssignments[i]].push(outlets[i]);
+    }
+    return result;
+  }
+
+  // === Phase B: Exhaustive Inter-Cluster Pair-Swap Optimization ===
+  function pairSwapOptimization(groups: Outlet[][]): Outlet[][] {
+    const g = groups.map(gr => [...gr]);
+
+    for (let pass = 0; pass < 30; pass++) {
+      let anyImprovement = false;
+      let centroids = g.map(gr => computeCentroid(gr));
+
+      for (let a = 0; a < k; a++) {
+        for (let b = a + 1; b < k; b++) {
+          if (g[a].length === 0 || g[b].length === 0) continue;
+          let centA = centroids[a];
+          let centB = centroids[b];
+
+          let swapped = true;
+          let swapIter = 0;
+          while (swapped && swapIter < 100) {
+            swapped = false;
+            swapIter++;
+            for (let ia = 0; ia < g[a].length; ia++) {
+              for (let ib = 0; ib < g[b].length; ib++) {
+                const oA = g[a][ia];
+                const oB = g[b][ib];
+                const currentCost =
+                  calculateDistance(oA.latitude, oA.longitude, centA.lat, centA.lng) +
+                  calculateDistance(oB.latitude, oB.longitude, centB.lat, centB.lng);
+                const swappedCost =
+                  calculateDistance(oA.latitude, oA.longitude, centB.lat, centB.lng) +
+                  calculateDistance(oB.latitude, oB.longitude, centA.lat, centA.lng);
+
+                if (swappedCost < currentCost) {
+                  g[a][ia] = oB;
+                  g[b][ib] = oA;
+                  anyImprovement = true;
+                  swapped = true;
+                }
+              }
+            }
+            centA = computeCentroid(g[a]);
+            centB = computeCentroid(g[b]);
+          }
+        }
+      }
+
+      centroids = g.map(gr => computeCentroid(gr));
+
+      for (let src = 0; src < k; src++) {
+        for (let oi = g[src].length - 1; oi >= 0; oi--) {
+          if (g[src].length <= minSize) break;
+          const o = g[src][oi];
+          const distSrc = calculateDistance(o.latitude, o.longitude, centroids[src].lat, centroids[src].lng);
+
+          let bestTarget = -1;
+          let bestDist = distSrc;
           for (let t = 0; t < k; t++) {
-            if (t === g || groups[t].length >= maxSize) continue;
-            const tCent = computeCentroid(groups[t]);
-            const distTarget = calculateDistance(o.latitude, o.longitude, tCent.lat, tCent.lng);
-            const regret = distOwn - distTarget;
-            if (regret > bestRegret) {
-              bestRegret = regret;
-              bestOutletIdx = oi;
-              bestTarget = t;
+            if (t === src || g[t].length >= maxSize) continue;
+            const d = calculateDistance(o.latitude, o.longitude, centroids[t].lat, centroids[t].lng);
+            if (d < bestDist) { bestDist = d; bestTarget = t; }
+          }
+
+          if (bestTarget >= 0) {
+            g[src].splice(oi, 1);
+            g[bestTarget].push(o);
+            centroids[src] = computeCentroid(g[src]);
+            centroids[bestTarget] = computeCentroid(g[bestTarget]);
+            anyImprovement = true;
+          }
+        }
+      }
+
+      if (!anyImprovement) break;
+    }
+
+    return g;
+  }
+
+  // === Helper: Pick evenly-sampled indices ===
+  function pickEvenlySampled(length: number, count: number): number[] {
+    if (length <= count) {
+      return Array.from({ length }, (_, i) => i);
+    }
+    const indices: number[] = [];
+    const step = length / count;
+    for (let i = 0; i < count; i++) {
+      indices.push(Math.floor(i * step));
+    }
+    return indices;
+  }
+
+  // === Phase C: Chain-Move Optimization (3-way cyclic moves) ===
+  function chainMoveOptimization(groups: Outlet[][]): Outlet[][] {
+    const g = groups.map(gr => [...gr]);
+    if (k < 3) return g;
+
+    const maxSample = 15;
+
+    for (let pass = 0; pass < 10; pass++) {
+      let anyImprovement = false;
+      const centroids = g.map(gr => computeCentroid(gr));
+
+      for (let a = 0; a < k && !anyImprovement; a++) {
+        for (let b = a + 1; b < k && !anyImprovement; b++) {
+          for (let c = b + 1; c < k && !anyImprovement; c++) {
+            if (g[a].length === 0 || g[b].length === 0 || g[c].length === 0) continue;
+
+            // Sample indices to avoid O(k³ * n³) complexity
+            const sampleA = g[a].length <= maxSample ? g[a].map((_, i) => i) : pickEvenlySampled(g[a].length, maxSample);
+            const sampleB = g[b].length <= maxSample ? g[b].map((_, i) => i) : pickEvenlySampled(g[b].length, maxSample);
+            const sampleC = g[c].length <= maxSample ? g[c].map((_, i) => i) : pickEvenlySampled(g[c].length, maxSample);
+
+            let bestImprovement = 0;
+            let bestIA = -1, bestIB = -1, bestIC = -1;
+
+            for (const ia of sampleA) {
+              for (const ib of sampleB) {
+                for (const ic of sampleC) {
+                  const oA = g[a][ia], oB = g[b][ib], oC = g[c][ic];
+
+                  const currentCost =
+                    calculateDistance(oA.latitude, oA.longitude, centroids[a].lat, centroids[a].lng) +
+                    calculateDistance(oB.latitude, oB.longitude, centroids[b].lat, centroids[b].lng) +
+                    calculateDistance(oC.latitude, oC.longitude, centroids[c].lat, centroids[c].lng);
+
+                  const cyclicCost =
+                    calculateDistance(oA.latitude, oA.longitude, centroids[b].lat, centroids[b].lng) +
+                    calculateDistance(oB.latitude, oB.longitude, centroids[c].lat, centroids[c].lng) +
+                    calculateDistance(oC.latitude, oC.longitude, centroids[a].lat, centroids[a].lng);
+
+                  const improvement = currentCost - cyclicCost;
+                  if (improvement > bestImprovement) {
+                    bestImprovement = improvement;
+                    bestIA = ia; bestIB = ib; bestIC = ic;
+                  }
+                }
+              }
+            }
+
+            if (bestImprovement > 0 && bestIA >= 0) {
+              const oA = g[a][bestIA];
+              const oB = g[b][bestIB];
+              const oC = g[c][bestIC];
+              g[a][bestIA] = oC;
+              g[b][bestIB] = oA;
+              g[c][bestIC] = oB;
+              anyImprovement = true;
             }
           }
         }
-
-        if (bestOutletIdx >= 0 && bestTarget >= 0) {
-          const o = groups[g][bestOutletIdx];
-          groups[g].splice(bestOutletIdx, 1);
-          groups[bestTarget].push(o);
-          const idx = outletById.get(o.id)!;
-          assignments[idx] = bestTarget;
-          moved = true;
-        } else {
-          break;
-        }
       }
+
+      if (!anyImprovement) break;
     }
 
-    for (let g = 0; g < k; g++) {
-      while (groups[g].length < minSize) {
-        const cent = groups[g].length > 0 ? computeCentroid(groups[g]) : centroids[g];
-        let bestOutlet: Outlet | null = null;
-        let bestDist = Infinity;
-        let bestSource = -1;
-        let bestSourceIdx = -1;
-
-        for (let s = 0; s < k; s++) {
-          if (s === g || groups[s].length <= minSize) continue;
-          for (let oi = 0; oi < groups[s].length; oi++) {
-            const o = groups[s][oi];
-            const d = calculateDistance(o.latitude, o.longitude, cent.lat, cent.lng);
-            if (d < bestDist) {
-              bestDist = d;
-              bestOutlet = o;
-              bestSource = s;
-              bestSourceIdx = oi;
-            }
-          }
-        }
-
-        if (bestOutlet && bestSource >= 0) {
-          groups[bestSource].splice(bestSourceIdx, 1);
-          groups[g].push(bestOutlet);
-          const idx = outletById.get(bestOutlet.id)!;
-          assignments[idx] = g;
-          moved = true;
-        } else {
-          break;
-        }
-      }
-    }
-
-    if (!moved) break;
+    return g;
   }
 
-  centroids = groups.map(g => g.length > 0 ? computeCentroid(g) : { lat: 0, lng: 0 });
+  // === Run all 3 strategies through Phases A, B, C ===
+  const strategyNames = ['Sweep (Angular)', 'Maximin (Farthest-Point)', 'Grid-Based'];
+  const initializers = [initSweep, initMaximin, initGrid];
+  let bestResult: Outlet[][] | null = null;
+  let bestCost = Infinity;
+  let bestStrategy = '';
 
-  // === Phase 4: Inter-Cluster Boundary Swap Optimization ===
-  for (let pass = 0; pass < 20; pass++) {
-    let improved = false;
+  for (let s = 0; s < 3; s++) {
+    const initial = initializers[s]();
+    const afterKMeans = constrainedKMeans(initial);
+    const afterSwaps = pairSwapOptimization(afterKMeans);
+    const afterChain = chainMoveOptimization(afterSwaps);
 
-    const adjacentPairs: [number, number][] = [];
-    for (let a = 0; a < k; a++) {
-      if (groups[a].length === 0) continue;
-      const dists: { idx: number; dist: number }[] = [];
-      for (let b = a + 1; b < k; b++) {
-        if (groups[b].length === 0) continue;
-        dists.push({
-          idx: b,
-          dist: calculateDistance(centroids[a].lat, centroids[a].lng, centroids[b].lat, centroids[b].lng)
-        });
-      }
-      dists.sort((x, y) => x.dist - y.dist);
-      const neighborsToCheck = Math.min(3, dists.length);
-      for (let ni = 0; ni < neighborsToCheck; ni++) {
-        adjacentPairs.push([a, dists[ni].idx]);
-      }
-    }
+    const cost = totalIntraClusterCost(afterChain);
+    console.log(`[Clustering] Strategy "${strategyNames[s]}": total intra-cluster cost = ${cost.toFixed(2)} km`);
 
-    for (const [a, b] of adjacentPairs) {
-      if (groups[a].length === 0 || groups[b].length === 0) continue;
-      const centA = computeCentroid(groups[a]);
-      const centB = computeCentroid(groups[b]);
-
-      const boundaryA: { oi: number; distToB: number }[] = [];
-      for (let oi = 0; oi < groups[a].length; oi++) {
-        const o = groups[a][oi];
-        const dB = calculateDistance(o.latitude, o.longitude, centB.lat, centB.lng);
-        const dA = calculateDistance(o.latitude, o.longitude, centA.lat, centA.lng);
-        if (dB < dA * 1.5) {
-          boundaryA.push({ oi, distToB: dB });
-        }
-      }
-
-      const boundaryB: { oi: number; distToA: number }[] = [];
-      for (let oi = 0; oi < groups[b].length; oi++) {
-        const o = groups[b][oi];
-        const dA = calculateDistance(o.latitude, o.longitude, centA.lat, centA.lng);
-        const dB = calculateDistance(o.latitude, o.longitude, centB.lat, centB.lng);
-        if (dA < dB * 1.5) {
-          boundaryB.push({ oi, distToA: dA });
-        }
-      }
-
-      for (const { oi: oiA } of boundaryA) {
-        if (oiA >= groups[a].length) continue;
-        const outletA = groups[a][oiA];
-        const costAinA = calculateDistance(outletA.latitude, outletA.longitude, centA.lat, centA.lng);
-        const costAinB = calculateDistance(outletA.latitude, outletA.longitude, centB.lat, centB.lng);
-
-        if (costAinB < costAinA && groups[b].length < maxSize && groups[a].length > minSize) {
-          groups[a].splice(oiA, 1);
-          groups[b].push(outletA);
-          const idx = outletById.get(outletA.id)!;
-          assignments[idx] = b;
-          improved = true;
-          break;
-        }
-      }
-
-      for (const { oi: oiB } of boundaryB) {
-        if (oiB >= groups[b].length) continue;
-        const outletB = groups[b][oiB];
-        const costBinB = calculateDistance(outletB.latitude, outletB.longitude, centB.lat, centB.lng);
-        const costBinA = calculateDistance(outletB.latitude, outletB.longitude, centA.lat, centA.lng);
-
-        if (costBinA < costBinB && groups[a].length < maxSize && groups[b].length > minSize) {
-          groups[b].splice(oiB, 1);
-          groups[a].push(outletB);
-          const idx = outletById.get(outletB.id)!;
-          assignments[idx] = a;
-          improved = true;
-          break;
-        }
-      }
-
-      for (const { oi: oiA } of boundaryA) {
-        if (oiA >= groups[a].length) continue;
-        for (const { oi: oiB } of boundaryB) {
-          if (oiB >= groups[b].length) continue;
-          const outletA = groups[a][oiA];
-          const outletB = groups[b][oiB];
-
-          const currentCost =
-            calculateDistance(outletA.latitude, outletA.longitude, centA.lat, centA.lng) +
-            calculateDistance(outletB.latitude, outletB.longitude, centB.lat, centB.lng);
-          const swappedCost =
-            calculateDistance(outletA.latitude, outletA.longitude, centB.lat, centB.lng) +
-            calculateDistance(outletB.latitude, outletB.longitude, centA.lat, centA.lng);
-
-          if (swappedCost < currentCost * 0.95) {
-            groups[a][oiA] = outletB;
-            groups[b][oiB] = outletA;
-            const idxA = outletById.get(outletA.id)!;
-            const idxB = outletById.get(outletB.id)!;
-            assignments[idxA] = b;
-            assignments[idxB] = a;
-            improved = true;
-            break;
-          }
-        }
-        if (improved) break;
-      }
-    }
-
-    centroids = groups.map(g => g.length > 0 ? computeCentroid(g) : { lat: 0, lng: 0 });
-    if (!improved) break;
-  }
-
-  // === Phase 5: Geographic Compactness Score Validation ===
-  const clusterRadii: number[] = [];
-  for (let g = 0; g < k; g++) {
-    if (groups[g].length === 0) { clusterRadii.push(0); continue; }
-    const cent = computeCentroid(groups[g]);
-    let maxR = 0;
-    for (const o of groups[g]) {
-      const d = calculateDistance(o.latitude, o.longitude, cent.lat, cent.lng);
-      if (d > maxR) maxR = d;
-    }
-    clusterRadii.push(maxR);
-  }
-
-  const sortedRadii = [...clusterRadii].filter(r => r > 0).sort((a, b) => a - b);
-  const medianRadius = sortedRadii.length > 0 ? sortedRadii[Math.floor(sortedRadii.length / 2)] : 0;
-
-  if (medianRadius > 0) {
-    for (let g = 0; g < k; g++) {
-      if (groups[g].length === 0) continue;
-      const cent = computeCentroid(groups[g]);
-      const threshold = medianRadius * 2;
-
-      const outlierIndices: number[] = [];
-      for (let oi = groups[g].length - 1; oi >= 0; oi--) {
-        const o = groups[g][oi];
-        const d = calculateDistance(o.latitude, o.longitude, cent.lat, cent.lng);
-        if (d > threshold && groups[g].length > minSize) {
-          outlierIndices.push(oi);
-        }
-      }
-
-      for (const oi of outlierIndices) {
-        const o = groups[g][oi];
-        let bestTarget = -1;
-        let bestDist = Infinity;
-
-        for (let t = 0; t < k; t++) {
-          if (t === g || groups[t].length >= maxSize) continue;
-          const tCent = computeCentroid(groups[t]);
-          const d = calculateDistance(o.latitude, o.longitude, tCent.lat, tCent.lng);
-          if (d < bestDist) {
-            bestDist = d;
-            bestTarget = t;
-          }
-        }
-
-        const currentDist = calculateDistance(o.latitude, o.longitude, cent.lat, cent.lng);
-        if (bestTarget >= 0 && bestDist < currentDist) {
-          groups[g].splice(oi, 1);
-          groups[bestTarget].push(o);
-          const idx = outletById.get(o.id)!;
-          assignments[idx] = bestTarget;
-        }
-      }
-
-      if (clusterRadii[g] > threshold) {
-        const finalCent = computeCentroid(groups[g]);
-        let finalMaxR = 0;
-        for (const o of groups[g]) {
-          const d = calculateDistance(o.latitude, o.longitude, finalCent.lat, finalCent.lng);
-          if (d > finalMaxR) finalMaxR = d;
-        }
-        if (finalMaxR > threshold) {
-          console.warn(`[Clustering] Warning: Group ${g} remains scattered (radius: ${finalMaxR.toFixed(2)}km, median: ${medianRadius.toFixed(2)}km)`);
-        }
-      }
+    if (cost < bestCost) {
+      bestCost = cost;
+      bestResult = afterChain;
+      bestStrategy = strategyNames[s];
     }
   }
 
-  return groups
+  console.log(`[Clustering] Winner: "${bestStrategy}" with cost ${bestCost.toFixed(2)} km for ${n} outlets into ${k} groups`);
+
+  return bestResult!
     .filter(g => g.length > 0)
     .sort((a, b) => {
       const aLng = a.reduce((s, o) => s + o.longitude, 0) / a.length;
