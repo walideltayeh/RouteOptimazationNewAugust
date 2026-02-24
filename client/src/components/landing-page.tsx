@@ -8,146 +8,178 @@ interface LandingPageProps {
   onAdminLogin: () => void;
 }
 
-interface Node {
+interface Dot {
   x: number;
   y: number;
+  originX: number;
+  originY: number;
+  targetX: number;
+  targetY: number;
   vx: number;
   vy: number;
   radius: number;
   cluster: number;
-  pulsePhase: number;
-  opacity: number;
+  phase: number;
+  born: number;
 }
 
-interface Particle {
+interface RouteParticle {
+  edgeIdx: number;
   progress: number;
   speed: number;
-  fromNode: number;
-  toNode: number;
-  opacity: number;
+  trail: { x: number; y: number; alpha: number }[];
 }
 
+const enum Phase {
+  SCATTER = 0,
+  CLUSTERING = 1,
+  ROUTING = 2,
+  FLOWING = 3,
+  DISSOLVE = 4,
+}
+
+const PHASE_DURATIONS = [2.5, 3.0, 2.5, 5.0, 2.0];
+
 const CLUSTER_COLORS = [
-  { r: 139, g: 0, b: 0 },
-  { r: 60, g: 60, b: 60 },
-  { r: 139, g: 0, b: 0 },
-  { r: 80, g: 80, b: 80 },
-  { r: 139, g: 0, b: 0 },
+  [139, 0, 0],
+  [180, 40, 20],
+  [100, 10, 10],
+  [160, 20, 10],
+  [120, 0, 0],
+  [80, 0, 0],
 ];
 
-function RouteCanvas() {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const nodesRef = useRef<Node[]>([]);
-  const particlesRef = useRef<Particle[]>([]);
-  const edgesRef = useRef<[number, number][]>([]);
-  const animFrameRef = useRef<number>(0);
-  const timeRef = useRef(0);
-  const mouseRef = useRef({ x: -1000, y: -1000 });
+function easeInOutCubic(t: number) {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
 
-  const initNodes = useCallback((w: number, h: number) => {
-    const nodes: Node[] = [];
+function easeOutExpo(t: number) {
+  return t === 1 ? 1 : 1 - Math.pow(2, -10 * t);
+}
+
+function OptimizationCanvas() {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const stateRef = useRef({
+    dots: [] as Dot[],
+    edges: [] as [number, number][],
+    routeParticles: [] as RouteParticle[],
+    phase: Phase.SCATTER as number,
+    phaseTime: 0,
+    totalTime: 0,
+    edgeDrawProgress: 0,
+    mouseX: -9999,
+    mouseY: -9999,
+    width: 0,
+    height: 0,
+  });
+  const animRef = useRef(0);
+
+  const buildClusters = useCallback((w: number, h: number) => {
+    const s = stateRef.current;
+    const numClusters = 6;
+    const dotsPerCluster = 10;
+    const totalDots = numClusters * dotsPerCluster;
+
     const clusterCenters = [
-      { x: w * 0.15, y: h * 0.3 },
-      { x: w * 0.35, y: h * 0.65 },
-      { x: w * 0.55, y: h * 0.25 },
-      { x: w * 0.75, y: h * 0.55 },
-      { x: w * 0.88, y: h * 0.35 },
+      { x: w * 0.12, y: h * 0.28 },
+      { x: w * 0.30, y: h * 0.68 },
+      { x: w * 0.48, y: h * 0.22 },
+      { x: w * 0.65, y: h * 0.58 },
+      { x: w * 0.82, y: h * 0.32 },
+      { x: w * 0.75, y: h * 0.78 },
     ];
 
-    const nodeCount = Math.min(65, Math.floor(w * h / 15000));
-
-    for (let i = 0; i < nodeCount; i++) {
-      const cluster = i % clusterCenters.length;
+    const dots: Dot[] = [];
+    for (let i = 0; i < totalDots; i++) {
+      const cluster = Math.floor(i / dotsPerCluster);
       const center = clusterCenters[cluster];
-      const spread = Math.min(w, h) * 0.12;
-      nodes.push({
-        x: center.x + (Math.random() - 0.5) * spread * 2,
-        y: center.y + (Math.random() - 0.5) * spread * 2,
-        vx: (Math.random() - 0.5) * 0.15,
-        vy: (Math.random() - 0.5) * 0.15,
-        radius: 2 + Math.random() * 2.5,
+      const spread = Math.min(w, h) * 0.06;
+      const angle = Math.random() * Math.PI * 2;
+      const dist = Math.random() * spread;
+
+      dots.push({
+        x: Math.random() * w,
+        y: Math.random() * h,
+        originX: Math.random() * w,
+        originY: Math.random() * h,
+        targetX: center.x + Math.cos(angle) * dist,
+        targetY: center.y + Math.sin(angle) * dist,
+        vx: (Math.random() - 0.5) * 2,
+        vy: (Math.random() - 0.5) * 2,
+        radius: 2.5 + Math.random() * 2,
         cluster,
-        pulsePhase: Math.random() * Math.PI * 2,
-        opacity: 0.4 + Math.random() * 0.4,
+        phase: Math.random() * Math.PI * 2,
+        born: Math.random() * 1.5,
       });
     }
-    nodesRef.current = nodes;
+    s.dots = dots;
 
     const edges: [number, number][] = [];
-    for (let c = 0; c < clusterCenters.length; c++) {
-      const clusterNodes = nodes
-        .map((n, i) => ({ n, i }))
-        .filter(({ n }) => n.cluster === c);
-
-      if (clusterNodes.length < 2) continue;
+    for (let c = 0; c < numClusters; c++) {
+      const ci = dots
+        .map((_, i) => i)
+        .filter((i) => dots[i].cluster === c);
+      if (ci.length < 2) continue;
 
       const visited = new Set<number>();
-      let current = clusterNodes[0].i;
-      visited.add(current);
-
-      while (visited.size < clusterNodes.length) {
-        let nearest = -1;
-        let nearestDist = Infinity;
-        for (const { i } of clusterNodes) {
-          if (visited.has(i)) continue;
-          const dx = nodes[i].x - nodes[current].x;
-          const dy = nodes[i].y - nodes[current].y;
+      let cur = ci[0];
+      visited.add(cur);
+      while (visited.size < ci.length) {
+        let best = -1;
+        let bestD = Infinity;
+        for (const j of ci) {
+          if (visited.has(j)) continue;
+          const dx = dots[j].targetX - dots[cur].targetX;
+          const dy = dots[j].targetY - dots[cur].targetY;
           const d = dx * dx + dy * dy;
-          if (d < nearestDist) {
-            nearestDist = d;
-            nearest = i;
-          }
+          if (d < bestD) { bestD = d; best = j; }
         }
-        if (nearest >= 0) {
-          edges.push([current, nearest]);
-          visited.add(nearest);
-          current = nearest;
+        if (best >= 0) {
+          edges.push([cur, best]);
+          visited.add(best);
+          cur = best;
         }
       }
-      if (clusterNodes.length > 2) {
-        edges.push([current, clusterNodes[0].i]);
-      }
+      edges.push([cur, ci[0]]);
     }
 
-    for (let c = 0; c < clusterCenters.length - 1; c++) {
-      const nodesA = nodes.map((n, i) => ({ n, i })).filter(({ n }) => n.cluster === c);
-      const nodesB = nodes.map((n, i) => ({ n, i })).filter(({ n }) => n.cluster === c + 1);
-      if (nodesA.length > 0 && nodesB.length > 0) {
-        let bestA = 0, bestB = 0, bestDist = Infinity;
-        for (const a of nodesA) {
-          for (const b of nodesB) {
-            const dx = a.n.x - b.n.x;
-            const dy = a.n.y - b.n.y;
-            const d = dx * dx + dy * dy;
-            if (d < bestDist) { bestDist = d; bestA = a.i; bestB = b.i; }
-          }
+    for (let c = 0; c < numClusters - 1; c++) {
+      const nodesA = dots.map((_, i) => i).filter((i) => dots[i].cluster === c);
+      const nodesB = dots.map((_, i) => i).filter((i) => dots[i].cluster === c + 1);
+      let bestA = nodesA[0], bestB = nodesB[0], bestD = Infinity;
+      for (const a of nodesA) {
+        for (const b of nodesB) {
+          const dx = dots[a].targetX - dots[b].targetX;
+          const dy = dots[a].targetY - dots[b].targetY;
+          const d = dx * dx + dy * dy;
+          if (d < bestD) { bestD = d; bestA = a; bestB = b; }
         }
-        edges.push([bestA, bestB]);
       }
+      edges.push([bestA, bestB]);
     }
 
-    edgesRef.current = edges;
+    s.edges = edges;
 
-    const particles: Particle[] = [];
-    const particleCount = Math.min(30, edges.length * 2);
-    for (let i = 0; i < particleCount; i++) {
-      const edgeIdx = Math.floor(Math.random() * edges.length);
-      particles.push({
+    const rp: RouteParticle[] = [];
+    for (let i = 0; i < 40; i++) {
+      rp.push({
+        edgeIdx: Math.floor(Math.random() * edges.length),
         progress: Math.random(),
-        speed: 0.002 + Math.random() * 0.004,
-        fromNode: edges[edgeIdx][0],
-        toNode: edges[edgeIdx][1],
-        opacity: 0.3 + Math.random() * 0.5,
+        speed: 0.006 + Math.random() * 0.01,
+        trail: [],
       });
     }
-    particlesRef.current = particles;
+    s.routeParticles = rp;
+
+    s.phase = Phase.SCATTER;
+    s.phaseTime = 0;
+    s.edgeDrawProgress = 0;
   }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d')!;
     if (!ctx) return;
 
     const resize = () => {
@@ -155,153 +187,338 @@ function RouteCanvas() {
       const rect = canvas.getBoundingClientRect();
       canvas.width = rect.width * dpr;
       canvas.height = rect.height * dpr;
-      ctx.scale(dpr, dpr);
-      initNodes(rect.width, rect.height);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      stateRef.current.width = rect.width;
+      stateRef.current.height = rect.height;
+      buildClusters(rect.width, rect.height);
     };
-
     resize();
     window.addEventListener('resize', resize);
 
-    const handleMouseMove = (e: MouseEvent) => {
+    const onMouse = (e: MouseEvent) => {
       const rect = canvas.getBoundingClientRect();
-      mouseRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      stateRef.current.mouseX = e.clientX - rect.left;
+      stateRef.current.mouseY = e.clientY - rect.top;
     };
-    canvas.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mousemove', onMouse);
 
-    const animate = () => {
-      const rect = canvas.getBoundingClientRect();
-      const w = rect.width;
-      const h = rect.height;
-      timeRef.current += 0.016;
-      const t = timeRef.current;
+    let lastTime = performance.now();
+
+    const loop = (now: number) => {
+      const dt = Math.min((now - lastTime) / 1000, 0.05);
+      lastTime = now;
+
+      const s = stateRef.current;
+      const w = s.width;
+      const h = s.height;
+      s.totalTime += dt;
+      s.phaseTime += dt;
+
+      const phaseDur = PHASE_DURATIONS[s.phase];
+      if (s.phaseTime >= phaseDur) {
+        s.phaseTime = 0;
+        s.phase = (s.phase + 1) % 5;
+        if (s.phase === Phase.SCATTER) {
+          for (const dot of s.dots) {
+            dot.originX = dot.x;
+            dot.originY = dot.y;
+            const newScatterX = Math.random() * w;
+            const newScatterY = Math.random() * h;
+            dot.x = dot.originX;
+            dot.y = dot.originY;
+            dot.originX = dot.x;
+            dot.originY = dot.y;
+            dot.vx = (newScatterX - dot.x) / 60;
+            dot.vy = (newScatterY - dot.y) / 60;
+          }
+          s.edgeDrawProgress = 0;
+        }
+        if (s.phase === Phase.CLUSTERING) {
+          for (const dot of s.dots) {
+            dot.originX = dot.x;
+            dot.originY = dot.y;
+          }
+        }
+      }
+
+      const phaseT = s.phaseTime / phaseDur;
 
       ctx.clearRect(0, 0, w, h);
 
-      const nodes = nodesRef.current;
-      const edges = edgesRef.current;
-      const particles = particlesRef.current;
-      const mouse = mouseRef.current;
+      const { dots, edges, routeParticles, mouseX, mouseY } = s;
 
-      for (const node of nodes) {
-        node.x += node.vx;
-        node.y += node.vy;
+      if (s.phase === Phase.SCATTER) {
+        for (const dot of dots) {
+          dot.x += dot.vx;
+          dot.y += dot.vy;
+          dot.vx *= 0.97;
+          dot.vy *= 0.97;
+          dot.vx += (Math.random() - 0.5) * 0.1;
+          dot.vy += (Math.random() - 0.5) * 0.1;
+          if (dot.x < 0) dot.x = 0;
+          if (dot.x > w) dot.x = w;
+          if (dot.y < 0) dot.y = 0;
+          if (dot.y > h) dot.y = h;
+        }
+      }
 
-        const dx = mouse.x - node.x;
-        const dy = mouse.y - node.y;
+      if (s.phase === Phase.CLUSTERING) {
+        const ease = easeInOutCubic(phaseT);
+        for (const dot of dots) {
+          dot.x = dot.originX + (dot.targetX - dot.originX) * ease;
+          dot.y = dot.originY + (dot.targetY - dot.originY) * ease;
+        }
+      }
+
+      if (s.phase === Phase.ROUTING || s.phase === Phase.FLOWING) {
+        for (const dot of dots) {
+          const breathe = Math.sin(s.totalTime * 1.2 + dot.phase) * 0.8;
+          dot.x = dot.targetX + breathe;
+          dot.y = dot.targetY + breathe;
+        }
+      }
+
+      if (s.phase === Phase.DISSOLVE) {
+        const dissolveT = easeOutExpo(phaseT);
+        for (const dot of dots) {
+          const angle = dot.phase + s.totalTime * 0.5;
+          const dist = dissolveT * Math.min(w, h) * 0.4;
+          dot.x = dot.targetX + Math.cos(angle) * dist;
+          dot.y = dot.targetY + Math.sin(angle) * dist;
+        }
+      }
+
+      for (const dot of dots) {
+        const dx = mouseX - dot.x;
+        const dy = mouseY - dot.y;
         const md = Math.sqrt(dx * dx + dy * dy);
-        if (md < 120 && md > 0) {
-          const force = (120 - md) / 120 * 0.3;
-          node.vx -= (dx / md) * force;
-          node.vy -= (dy / md) * force;
+        if (md < 150 && md > 0) {
+          const push = (150 - md) / 150 * 8;
+          dot.x -= (dx / md) * push * dt * 10;
+          dot.y -= (dy / md) * push * dt * 10;
         }
-
-        node.vx *= 0.98;
-        node.vy *= 0.98;
-
-        if (node.x < 10) node.vx += 0.05;
-        if (node.x > w - 10) node.vx -= 0.05;
-        if (node.y < 10) node.vy += 0.05;
-        if (node.y > h - 10) node.vy -= 0.05;
       }
 
-      for (const [a, b] of edges) {
-        const nA = nodes[a];
-        const nB = nodes[b];
-        if (!nA || !nB) continue;
-
-        const isCrossCluster = nA.cluster !== nB.cluster;
-        const color = isCrossCluster
-          ? `rgba(139, 0, 0, 0.06)`
-          : `rgba(139, 0, 0, ${0.08 + Math.sin(t * 0.5 + a) * 0.03})`;
-
-        ctx.beginPath();
-        ctx.moveTo(nA.x, nA.y);
-        ctx.lineTo(nB.x, nB.y);
-        ctx.strokeStyle = color;
-        ctx.lineWidth = isCrossCluster ? 0.5 : 1;
-        ctx.stroke();
+      if (s.phase === Phase.ROUTING) {
+        s.edgeDrawProgress = easeInOutCubic(phaseT);
       }
 
-      for (const p of particles) {
-        p.progress += p.speed;
-        if (p.progress >= 1) {
-          p.progress = 0;
-          const edgeIdx = Math.floor(Math.random() * edges.length);
-          p.fromNode = edges[edgeIdx][0];
-          p.toNode = edges[edgeIdx][1];
-          p.opacity = 0.3 + Math.random() * 0.5;
+      if (s.phase >= Phase.ROUTING && s.phase <= Phase.FLOWING) {
+        const drawFrac = s.phase === Phase.ROUTING ? s.edgeDrawProgress : 1;
+        const edgesToDraw = Math.floor(edges.length * drawFrac);
+
+        for (let e = 0; e < edgesToDraw; e++) {
+          const [a, b] = edges[e];
+          const dA = dots[a];
+          const dB = dots[b];
+          if (!dA || !dB) continue;
+
+          const isCross = dA.cluster !== dB.cluster;
+          const col = CLUSTER_COLORS[dA.cluster % CLUSTER_COLORS.length];
+
+          let edgeFrac = 1;
+          if (e === edgesToDraw - 1 && s.phase === Phase.ROUTING) {
+            const frac = edges.length * drawFrac;
+            edgeFrac = frac - Math.floor(frac);
+          }
+
+          const mx = dA.x + (dB.x - dA.x) * edgeFrac;
+          const my = dA.y + (dB.y - dA.y) * edgeFrac;
+
+          ctx.beginPath();
+          ctx.moveTo(dA.x, dA.y);
+          ctx.lineTo(mx, my);
+          ctx.strokeStyle = isCross
+            ? `rgba(${col[0]}, ${col[1]}, ${col[2]}, 0.08)`
+            : `rgba(${col[0]}, ${col[1]}, ${col[2]}, 0.18)`;
+          ctx.lineWidth = isCross ? 0.8 : 1.2;
+          ctx.stroke();
         }
-
-        const from = nodes[p.fromNode];
-        const to = nodes[p.toNode];
-        if (!from || !to) continue;
-
-        const px = from.x + (to.x - from.x) * p.progress;
-        const py = from.y + (to.y - from.y) * p.progress;
-        const fadeIn = p.progress < 0.1 ? p.progress / 0.1 : 1;
-        const fadeOut = p.progress > 0.9 ? (1 - p.progress) / 0.1 : 1;
-        const alpha = p.opacity * fadeIn * fadeOut;
-
-        ctx.beginPath();
-        ctx.arc(px, py, 1.5, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(139, 0, 0, ${alpha})`;
-        ctx.fill();
       }
 
-      for (const node of nodes) {
-        const pulse = Math.sin(t * 1.5 + node.pulsePhase) * 0.3 + 0.7;
-        const col = CLUSTER_COLORS[node.cluster % CLUSTER_COLORS.length];
-        const r = node.radius * pulse;
+      if (s.phase === Phase.DISSOLVE) {
+        const fadeOut = 1 - easeOutExpo(phaseT);
+        for (const [a, b] of edges) {
+          const dA = dots[a];
+          const dB = dots[b];
+          if (!dA || !dB) continue;
+          const col = CLUSTER_COLORS[dA.cluster % CLUSTER_COLORS.length];
+          ctx.beginPath();
+          ctx.moveTo(dA.x, dA.y);
+          ctx.lineTo(dB.x, dB.y);
+          ctx.strokeStyle = `rgba(${col[0]}, ${col[1]}, ${col[2]}, ${0.18 * fadeOut})`;
+          ctx.lineWidth = 1.2;
+          ctx.stroke();
+        }
+      }
 
-        const glow = ctx.createRadialGradient(node.x, node.y, 0, node.x, node.y, r * 4);
-        glow.addColorStop(0, `rgba(${col.r}, ${col.g}, ${col.b}, ${node.opacity * 0.15})`);
-        glow.addColorStop(1, `rgba(${col.r}, ${col.g}, ${col.b}, 0)`);
+      if (s.phase === Phase.FLOWING) {
+        for (const rp of routeParticles) {
+          rp.progress += rp.speed;
+          if (rp.progress >= 1) {
+            rp.progress = 0;
+            rp.edgeIdx = Math.floor(Math.random() * edges.length);
+            rp.trail = [];
+          }
+
+          const [a, b] = edges[rp.edgeIdx];
+          const dA = dots[a];
+          const dB = dots[b];
+          if (!dA || !dB) continue;
+
+          const px = dA.x + (dB.x - dA.x) * rp.progress;
+          const py = dA.y + (dB.y - dA.y) * rp.progress;
+
+          rp.trail.push({ x: px, y: py, alpha: 1 });
+          if (rp.trail.length > 12) rp.trail.shift();
+
+          const col = CLUSTER_COLORS[dA.cluster % CLUSTER_COLORS.length];
+
+          for (let t = 0; t < rp.trail.length; t++) {
+            const pt = rp.trail[t];
+            pt.alpha *= 0.85;
+            const sz = 1 + (t / rp.trail.length) * 2;
+            ctx.beginPath();
+            ctx.arc(pt.x, pt.y, sz, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(${col[0]}, ${col[1]}, ${col[2]}, ${pt.alpha * 0.6})`;
+            ctx.fill();
+          }
+
+          const glow = ctx.createRadialGradient(px, py, 0, px, py, 8);
+          glow.addColorStop(0, `rgba(${col[0]}, ${col[1]}, ${col[2]}, 0.4)`);
+          glow.addColorStop(1, `rgba(${col[0]}, ${col[1]}, ${col[2]}, 0)`);
+          ctx.beginPath();
+          ctx.arc(px, py, 8, 0, Math.PI * 2);
+          ctx.fillStyle = glow;
+          ctx.fill();
+        }
+      }
+
+      let dotGlobalAlpha = 1;
+      if (s.phase === Phase.SCATTER) {
+        dotGlobalAlpha = Math.min(1, phaseT * 3);
+      }
+      if (s.phase === Phase.DISSOLVE) {
+        dotGlobalAlpha = 1 - easeOutExpo(phaseT);
+      }
+
+      for (const dot of dots) {
+        if (s.phase === Phase.SCATTER && s.totalTime < dot.born) continue;
+
+        const col = CLUSTER_COLORS[dot.cluster % CLUSTER_COLORS.length];
+        const pulse = Math.sin(s.totalTime * 2 + dot.phase) * 0.25 + 0.75;
+        const r = dot.radius * pulse;
+
+        const clusterAlpha = (s.phase >= Phase.CLUSTERING) ? 1 : 0.5;
+        const alpha = clusterAlpha * dotGlobalAlpha;
+
+        const glow = ctx.createRadialGradient(dot.x, dot.y, 0, dot.x, dot.y, r * 5);
+        glow.addColorStop(0, `rgba(${col[0]}, ${col[1]}, ${col[2]}, ${alpha * 0.12})`);
+        glow.addColorStop(1, `rgba(${col[0]}, ${col[1]}, ${col[2]}, 0)`);
         ctx.beginPath();
-        ctx.arc(node.x, node.y, r * 4, 0, Math.PI * 2);
+        ctx.arc(dot.x, dot.y, r * 5, 0, Math.PI * 2);
         ctx.fillStyle = glow;
         ctx.fill();
 
         ctx.beginPath();
-        ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(${col.r}, ${col.g}, ${col.b}, ${node.opacity * pulse})`;
+        ctx.arc(dot.x, dot.y, r, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(${col[0]}, ${col[1]}, ${col[2]}, ${alpha * 0.85})`;
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.arc(dot.x, dot.y, r * 0.4, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(255, 255, 255, ${alpha * 0.6})`;
         ctx.fill();
       }
 
-      animFrameRef.current = requestAnimationFrame(animate);
+      if (s.phase >= Phase.CLUSTERING && s.phase <= Phase.FLOWING) {
+        const ringAlpha = s.phase === Phase.CLUSTERING ? easeInOutCubic(phaseT) * 0.06 : 0.06;
+        const clusterCenters: { x: number; y: number; cluster: number }[] = [];
+        for (let c = 0; c < 6; c++) {
+          const ci = dots.filter((d) => d.cluster === c);
+          if (ci.length === 0) continue;
+          let cx = 0, cy = 0;
+          for (const d of ci) { cx += d.x; cy += d.y; }
+          cx /= ci.length;
+          cy /= ci.length;
+          clusterCenters.push({ x: cx, y: cy, cluster: c });
+        }
+
+        for (const cc of clusterCenters) {
+          const ci = dots.filter((d) => d.cluster === cc.cluster);
+          let maxDist = 0;
+          for (const d of ci) {
+            const dx = d.x - cc.x;
+            const dy = d.y - cc.y;
+            maxDist = Math.max(maxDist, Math.sqrt(dx * dx + dy * dy));
+          }
+          const col = CLUSTER_COLORS[cc.cluster % CLUSTER_COLORS.length];
+          const rr = maxDist + 15;
+
+          ctx.beginPath();
+          ctx.arc(cc.x, cc.y, rr, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(${col[0]}, ${col[1]}, ${col[2]}, ${ringAlpha})`;
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 4]);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+      }
+
+      const labels = ['Scattered', 'Clustering...', 'Building Routes...', 'Optimized', 'Reset'];
+      const label = labels[s.phase];
+      const labelAlpha = s.phase === Phase.DISSOLVE
+        ? 1 - easeOutExpo(phaseT)
+        : Math.min(1, phaseT * 4);
+
+      ctx.font = '11px -apple-system, BlinkMacSystemFont, sans-serif';
+      ctx.fillStyle = `rgba(139, 0, 0, ${labelAlpha * 0.5})`;
+      ctx.textAlign = 'center';
+      ctx.fillText(label, w / 2, h - 30);
+
+      const totalPhases = PHASE_DURATIONS.length;
+      const barW = 120;
+      const barH = 2;
+      const barX = (w - barW) / 2;
+      const barY = h - 18;
+      ctx.fillStyle = `rgba(139, 0, 0, 0.08)`;
+      ctx.fillRect(barX, barY, barW, barH);
+      const filled = (s.phase + phaseT) / totalPhases;
+      ctx.fillStyle = `rgba(139, 0, 0, 0.3)`;
+      ctx.fillRect(barX, barY, barW * filled, barH);
+
+      animRef.current = requestAnimationFrame(loop);
     };
 
-    animFrameRef.current = requestAnimationFrame(animate);
+    animRef.current = requestAnimationFrame(loop);
 
     return () => {
-      cancelAnimationFrame(animFrameRef.current);
+      cancelAnimationFrame(animRef.current);
       window.removeEventListener('resize', resize);
-      canvas.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mousemove', onMouse);
     };
-  }, [initNodes]);
+  }, [buildClusters]);
 
   return (
     <canvas
       ref={canvasRef}
       className="absolute inset-0 w-full h-full"
-      style={{ opacity: 0.85 }}
     />
   );
 }
 
-const wordVariants = {
+const titleVariants = {
   hidden: {},
-  visible: {
-    transition: { staggerChildren: 0.04 },
-  },
+  visible: { transition: { staggerChildren: 0.035 } },
 };
 
-const letterVariants = {
-  hidden: { opacity: 0, y: 30, filter: 'blur(8px)' },
+const charVariants = {
+  hidden: { opacity: 0, y: 40, rotateX: -90 },
   visible: {
     opacity: 1,
     y: 0,
-    filter: 'blur(0px)',
-    transition: { duration: 0.5, ease: [0.25, 0.46, 0.45, 0.94] },
+    rotateX: 0,
+    transition: { duration: 0.6, ease: [0.16, 1, 0.3, 1] },
   },
 };
 
@@ -309,12 +526,17 @@ function AnimatedTitle({ text, className }: { text: string; className?: string }
   return (
     <motion.h1
       className={className}
-      variants={wordVariants}
+      variants={titleVariants}
       initial="hidden"
       animate="visible"
+      style={{ perspective: 600 }}
     >
       {text.split('').map((char, i) => (
-        <motion.span key={i} variants={letterVariants} style={{ display: 'inline-block' }}>
+        <motion.span
+          key={i}
+          variants={charVariants}
+          style={{ display: 'inline-block', transformStyle: 'preserve-3d' }}
+        >
           {char === ' ' ? '\u00A0' : char}
         </motion.span>
       ))}
@@ -326,103 +548,89 @@ export default function LandingPage({ onStartTrial, onAdminLogin }: LandingPageP
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
-    setMounted(true);
+    const timer = setTimeout(() => setMounted(true), 200);
+    return () => clearTimeout(timer);
   }, []);
 
   return (
-    <div className="min-h-screen bg-white flex flex-col relative overflow-hidden">
-      <div className="absolute inset-0 pointer-events-none">
-        <RouteCanvas />
+    <div className="min-h-screen bg-[#fafafa] flex flex-col relative overflow-hidden">
+      <div className="absolute inset-0">
+        <OptimizationCanvas />
       </div>
 
-      <div className="absolute inset-0 pointer-events-none" style={{
-        background: 'radial-gradient(ellipse 60% 50% at 50% 50%, rgba(255,255,255,0.95), rgba(255,255,255,0.7), rgba(255,255,255,0.3))',
-      }} />
+      <div
+        className="absolute inset-0 pointer-events-none"
+        style={{
+          background:
+            'radial-gradient(ellipse 50% 45% at 50% 48%, rgba(250,250,250,0.92), rgba(250,250,250,0.65), rgba(250,250,250,0.15))',
+        }}
+      />
 
       <div className="flex-1 flex flex-col items-center justify-center px-6 relative z-10">
         <AnimatePresence>
           {mounted && (
             <motion.div className="text-center max-w-2xl">
               <motion.div
-                initial={{ scale: 0, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
-                className="mb-8"
+                initial={{ scale: 0, opacity: 0, rotate: -180 }}
+                animate={{ scale: 1, opacity: 1, rotate: 0 }}
+                transition={{ duration: 1, ease: [0.16, 1, 0.3, 1] }}
+                className="mb-6 inline-block"
               >
-                <div className="w-16 h-16 mx-auto relative">
+                <div className="w-20 h-20 mx-auto relative">
                   <motion.div
-                    className="absolute inset-0 rounded-2xl bg-[#8B0000]"
-                    animate={{ rotate: [0, 90, 180, 270, 360] }}
-                    transition={{ duration: 20, repeat: Infinity, ease: 'linear' }}
-                    style={{ opacity: 0.08 }}
+                    className="absolute inset-0 rounded-[22px]"
+                    style={{
+                      background: 'linear-gradient(135deg, #8B0000 0%, #4a0000 100%)',
+                      boxShadow: '0 8px 32px rgba(139, 0, 0, 0.25)',
+                    }}
+                    animate={{ rotate: 360 }}
+                    transition={{ duration: 30, repeat: Infinity, ease: 'linear' }}
                   />
-                  <div className="absolute inset-1 rounded-xl bg-white flex items-center justify-center">
-                    <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-                      <motion.path
-                        d="M14 3L14 25"
-                        stroke="#8B0000"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        initial={{ pathLength: 0 }}
-                        animate={{ pathLength: 1 }}
-                        transition={{ duration: 1, delay: 0.5 }}
-                      />
-                      <motion.path
-                        d="M3 14L25 14"
-                        stroke="#8B0000"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        initial={{ pathLength: 0 }}
-                        animate={{ pathLength: 1 }}
-                        transition={{ duration: 1, delay: 0.7 }}
-                      />
+                  <div className="absolute inset-[2px] rounded-[20px] bg-[#fafafa] flex items-center justify-center overflow-hidden">
+                    <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
                       <motion.circle
-                        cx="14"
-                        cy="14"
-                        r="4"
+                        cx="18" cy="18" r="12"
                         stroke="#8B0000"
-                        strokeWidth="1.5"
+                        strokeWidth="0.8"
+                        strokeDasharray="4 3"
+                        fill="none"
+                        initial={{ pathLength: 0, opacity: 0 }}
+                        animate={{ pathLength: 1, opacity: 0.4, rotate: 360 }}
+                        transition={{
+                          pathLength: { duration: 1.5, delay: 0.5 },
+                          opacity: { duration: 0.5, delay: 0.5 },
+                          rotate: { duration: 20, repeat: Infinity, ease: 'linear' },
+                        }}
+                        style={{ transformOrigin: 'center' }}
+                      />
+                      <motion.path
+                        d="M10 22 L15 14 L20 20 L26 10"
+                        stroke="#8B0000"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
                         fill="none"
                         initial={{ pathLength: 0 }}
                         animate={{ pathLength: 1 }}
-                        transition={{ duration: 1, delay: 0.9 }}
+                        transition={{ duration: 1.2, delay: 0.8, ease: [0.16, 1, 0.3, 1] }}
                       />
-                      <motion.circle
-                        cx="14"
-                        cy="6"
-                        r="2"
-                        fill="#8B0000"
-                        initial={{ scale: 0 }}
-                        animate={{ scale: 1 }}
-                        transition={{ duration: 0.3, delay: 1.2 }}
-                      />
-                      <motion.circle
-                        cx="22"
-                        cy="14"
-                        r="2"
-                        fill="#8B0000"
-                        initial={{ scale: 0 }}
-                        animate={{ scale: 1 }}
-                        transition={{ duration: 0.3, delay: 1.3 }}
-                      />
-                      <motion.circle
-                        cx="14"
-                        cy="22"
-                        r="2"
-                        fill="#8B0000"
-                        initial={{ scale: 0 }}
-                        animate={{ scale: 1 }}
-                        transition={{ duration: 0.3, delay: 1.4 }}
-                      />
-                      <motion.circle
-                        cx="6"
-                        cy="14"
-                        r="2"
-                        fill="#8B0000"
-                        initial={{ scale: 0 }}
-                        animate={{ scale: 1 }}
-                        transition={{ duration: 0.3, delay: 1.5 }}
-                      />
+                      {[
+                        { cx: 10, cy: 22, delay: 1.0 },
+                        { cx: 15, cy: 14, delay: 1.15 },
+                        { cx: 20, cy: 20, delay: 1.3 },
+                        { cx: 26, cy: 10, delay: 1.45 },
+                      ].map((p, i) => (
+                        <motion.circle
+                          key={i}
+                          cx={p.cx}
+                          cy={p.cy}
+                          r="2.5"
+                          fill="#8B0000"
+                          initial={{ scale: 0, opacity: 0 }}
+                          animate={{ scale: 1, opacity: 1 }}
+                          transition={{ duration: 0.4, delay: p.delay, ease: [0.16, 1, 0.3, 1] }}
+                        />
+                      ))}
                     </svg>
                   </div>
                 </div>
@@ -430,51 +638,71 @@ export default function LandingPage({ onStartTrial, onAdminLogin }: LandingPageP
 
               <AnimatedTitle
                 text="RouteOptima"
-                className="text-5xl md:text-7xl font-semibold text-[#1d1d1f] tracking-tight mb-4"
+                className="text-5xl md:text-7xl font-bold text-[#1d1d1f] tracking-[-0.04em] mb-3"
               />
 
-              <motion.p
-                className="text-xl md:text-2xl text-[#86868b] font-light mb-3"
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.8, delay: 0.6 }}
+              <motion.div
+                className="overflow-hidden mb-2"
+                initial={{ height: 0 }}
+                animate={{ height: 'auto' }}
+                transition={{ duration: 0.8, delay: 0.5 }}
               >
-                Intelligent Route Optimization
-              </motion.p>
+                <motion.p
+                  className="text-xl md:text-2xl font-light tracking-wide"
+                  style={{ color: '#8B0000' }}
+                  initial={{ opacity: 0, y: 30 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.8, delay: 0.6 }}
+                >
+                  From Chaos to Optimal
+                </motion.p>
+              </motion.div>
 
               <motion.p
-                className="text-base text-[#86868b] max-w-md mx-auto mb-12"
+                className="text-base text-[#86868b] max-w-lg mx-auto mb-10 leading-relaxed"
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.8, delay: 0.8 }}
+                transition={{ duration: 0.8, delay: 0.9 }}
               >
-                Optimize your sales territories and routes with precision.
-                Maximize productivity, minimize travel time.
+                Watch scattered outlets self-organize into territories,
+                then routes trace themselves to perfection.
+                That's what we do for your sales force.
               </motion.p>
 
               <motion.div
                 className="flex flex-col sm:flex-row items-center justify-center gap-4"
                 initial={{ opacity: 0, y: 30 }}
                 animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.8, delay: 1.0 }}
+                transition={{ duration: 0.8, delay: 1.1 }}
               >
-                <motion.div whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.97 }}>
+                <motion.div
+                  whileHover={{ scale: 1.05, y: -2 }}
+                  whileTap={{ scale: 0.97 }}
+                  transition={{ type: 'spring', stiffness: 400, damping: 17 }}
+                >
                   <Button
                     onClick={onStartTrial}
                     size="lg"
-                    className="bg-[#8B0000] hover:bg-[#6B0000] text-white px-8 py-6 text-lg rounded-full min-w-[200px] group shadow-lg shadow-[#8B0000]/20 hover:shadow-xl hover:shadow-[#8B0000]/30 transition-shadow"
+                    className="bg-[#8B0000] hover:bg-[#6B0000] text-white px-10 py-6 text-lg rounded-full min-w-[220px] group transition-all duration-300"
+                    style={{
+                      boxShadow: '0 4px 24px rgba(139, 0, 0, 0.3)',
+                    }}
                   >
                     Start Free Trial
-                    <ArrowRight className="ml-2 h-5 w-5 group-hover:translate-x-1 transition-transform" />
+                    <ArrowRight className="ml-2 h-5 w-5 group-hover:translate-x-1.5 transition-transform duration-300" />
                   </Button>
                 </motion.div>
 
-                <motion.div whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.97 }}>
+                <motion.div
+                  whileHover={{ scale: 1.05, y: -2 }}
+                  whileTap={{ scale: 0.97 }}
+                  transition={{ type: 'spring', stiffness: 400, damping: 17 }}
+                >
                   <Button
                     onClick={onAdminLogin}
                     variant="outline"
                     size="lg"
-                    className="border-[#1d1d1f] text-[#1d1d1f] hover:bg-[#1d1d1f] hover:text-white px-8 py-6 text-lg rounded-full min-w-[200px]"
+                    className="border-[#1d1d1f]/20 text-[#1d1d1f] hover:bg-[#1d1d1f] hover:text-white hover:border-[#1d1d1f] px-10 py-6 text-lg rounded-full min-w-[220px] transition-all duration-300"
                   >
                     <LogIn className="mr-2 h-5 w-5" />
                     Admin / Super User Login
@@ -490,9 +718,9 @@ export default function LandingPage({ onStartTrial, onAdminLogin }: LandingPageP
         className="py-6 text-center relative z-10"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
-        transition={{ duration: 1, delay: 1.2 }}
+        transition={{ duration: 1, delay: 1.4 }}
       >
-        <p className="text-xs text-[#86868b]">Solution developed by Walid El Tayeh</p>
+        <p className="text-xs text-[#86868b] tracking-wide">Solution developed by Walid El Tayeh</p>
       </motion.footer>
     </div>
   );
