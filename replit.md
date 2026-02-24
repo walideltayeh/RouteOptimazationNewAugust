@@ -26,7 +26,7 @@ Preferred communication style: Simple, everyday language.
 - **Data Import**: CSV/Excel file parsing and geocoding.
 - **Territory Management**: GPS-based clustering, rep assignment, and ML-driven recommendations for optimal assignments.
 - **Route Optimization**: Utilizes TSP (Traveling Salesman Problem) solving with heuristics (e.g., nearest neighbor) and multi-phase workload optimization, including K-means clustering for geographic grouping.
-- **Schedule Generation**: Weekly schedule creation respecting visit frequency constraints (VF1, VF2, VF4).
+- **Schedule Generation**: Two-level geographic scheduling: (1) global clustering assigns outlets to reps, (2) per-rep K-means++ sub-clustering creates exactly `workingDaysPerWeek` geographically-tight daily groups. Each day's route visits one compact geographic area. Respects visit frequency constraints (VF4=weekly, VF2=biweekly alternating weeks 1+3/2+4, VF1=monthly one week only).
 - **Analytics & Visualization**: Interactive map for territory visualization, analytics dashboard, and ML insights.
 - **Machine Learning**: Demand forecasting using linear regression models with seasonal and trend analysis.
 - **Vehicle Management**: CRUD API for fleet tracking, maintenance history, and a predictive maintenance forecasting system based on mileage and configurable thresholds. Includes a detailed Vehicle Detail Dashboard and export functionality.

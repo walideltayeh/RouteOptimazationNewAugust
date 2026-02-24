@@ -1366,65 +1366,209 @@ function assignZonesToReps(clusters: GeographicCluster[], reps: Rep[], zonesPerR
   return assignments;
 }
 
-// Helper function to generate zone-based schedules (one zone per day)
 function generateZoneBasedSchedules(rep: Rep, zones: GeographicCluster[], allClusters: GeographicCluster[]): InsertSchedule[] {
   const schedules: InsertSchedule[] = [];
   const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
   const workingDays = daysOfWeek.slice(0, rep.workingDaysPerWeek);
   
-  // Determine how to split zones based on working days
-  let zonesPerWeek: number;
-  if (rep.workingDaysPerWeek <= 5) {
-    zonesPerWeek = 5; // 5 zones per week for 5-day workweek
-  } else if (rep.workingDaysPerWeek === 6) {
-    zonesPerWeek = 6; // 6 zones per week for 6-day workweek
-  } else {
-    zonesPerWeek = 7; // 7 zones per week for 7-day workweek
+  const allOutlets: Outlet[] = [];
+  for (const zone of zones) {
+    allOutlets.push(...zone.outlets);
   }
   
-  // Split zones into groups based on working days
-  const week1Zones = zones.slice(0, Math.min(zonesPerWeek, zones.length));
-  const week2Zones = zones.slice(zonesPerWeek, Math.min(zonesPerWeek * 2, zones.length));
+  if (allOutlets.length === 0) return schedules;
   
-  // Generate schedules for Week 1 and Week 2 (pattern repeats for weeks 3 and 4)
-  for (let week = 1; week <= 2; week++) {
-    const currentWeekZones = week === 1 ? week1Zones : week2Zones;
+  const numDailyGroups = workingDays.length;
+  
+  const dailyGroups = clusterOutletsIntoDailyGroups(allOutlets, numDailyGroups);
+  
+  for (let dayIndex = 0; dayIndex < workingDays.length && dayIndex < dailyGroups.length; dayIndex++) {
+    const groupOutlets = dailyGroups[dayIndex];
+    if (groupOutlets.length === 0) continue;
     
-    for (let dayIndex = 0; dayIndex < workingDays.length && dayIndex < currentWeekZones.length; dayIndex++) {
-      const zone = currentWeekZones[dayIndex];
-      if (!zone) continue;
+    const vf4 = groupOutlets.filter(o => o.visitFrequency === 4);
+    const vf2 = groupOutlets.filter(o => o.visitFrequency === 2);
+    const vf1 = groupOutlets.filter(o => o.visitFrequency === 1 || !o.visitFrequency);
+    
+    const vf2GroupA = vf2.filter((_, i) => i % 2 === 0);
+    const vf2GroupB = vf2.filter((_, i) => i % 2 === 1);
+    const vf1GroupA = vf1.filter((_, i) => i % 4 === 0);
+    const vf1GroupB = vf1.filter((_, i) => i % 4 === 1);
+    const vf1GroupC = vf1.filter((_, i) => i % 4 === 2);
+    const vf1GroupD = vf1.filter((_, i) => i % 4 === 3);
+    
+    for (let week = 1; week <= 4; week++) {
+      const weekOutlets = [...vf4];
       
-      // Get all outlets from this zone and optimize the route
-      const zoneOutlets = zone.outlets;
-      const optimizedOutlets = optimizeRoute(zoneOutlets);
-      const zoneOutletIds = optimizedOutlets.map(outlet => outlet.id);
+      if (week === 1 || week === 3) {
+        weekOutlets.push(...vf2GroupA);
+      } else {
+        weekOutlets.push(...vf2GroupB);
+      }
+      
+      if (week === 1) weekOutlets.push(...vf1GroupA);
+      else if (week === 2) weekOutlets.push(...vf1GroupB);
+      else if (week === 3) weekOutlets.push(...vf1GroupC);
+      else weekOutlets.push(...vf1GroupD);
+      
+      if (weekOutlets.length === 0) continue;
+      
+      const optimizedOutlets = optimizeRoute(weekOutlets);
+      const outletIds = optimizedOutlets.map(o => o.id);
       const totalDistance = calculateTotalDistance(optimizedOutlets);
       
-      // Create schedule for this day with optimized route (dayOfWeek is 1-based: Monday=1)
       schedules.push({
         repId: rep.id,
         week: week,
         dayOfWeek: dayIndex + 1,
-        outletIds: zoneOutletIds,
-        routeOrder: zoneOutletIds, // Already optimized
+        outletIds: outletIds,
+        routeOrder: outletIds,
         totalDistance: totalDistance,
-        estimatedDuration: zone.outlets.length * 15 // 15 minutes per outlet average
-      });
-      
-      // Also create the repeat week (3 or 4)
-      schedules.push({
-        repId: rep.id,
-        week: week + 2,
-        dayOfWeek: dayIndex + 1,
-        outletIds: zoneOutletIds,
-        routeOrder: zoneOutletIds, // Already optimized
-        totalDistance: totalDistance,
-        estimatedDuration: zone.outlets.length * 15
+        estimatedDuration: weekOutlets.length * 15
       });
     }
   }
   
   return schedules;
+}
+
+function clusterOutletsIntoDailyGroups(outlets: Outlet[], k: number): Outlet[][] {
+  if (outlets.length === 0) return [];
+  if (k <= 0) k = 1;
+  if (k === 1) return [outlets];
+  if (outlets.length <= k) {
+    return outlets.map(o => [o]);
+  }
+  
+  const centroids: { lat: number; lng: number }[] = [];
+  
+  const avgLat = outlets.reduce((s, o) => s + o.latitude, 0) / outlets.length;
+  const avgLng = outlets.reduce((s, o) => s + o.longitude, 0) / outlets.length;
+  let firstIdx = 0;
+  let maxDistFirst = 0;
+  for (let i = 0; i < outlets.length; i++) {
+    const d = calculateDistance(outlets[i].latitude, outlets[i].longitude, avgLat, avgLng);
+    if (d > maxDistFirst) { maxDistFirst = d; firstIdx = i; }
+  }
+  centroids.push({ lat: outlets[firstIdx].latitude, lng: outlets[firstIdx].longitude });
+  
+  for (let c = 1; c < k; c++) {
+    let bestIdx = 0;
+    let bestMinDist = 0;
+    for (let i = 0; i < outlets.length; i++) {
+      let minDist = Infinity;
+      for (const centroid of centroids) {
+        const d = calculateDistance(outlets[i].latitude, outlets[i].longitude, centroid.lat, centroid.lng);
+        if (d < minDist) minDist = d;
+      }
+      if (minDist > bestMinDist) {
+        bestMinDist = minDist;
+        bestIdx = i;
+      }
+    }
+    centroids.push({ lat: outlets[bestIdx].latitude, lng: outlets[bestIdx].longitude });
+  }
+  
+  let assignments = new Array(outlets.length).fill(0);
+  
+  for (let iter = 0; iter < 30; iter++) {
+    let changed = false;
+    
+    for (let i = 0; i < outlets.length; i++) {
+      let bestCluster = 0;
+      let bestDist = Infinity;
+      for (let c = 0; c < centroids.length; c++) {
+        const d = calculateDistance(outlets[i].latitude, outlets[i].longitude, centroids[c].lat, centroids[c].lng);
+        if (d < bestDist) {
+          bestDist = d;
+          bestCluster = c;
+        }
+      }
+      if (assignments[i] !== bestCluster) {
+        assignments[i] = bestCluster;
+        changed = true;
+      }
+    }
+    
+    if (!changed) break;
+    
+    for (let c = 0; c < centroids.length; c++) {
+      const members = outlets.filter((_, i) => assignments[i] === c);
+      if (members.length > 0) {
+        centroids[c] = {
+          lat: members.reduce((s, o) => s + o.latitude, 0) / members.length,
+          lng: members.reduce((s, o) => s + o.longitude, 0) / members.length
+        };
+      }
+    }
+  }
+  
+  const targetSize = Math.ceil(outlets.length / k);
+  const maxSize = targetSize + Math.ceil(targetSize * 0.2);
+  
+  const groups: Outlet[][] = Array.from({ length: k }, () => []);
+  for (let i = 0; i < outlets.length; i++) {
+    groups[assignments[i]].push(outlets[i]);
+  }
+  
+  for (let pass = 0; pass < 10; pass++) {
+    let moved = false;
+    
+    for (let g = 0; g < groups.length; g++) {
+      while (groups[g].length > maxSize) {
+        const centroid = {
+          lat: groups[g].reduce((s, o) => s + o.latitude, 0) / groups[g].length,
+          lng: groups[g].reduce((s, o) => s + o.longitude, 0) / groups[g].length
+        };
+        
+        let farthestIdx = 0;
+        let farthestDist = 0;
+        for (let i = 0; i < groups[g].length; i++) {
+          const d = calculateDistance(groups[g][i].latitude, groups[g][i].longitude, centroid.lat, centroid.lng);
+          if (d > farthestDist) {
+            farthestDist = d;
+            farthestIdx = i;
+          }
+        }
+        
+        const outletToMove = groups[g][farthestIdx];
+        groups[g].splice(farthestIdx, 1);
+        
+        let bestGroup = -1;
+        let bestGroupDist = Infinity;
+        for (let other = 0; other < groups.length; other++) {
+          if (other === g || groups[other].length >= maxSize) continue;
+          const otherCentroid = groups[other].length > 0 ? {
+            lat: groups[other].reduce((s, o) => s + o.latitude, 0) / groups[other].length,
+            lng: groups[other].reduce((s, o) => s + o.longitude, 0) / groups[other].length
+          } : centroids[other];
+          const d = calculateDistance(outletToMove.latitude, outletToMove.longitude, otherCentroid.lat, otherCentroid.lng);
+          if (d < bestGroupDist) {
+            bestGroupDist = d;
+            bestGroup = other;
+          }
+        }
+        
+        if (bestGroup >= 0) {
+          groups[bestGroup].push(outletToMove);
+          moved = true;
+        } else {
+          groups[g].push(outletToMove);
+          break;
+        }
+      }
+    }
+    
+    if (!moved) break;
+  }
+  
+  return groups
+    .filter(g => g.length > 0)
+    .sort((a, b) => {
+      const aLng = a.reduce((s, o) => s + o.longitude, 0) / a.length;
+      const bLng = b.reduce((s, o) => s + o.longitude, 0) / b.length;
+      return aLng - bLng;
+    });
 }
 
 // Helper function to generate weekly schedules for a route
@@ -3306,7 +3450,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.log(`Creating zones based on geographic clustering for ${outlets.length} outlets`);
       
       // Calculate target zones based on the required rep count and user's max visits per day
-      const zonesPerRep = 10; // 5 zones in week 1, 5 zones in week 2
+      const zonesPerRep = workingDaysPerWeek; // One zone per working day
       const targetZones = Math.max(
         Math.ceil(outlets.length / maxVisitsPerDay), // At least one zone per maxVisitsPerDay outlets
         finalRequiredReps * zonesPerRep // Or enough zones for all reps
