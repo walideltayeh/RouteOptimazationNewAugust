@@ -474,13 +474,13 @@ function OptimizationCanvas() {
       ctx.font = '11px -apple-system, BlinkMacSystemFont, sans-serif';
       ctx.fillStyle = `rgba(139, 0, 0, ${labelAlpha * 0.5})`;
       ctx.textAlign = 'center';
-      ctx.fillText(label, w / 2, h - 30);
+      ctx.fillText(label, w / 2, h * 0.15);
 
       const totalPhases = PHASE_DURATIONS.length;
       const barW = 120;
       const barH = 2;
       const barX = (w - barW) / 2;
-      const barY = h - 18;
+      const barY = h * 0.15 + 12;
       ctx.fillStyle = `rgba(139, 0, 0, 0.08)`;
       ctx.fillRect(barX, barY, barW, barH);
       const filled = (s.phase + phaseT) / totalPhases;
