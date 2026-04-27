@@ -1591,6 +1591,117 @@ function clusterOutletsIntoDailyGroups(outlets: Outlet[], k: number): Outlet[][]
     return total;
   }
 
+  // Fast TSP route-length approximation per group: nearest-neighbor + 12 passes of 2-opt.
+  // This is what the rep ACTUALLY drives - the real cost we want to minimize for sales coverage.
+  function approximateRouteLength(group: Outlet[]): number {
+    if (group.length < 2) return 0;
+    const m = group.length;
+
+    // Nearest-neighbor starting from the outlet farthest from group centroid
+    const c = computeCentroid(group);
+    let startIdx = 0;
+    let maxD = -1;
+    for (let i = 0; i < m; i++) {
+      const d = calculateDistance(group[i].latitude, group[i].longitude, c.lat, c.lng);
+      if (d > maxD) { maxD = d; startIdx = i; }
+    }
+
+    const visited = new Uint8Array(m);
+    const order: number[] = [startIdx];
+    visited[startIdx] = 1;
+    for (let step = 1; step < m; step++) {
+      const cur = order[order.length - 1];
+      let bestI = -1;
+      let bestD = Infinity;
+      for (let i = 0; i < m; i++) {
+        if (visited[i]) continue;
+        const d = calculateDistance(
+          group[cur].latitude, group[cur].longitude,
+          group[i].latitude, group[i].longitude
+        );
+        if (d < bestD) { bestD = d; bestI = i; }
+      }
+      if (bestI < 0) break;
+      order.push(bestI);
+      visited[bestI] = 1;
+    }
+
+    // Quick 2-opt with hard cap
+    const dist = (a: number, b: number) =>
+      calculateDistance(group[order[a]].latitude, group[order[a]].longitude,
+                        group[order[b]].latitude, group[order[b]].longitude);
+    let improved = true;
+    let passes = 0;
+    while (improved && passes < 12) {
+      improved = false;
+      passes++;
+      for (let i = 1; i < m - 2; i++) {
+        for (let j = i + 1; j < m; j++) {
+          if (j - i === 1) continue;
+          const d1 = dist(i - 1, i) + dist(j - 1, j);
+          const d2 = dist(i - 1, j - 1) + dist(i, j);
+          if (d2 < d1 - 1e-9) {
+            const reversed = order.slice(i, j).reverse();
+            order.splice(i, j - i, ...reversed);
+            improved = true;
+          }
+        }
+      }
+    }
+
+    // Sum the route distance
+    let total = 0;
+    for (let i = 1; i < m; i++) {
+      total += calculateDistance(
+        group[order[i - 1]].latitude, group[order[i - 1]].longitude,
+        group[order[i]].latitude, group[order[i]].longitude
+      );
+    }
+    return total;
+  }
+
+  // True drive-distance cost for tournament selection. This is what reps actually drive.
+  function totalRouteLengthCost(groups: Outlet[][]): number {
+    let total = 0;
+    for (const g of groups) {
+      total += approximateRouteLength(g);
+    }
+    return total;
+  }
+
+  // Cluster diameter penalty - max pairwise distance within each group.
+  // Penalizes elongated/spread clusters that pass centroid cost but make poor daily routes.
+  function maxClusterDiameter(groups: Outlet[][]): number {
+    let maxDiam = 0;
+    for (const g of groups) {
+      if (g.length < 2) continue;
+      // Sample-based diameter for groups > 20 to stay O(20^2)
+      const sample = g.length <= 20 ? g : pickEvenlySampledArr(g, 20);
+      let d = 0;
+      for (let i = 0; i < sample.length; i++) {
+        for (let j = i + 1; j < sample.length; j++) {
+          const dist = calculateDistance(
+            sample[i].latitude, sample[i].longitude,
+            sample[j].latitude, sample[j].longitude
+          );
+          if (dist > d) d = dist;
+        }
+      }
+      if (d > maxDiam) maxDiam = d;
+    }
+    return maxDiam;
+  }
+
+  function pickEvenlySampledArr<T>(arr: T[], count: number): T[] {
+    if (arr.length <= count) return arr;
+    const out: T[] = [];
+    const step = arr.length / count;
+    for (let i = 0; i < count; i++) {
+      out.push(arr[Math.floor(i * step)]);
+    }
+    return out;
+  }
+
   const globalCentroid = computeCentroid(outlets);
 
   // === Strategy 1: Sweep (Angular) Initialization ===
@@ -1946,30 +2057,182 @@ function clusterOutletsIntoDailyGroups(outlets: Outlet[], k: number): Outlet[][]
     return g;
   }
 
-  // === Run all 3 strategies through Phases A, B, C ===
-  const strategyNames = ['Sweep (Angular)', 'Maximin (Farthest-Point)', 'Grid-Based'];
-  const initializers = [initSweep, initMaximin, initGrid];
+  // === Strategy 4: K-Means++ Initialization (probability ∝ dist²) ===
+  function initKMeansPP(): Outlet[][] {
+    const seeds: number[] = [];
+    seeds.push(Math.floor(Math.random() * n));
+
+    const minDistSq = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      const d = calculateDistance(outlets[i].latitude, outlets[i].longitude, outlets[seeds[0]].latitude, outlets[seeds[0]].longitude);
+      minDistSq[i] = d * d;
+    }
+
+    while (seeds.length < k) {
+      let totalWeight = 0;
+      for (let i = 0; i < n; i++) totalWeight += minDistSq[i];
+      if (totalWeight <= 0) break;
+
+      let r = Math.random() * totalWeight;
+      let pickIdx = -1;
+      for (let i = 0; i < n; i++) {
+        r -= minDistSq[i];
+        if (r <= 0) { pickIdx = i; break; }
+      }
+      if (pickIdx < 0) pickIdx = n - 1;
+      seeds.push(pickIdx);
+
+      // Update minDistSq
+      for (let i = 0; i < n; i++) {
+        const d = calculateDistance(outlets[i].latitude, outlets[i].longitude, outlets[pickIdx].latitude, outlets[pickIdx].longitude);
+        const dSq = d * d;
+        if (dSq < minDistSq[i]) minDistSq[i] = dSq;
+      }
+    }
+
+    const groups: Outlet[][] = Array.from({ length: k }, () => []);
+    for (let i = 0; i < n; i++) {
+      let bestC = 0;
+      let bestD = Infinity;
+      for (let c = 0; c < seeds.length; c++) {
+        const d = calculateDistance(outlets[i].latitude, outlets[i].longitude, outlets[seeds[c]].latitude, outlets[seeds[c]].longitude);
+        if (d < bestD) { bestD = d; bestC = c; }
+      }
+      groups[bestC].push(outlets[i]);
+    }
+    return groups;
+  }
+
+  // === Phase D: Boundary refinement - swap boundary outlets to reduce route-length ===
+  // Uses route-length deltas (not centroid distance) so it directly improves what reps drive.
+  function boundaryRouteRefinement(groups: Outlet[][]): Outlet[][] {
+    const g = groups.map(gr => [...gr]);
+    if (k < 2) return g;
+
+    const cents = g.map(gr => computeCentroid(gr));
+
+    // Build adjacency: only consider neighbor-pairs whose centroids are close
+    const neighborPairs: [number, number][] = [];
+    for (let a = 0; a < k; a++) {
+      for (let b = a + 1; b < k; b++) {
+        const d = calculateDistance(cents[a].lat, cents[a].lng, cents[b].lat, cents[b].lng);
+        neighborPairs.push([a, b]);
+      }
+    }
+    // Sort by closeness so most likely-improving pairs are tried first
+    neighborPairs.sort((p1, p2) => {
+      const d1 = calculateDistance(cents[p1[0]].lat, cents[p1[0]].lng, cents[p1[1]].lat, cents[p1[1]].lng);
+      const d2 = calculateDistance(cents[p2[0]].lat, cents[p2[0]].lng, cents[p2[1]].lat, cents[p2[1]].lng);
+      return d1 - d2;
+    });
+
+    // Cache route length per cluster - only invalidate when its membership changes.
+    // Cap candidate moves per pair to keep this affordable on large datasets.
+    const routeCache: (number | null)[] = g.map(() => null);
+    const getRouteLen = (idx: number) => {
+      if (routeCache[idx] === null) routeCache[idx] = approximateRouteLength(g[idx]);
+      return routeCache[idx]!;
+    };
+    const MAX_CANDIDATES_PER_PAIR = 6; // top boundary candidates by lateral distance
+
+    let improved = true;
+    let pass = 0;
+    while (improved && pass < 4) {
+      improved = false;
+      pass++;
+      for (const [a, b] of neighborPairs) {
+        if (g[a].length <= minSize && g[b].length <= minSize) continue;
+
+        const baseCost = getRouteLen(a) + getRouteLen(b);
+        const centA = computeCentroid(g[a]);
+        const centB = computeCentroid(g[b]);
+
+        // Pre-rank boundary candidates from each side: outlets closer to OTHER centroid
+        type Candidate = { src: number; idx: number; o: Outlet; gain: number };
+        const candidates: Candidate[] = [];
+
+        if (g[a].length > minSize && g[b].length < maxSize) {
+          for (let i = 0; i < g[a].length; i++) {
+            const o = g[a][i];
+            const dA = calculateDistance(o.latitude, o.longitude, centA.lat, centA.lng);
+            const dB = calculateDistance(o.latitude, o.longitude, centB.lat, centB.lng);
+            if (dB < dA) candidates.push({ src: a, idx: i, o, gain: dA - dB });
+          }
+        }
+        if (g[b].length > minSize && g[a].length < maxSize) {
+          for (let i = 0; i < g[b].length; i++) {
+            const o = g[b][i];
+            const dB = calculateDistance(o.latitude, o.longitude, centB.lat, centB.lng);
+            const dA = calculateDistance(o.latitude, o.longitude, centA.lat, centA.lng);
+            if (dA < dB) candidates.push({ src: b, idx: i, o, gain: dB - dA });
+          }
+        }
+
+        // Try the strongest boundary candidates first
+        candidates.sort((x, y) => y.gain - x.gain);
+        const top = candidates.slice(0, MAX_CANDIDATES_PER_PAIR);
+
+        let bestDelta = 0;
+        let bestPick: Candidate | null = null;
+
+        for (const cand of top) {
+          const dst = cand.src === a ? b : a;
+          if (g[cand.src].length <= minSize || g[dst].length >= maxSize) continue;
+
+          const newSrc = g[cand.src].filter((_, idx) => idx !== cand.idx);
+          const newDst = [...g[dst], cand.o];
+          const newCost = approximateRouteLength(newSrc) + approximateRouteLength(newDst);
+          const delta = baseCost - newCost;
+          if (delta > bestDelta + 0.01) {
+            bestDelta = delta;
+            bestPick = cand;
+          }
+        }
+
+        if (bestPick) {
+          const dst = bestPick.src === a ? b : a;
+          g[bestPick.src].splice(bestPick.idx, 1);
+          g[dst].push(bestPick.o);
+          routeCache[bestPick.src] = null;
+          routeCache[dst] = null;
+          improved = true;
+        }
+      }
+    }
+
+    return g;
+  }
+
+  // === Run all 4 strategies through Phases A, B, C, D ===
+  const strategyNames = ['Sweep (Angular)', 'Maximin (Farthest-Point)', 'Grid-Based', 'K-Means++'];
+  const initializers = [initSweep, initMaximin, initGrid, initKMeansPP];
   let bestResult: Outlet[][] | null = null;
-  let bestCost = Infinity;
+  let bestRouteCost = Infinity;
   let bestStrategy = '';
 
-  for (let s = 0; s < 3; s++) {
+  for (let s = 0; s < 4; s++) {
     const initial = initializers[s]();
     const afterKMeans = constrainedKMeans(initial);
     const afterSwaps = pairSwapOptimization(afterKMeans);
     const afterChain = chainMoveOptimization(afterSwaps);
+    const afterBoundary = boundaryRouteRefinement(afterChain);
 
-    const cost = totalIntraClusterCost(afterChain);
-    console.log(`[Clustering] Strategy "${strategyNames[s]}": total intra-cluster cost = ${cost.toFixed(2)} km`);
+    // Tournament uses true drive distance, not centroid sum.
+    // This directly minimizes what reps actually drive each day - the right
+    // metric for "outlets close together" in sales coverage.
+    const routeCost = totalRouteLengthCost(afterBoundary);
+    const centroidCost = totalIntraClusterCost(afterBoundary);
+    const diameter = maxClusterDiameter(afterBoundary);
+    console.log(`[Clustering] Strategy "${strategyNames[s]}": route=${routeCost.toFixed(2)}km, centroid=${centroidCost.toFixed(2)}km, maxDiameter=${diameter.toFixed(2)}km`);
 
-    if (cost < bestCost) {
-      bestCost = cost;
-      bestResult = afterChain;
+    if (routeCost < bestRouteCost) {
+      bestRouteCost = routeCost;
+      bestResult = afterBoundary;
       bestStrategy = strategyNames[s];
     }
   }
 
-  console.log(`[Clustering] Winner: "${bestStrategy}" with cost ${bestCost.toFixed(2)} km for ${n} outlets into ${k} groups`);
+  console.log(`[Clustering] Winner: "${bestStrategy}" with route cost ${bestRouteCost.toFixed(2)} km for ${n} outlets into ${k} groups`);
 
   return bestResult!
     .filter(g => g.length > 0)
@@ -3184,16 +3447,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Delete a specific outlet
+  // Note: storage.deleteOutlet automatically cleans the deleted ID from any
+  // schedule's outletIds and routeOrder, and clears the cached
+  // totalDistance/estimatedDuration so the next optimize call recomputes them.
+  // For full re-grouping (re-clustering days), the user should call /api/optimize-routes
+  // for the affected rep(s), which now detects drift and triggers full re-optimization.
   app.delete("/api/outlets/:id", async (req, res) => {
     try {
       const { id } = req.params;
+
+      // Identify affected reps before deleting, so the client can react.
+      const beforeSchedules = await storage.getSchedules();
+      const affectedRepIds = new Set<string>();
+      for (const s of beforeSchedules) {
+        const ids = (s.outletIds as string[]) || [];
+        if (ids.includes(id)) affectedRepIds.add(s.repId);
+      }
+
       const deleted = await storage.deleteOutlet(id);
-      
+
       if (!deleted) {
         return res.status(404).json({ message: "Outlet not found" });
       }
-      
-      res.json({ success: true, message: "Outlet deleted successfully" });
+
+      res.json({
+        success: true,
+        message: "Outlet deleted successfully",
+        affectedRepIds: Array.from(affectedRepIds),
+        requiresReoptimization: affectedRepIds.size > 0,
+      });
     } catch (error) {
       console.error("Failed to delete outlet:", error);
       res.status(500).json({ message: "Failed to delete outlet" });
@@ -4137,40 +4419,207 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Optimize selected routes
+  // SMART RE-OPTIMIZATION: detects when the rep's outlet set has changed
+  // (deletions, additions, reassignments) and does a FULL re-clustering of
+  // daily groups + per-day TSP resequencing. If nothing has changed, falls back
+  // to a fast per-day resequence on just the requested days.
   app.post("/api/optimize-routes", async (req, res) => {
     try {
       const { repIds, days } = req.body;
-      const schedules = await storage.getSchedules();
-      const outlets = await storage.getOutlets();
-      
-      // Get schedules for selected reps and days
-      const targetSchedules = schedules.filter(s => 
-        repIds.includes(s.repId) && 
-        days.includes(s.dayOfWeek) && 
-        s.week === 1
-      );
-      
-      // Optimize each schedule's route
-      for (const schedule of targetSchedules) {
-        const scheduleOutlets = outlets.filter(o => 
-          (schedule.outletIds as string[]).includes(o.id)
-        );
-        
-        if (scheduleOutlets.length > 1) {
-          // Optimize route using nearest neighbor
-          const optimizedOrder = optimizeRoute(scheduleOutlets);
-          const optimizedIds = optimizedOrder.map(o => o.id);
-          const totalDistance = calculateTotalDistance(optimizedOrder);
-          
-          // Update schedule with optimized route
-          await storage.updateSchedule(schedule.id!, {
-            routeOrder: optimizedIds,
-            totalDistance: totalDistance
-          });
+      if (!Array.isArray(repIds) || repIds.length === 0) {
+        return res.status(400).json({ message: "repIds is required" });
+      }
+
+      const allSchedules = await storage.getSchedules();
+      const allOutlets = await storage.getOutlets();
+      const allReps = await storage.getReps();
+      const repsById = new Map(allReps.map(r => [r.id, r]));
+
+      let totalRegrouped = 0;
+      let totalResequenced = 0;
+      let totalRemovedStale = 0;
+      const regroupedRepIds: string[] = [];
+
+      for (const repId of repIds) {
+        const rep = repsById.get(repId);
+        if (!rep) continue;
+
+        const repSchedules = allSchedules.filter(s => s.repId === repId);
+        const repTerritoryOutlets = allOutlets.filter(o => o.territory === rep.territory);
+
+        // Detect drift via three signals (any one triggers full re-grouping):
+        //   1. STALE: outlets in schedules but no longer in storage (rare now
+        //      since storage.deleteOutlet cleans outletIds, but kept as belt+braces).
+        //   2. MISSING: outlets in territory not yet in any schedule (additions
+        //      or reassignments).
+        //   3. INVALIDATED: any schedule with totalDistance == null. This is the
+        //      key signal: storage.deleteOutlet nulls totalDistance on schedules
+        //      it modifies, marking them as needing recompute. Without this signal
+        //      the post-deletion sets would match and the fast path would skip
+        //      cross-day regrouping.
+        const scheduledIds = new Set<string>();
+        let invalidatedCount = 0;
+        for (const s of repSchedules) {
+          for (const id of (s.outletIds as string[]) || []) scheduledIds.add(id);
+          if (s.totalDistance === null || s.totalDistance === undefined) invalidatedCount++;
+        }
+        const territoryIds = new Set(repTerritoryOutlets.map(o => o.id));
+
+        let staleCount = 0;
+        for (const id of Array.from(scheduledIds)) {
+          if (!territoryIds.has(id)) staleCount++;
+        }
+        let missingCount = 0;
+        for (const id of Array.from(territoryIds)) {
+          if (!scheduledIds.has(id)) missingCount++;
+        }
+
+        const needsFullRegroup =
+          staleCount > 0 || missingCount > 0 || invalidatedCount > 0;
+
+        if (needsFullRegroup) {
+          // Full re-optimization for this rep: re-cluster outlets into daily
+          // groups, then re-sequence each day's route. This handles deletions,
+          // additions, and reassignments in one shot.
+          totalRemovedStale += staleCount;
+
+          // Wipe old schedules for this rep
+          await storage.deleteSchedulesByRepId(repId);
+
+          if (repTerritoryOutlets.length === 0) {
+            // Rep lost all outlets (e.g. all deleted or reassigned away).
+            // Also clear orphaned role schedules so Merchandiser/Collection Agent
+            // routes don't reference deleted outlets.
+            await storage.deleteRoleSchedulesByRepId(repId);
+            console.log(`[optimize-routes] Rep ${rep.name} has no outlets in territory; cleared base + role schedules`);
+            continue;
+          }
+
+          const numDailyGroups = rep.workingDaysPerWeek || 5;
+
+          // Split outlets by VF first - VF4 outlets are the "skeleton" that
+          // anchors each day's location, since they're visited every week.
+          // VF2 and VF1 fill in around the VF4 anchors.
+          const vf4 = repTerritoryOutlets.filter(o => o.visitFrequency === 4);
+          const vf2 = repTerritoryOutlets.filter(o => o.visitFrequency === 2);
+          const vf1 = repTerritoryOutlets.filter(o => o.visitFrequency === 1 || !o.visitFrequency);
+
+          // Cluster the COMBINED outlet set into daily groups so reps stay in
+          // one geographic area per day. This is the key for tight grouping.
+          const allRepOutlets = [...vf4, ...vf2, ...vf1];
+          const dailyGroups = clusterOutletsIntoDailyGroups(allRepOutlets, numDailyGroups);
+
+          const newSchedules: InsertSchedule[] = [];
+          for (let dayIndex = 0; dayIndex < numDailyGroups && dayIndex < dailyGroups.length; dayIndex++) {
+            const dayOutlets = dailyGroups[dayIndex];
+            if (dayOutlets.length === 0) continue;
+
+            const dayVf4 = dayOutlets.filter(o => o.visitFrequency === 4);
+            const dayVf2 = dayOutlets.filter(o => o.visitFrequency === 2);
+            const dayVf1 = dayOutlets.filter(o => o.visitFrequency === 1 || !o.visitFrequency);
+
+            const vf2GroupA = dayVf2.filter((_, i) => i % 2 === 0);
+            const vf2GroupB = dayVf2.filter((_, i) => i % 2 === 1);
+            const vf1GroupA = dayVf1.filter((_, i) => i % 4 === 0);
+            const vf1GroupB = dayVf1.filter((_, i) => i % 4 === 1);
+            const vf1GroupC = dayVf1.filter((_, i) => i % 4 === 2);
+            const vf1GroupD = dayVf1.filter((_, i) => i % 4 === 3);
+
+            for (let week = 1; week <= 4; week++) {
+              const weekOutlets: Outlet[] = [...dayVf4];
+              if (week === 1 || week === 3) weekOutlets.push(...vf2GroupA);
+              else weekOutlets.push(...vf2GroupB);
+              if (week === 1) weekOutlets.push(...vf1GroupA);
+              else if (week === 2) weekOutlets.push(...vf1GroupB);
+              else if (week === 3) weekOutlets.push(...vf1GroupC);
+              else weekOutlets.push(...vf1GroupD);
+
+              if (weekOutlets.length === 0) continue;
+
+              const optimized = optimizeRoute(weekOutlets);
+              const optimizedIds = optimized.map(o => o.id);
+              const dist = calculateTotalDistance(optimized);
+
+              newSchedules.push({
+                repId,
+                week,
+                dayOfWeek: dayIndex + 1,
+                outletIds: optimizedIds,
+                routeOrder: optimizedIds,
+                totalDistance: Math.round(dist * 100) / 100,
+                estimatedDuration: optimized.length * 15,
+              });
+            }
+          }
+
+          await storage.createSchedules(newSchedules);
+          totalRegrouped++;
+          regroupedRepIds.push(repId);
+          console.log(`[optimize-routes] Rep ${rep.name}: full regroup (${staleCount} stale, ${missingCount} new, ${invalidatedCount} invalidated) → ${newSchedules.length} schedules`);
+        } else {
+          // No drift detected - fast path: just re-sequence the requested days.
+          const targetDays: number[] = Array.isArray(days) && days.length > 0
+            ? days
+            : Array.from(new Set(repSchedules.map(s => s.dayOfWeek)));
+          const outletById = new Map(allOutlets.map(o => [o.id, o]));
+
+          const target = repSchedules.filter(s => targetDays.includes(s.dayOfWeek));
+          for (const schedule of target) {
+            const ids = (schedule.outletIds as string[]) || [];
+            const scheduleOutlets = ids
+              .map(id => outletById.get(id))
+              .filter((o): o is Outlet => !!o);
+
+            if (scheduleOutlets.length > 1) {
+              const optimized = optimizeRoute(scheduleOutlets);
+              const optimizedIds = optimized.map(o => o.id);
+              const dist = calculateTotalDistance(optimized);
+              await storage.updateSchedule(schedule.id!, {
+                outletIds: optimizedIds,
+                routeOrder: optimizedIds,
+                totalDistance: Math.round(dist * 100) / 100,
+                estimatedDuration: optimized.length * 15,
+              });
+              totalResequenced++;
+            }
+          }
         }
       }
-      
-      res.json({ success: true, message: "Routes optimized successfully" });
+
+      // For reps that got a full regroup, also regenerate hierarchy follow-up
+      // schedules (Merchandiser, Collection Agent, etc.) so their day-offset
+      // routes stay in sync with the rep's new routes.
+      let totalRoleSchedulesRegenerated = 0;
+      if (regroupedRepIds.length > 0) {
+        try {
+          const allHierarchies = await storage.getRoleHierarchies();
+          const refreshedSchedules = await storage.getSchedules();
+          for (const repId of regroupedRepIds) {
+            const repSchedules = refreshedSchedules.filter(s => s.repId === repId);
+            const repHierarchies = allHierarchies
+              .filter(h => h.repId === repId || h.repId === 'template')
+              .filter(h => h.isActive && h.role !== 'rep' && h.role !== '_config');
+            if (repSchedules.length > 0 && repHierarchies.length > 0) {
+              const generated = await generateRoleSchedulesForRep(repId, repSchedules, repHierarchies);
+              totalRoleSchedulesRegenerated += generated.length;
+            }
+          }
+        } catch (roleErr) {
+          console.error("[optimize-routes] Role schedule regen error:", roleErr);
+          // Non-fatal - rep schedules still saved successfully.
+        }
+      }
+
+      res.json({
+        success: true,
+        message: totalRegrouped > 0
+          ? `Full re-optimization: ${totalRegrouped} rep(s) regrouped (${totalRemovedStale} stale outlets cleaned), ${totalResequenced} schedule(s) resequenced, ${totalRoleSchedulesRegenerated} role schedule(s) refreshed`
+          : `Routes resequenced for ${totalResequenced} schedule(s)`,
+        regroupedReps: totalRegrouped,
+        resequencedSchedules: totalResequenced,
+        staleOutletsRemoved: totalRemovedStale,
+        roleSchedulesRegenerated: totalRoleSchedulesRegenerated,
+      });
     } catch (error) {
       console.error("Route optimization error:", error);
       res.status(500).json({ message: "Failed to optimize routes" });

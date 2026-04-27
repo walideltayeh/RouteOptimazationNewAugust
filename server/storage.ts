@@ -330,13 +330,25 @@ export class MemStorage implements IStorage {
     const existed = this.outlets.has(id);
     if (existed) {
       this.outlets.delete(id);
-      // Also remove from any schedules
+      // Also remove from any schedules - clean both outletIds and routeOrder,
+      // and invalidate cached totalDistance / estimatedDuration so the next
+      // optimize call recomputes them from scratch.
       const schedules = Array.from(this.schedules.values());
       for (const schedule of schedules) {
-        const outletIds = schedule.outletIds as string[];
-        if (outletIds && outletIds.includes(id)) {
+        const outletIds = (schedule.outletIds as string[]) || [];
+        const routeOrder = (schedule.routeOrder as string[]) || [];
+        const inOutletIds = outletIds.includes(id);
+        const inRouteOrder = routeOrder.includes(id);
+        if (inOutletIds || inRouteOrder) {
           const updatedOutletIds = outletIds.filter((oid: string) => oid !== id);
-          this.schedules.set(schedule.id, { ...schedule, outletIds: updatedOutletIds });
+          const updatedRouteOrder = routeOrder.filter((oid: string) => oid !== id);
+          this.schedules.set(schedule.id, {
+            ...schedule,
+            outletIds: updatedOutletIds,
+            routeOrder: updatedRouteOrder,
+            totalDistance: null,
+            estimatedDuration: null,
+          });
         }
       }
     }
