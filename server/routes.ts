@@ -4440,37 +4440,57 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let totalRemovedStale = 0;
       const regroupedRepIds: string[] = [];
 
+      const outletById = new Map(allOutlets.map(o => [o.id, o]));
+
       for (const repId of repIds) {
         const rep = repsById.get(repId);
         if (!rep) continue;
 
         const repSchedules = allSchedules.filter(s => s.repId === repId);
-        const repTerritoryOutlets = allOutlets.filter(o => o.territory === rep.territory);
 
-        // Detect drift via three signals (any one triggers full re-grouping):
-        //   1. STALE: outlets in schedules but no longer in storage (rare now
-        //      since storage.deleteOutlet cleans outletIds, but kept as belt+braces).
-        //   2. MISSING: outlets in territory not yet in any schedule (additions
-        //      or reassignments).
-        //   3. INVALIDATED: any schedule with totalDistance == null. This is the
-        //      key signal: storage.deleteOutlet nulls totalDistance on schedules
-        //      it modifies, marking them as needing recompute. Without this signal
-        //      the post-deletion sets would match and the fast path would skip
-        //      cross-day regrouping.
-        const scheduledIds = new Set<string>();
+        // SOURCE OF TRUTH for "outlets owned by this rep":
+        // In this app reps are linked to outlets via cluster/zone assignment
+        // (stored in their schedules), not necessarily a matching territory string.
+        // So the truth is the UNION of:
+        //   - outlets currently in any of this rep's schedules (still existing in storage)
+        //   - outlets whose territory matches the rep's territory (manual reassignment)
+        // This avoids accidentally treating a rep as "no outlets" just because
+        // territory strings don't line up after the cluster naming step.
+        const repOutletSet = new Map<string, Outlet>();
         let invalidatedCount = 0;
         for (const s of repSchedules) {
-          for (const id of (s.outletIds as string[]) || []) scheduledIds.add(id);
+          for (const id of (s.outletIds as string[]) || []) {
+            const o = outletById.get(id);
+            if (o) repOutletSet.set(o.id, o);
+          }
           if (s.totalDistance === null || s.totalDistance === undefined) invalidatedCount++;
         }
-        const territoryIds = new Set(repTerritoryOutlets.map(o => o.id));
+        if (rep.territory) {
+          for (const o of allOutlets) {
+            if (o.territory === rep.territory) repOutletSet.set(o.id, o);
+          }
+        }
+        const repOutlets = Array.from(repOutletSet.values());
+
+        // Detect drift via three signals (any one triggers full re-grouping):
+        //   1. STALE: schedule references an outlet that no longer exists in storage
+        //      (rare now since storage.deleteOutlet cleans outletIds, but kept as belt+braces).
+        //   2. MISSING: a rep-owned outlet not yet appearing in any schedule
+        //      (e.g. just-reassigned outlets whose schedules weren't regenerated).
+        //   3. INVALIDATED: any schedule with totalDistance == null - the canonical
+        //      post-deletion drift marker set by storage.deleteOutlet.
+        const scheduledIds = new Set<string>();
+        for (const s of repSchedules) {
+          for (const id of (s.outletIds as string[]) || []) scheduledIds.add(id);
+        }
+        const ownedIds = new Set(repOutlets.map(o => o.id));
 
         let staleCount = 0;
         for (const id of Array.from(scheduledIds)) {
-          if (!territoryIds.has(id)) staleCount++;
+          if (!ownedIds.has(id)) staleCount++;
         }
         let missingCount = 0;
-        for (const id of Array.from(territoryIds)) {
+        for (const id of Array.from(ownedIds)) {
           if (!scheduledIds.has(id)) missingCount++;
         }
 
@@ -4486,28 +4506,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // Wipe old schedules for this rep
           await storage.deleteSchedulesByRepId(repId);
 
-          if (repTerritoryOutlets.length === 0) {
-            // Rep lost all outlets (e.g. all deleted or reassigned away).
-            // Also clear orphaned role schedules so Merchandiser/Collection Agent
-            // routes don't reference deleted outlets.
+          if (repOutlets.length === 0) {
+            // Rep lost ALL their outlets (every outlet they used to visit was
+            // deleted and none remain in their territory either). Also clear
+            // orphaned role schedules so Merchandiser/Collection Agent routes
+            // don't reference deleted outlets.
             await storage.deleteRoleSchedulesByRepId(repId);
-            console.log(`[optimize-routes] Rep ${rep.name} has no outlets in territory; cleared base + role schedules`);
+            console.log(`[optimize-routes] Rep ${rep.name} has no outlets at all; cleared base + role schedules`);
             continue;
           }
 
           const numDailyGroups = rep.workingDaysPerWeek || 5;
 
-          // Split outlets by VF first - VF4 outlets are the "skeleton" that
-          // anchors each day's location, since they're visited every week.
-          // VF2 and VF1 fill in around the VF4 anchors.
-          const vf4 = repTerritoryOutlets.filter(o => o.visitFrequency === 4);
-          const vf2 = repTerritoryOutlets.filter(o => o.visitFrequency === 2);
-          const vf1 = repTerritoryOutlets.filter(o => o.visitFrequency === 1 || !o.visitFrequency);
-
-          // Cluster the COMBINED outlet set into daily groups so reps stay in
+          // Cluster ALL of the rep's outlets into daily groups so reps stay in
           // one geographic area per day. This is the key for tight grouping.
-          const allRepOutlets = [...vf4, ...vf2, ...vf1];
-          const dailyGroups = clusterOutletsIntoDailyGroups(allRepOutlets, numDailyGroups);
+          const dailyGroups = clusterOutletsIntoDailyGroups(repOutlets, numDailyGroups);
 
           const newSchedules: InsertSchedule[] = [];
           for (let dayIndex = 0; dayIndex < numDailyGroups && dayIndex < dailyGroups.length; dayIndex++) {
@@ -4561,7 +4574,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const targetDays: number[] = Array.isArray(days) && days.length > 0
             ? days
             : Array.from(new Set(repSchedules.map(s => s.dayOfWeek)));
-          const outletById = new Map(allOutlets.map(o => [o.id, o]));
 
           const target = repSchedules.filter(s => targetDays.includes(s.dayOfWeek));
           for (const schedule of target) {
