@@ -75,7 +75,7 @@ export function RepMap() {
   const [open, setOpen] = useState(false);
   const [viewMode, setViewMode] = useState<'schedule' | 'universe'>('schedule'); // Schedule view or Universe (all zones) view
   const [selectedDays, setSelectedDays] = useState<number[]>([1, 2, 3, 4, 5]); // Default to weekdays
-  const [selectedWeeks, setSelectedWeeks] = useState<number[]>([1]); // Default to week 1
+  const [selectedWeeks, setSelectedWeeks] = useState<number[]>([1, 2, 3, 4]); // Default to all weeks so VF1/VF2 outlets are visible
   const [selectedRoles, setSelectedRoles] = useState<string[]>(['rep']); // Default to Sales Rep, now multi-select
   const [selectedVfs, setSelectedVfs] = useState<number[]>([1, 2, 3, 4]); // VF filter
   const [colorBy, setColorBy] = useState<'day' | 'vf'>('day'); // Marker coloring mode
@@ -111,6 +111,14 @@ export function RepMap() {
   const { data: reps = [] } = useQuery<Rep[]>({ 
     queryKey: ["/api/reps"] 
   });
+
+  // Auto-select all reps the first time they load so the map isn't blank after upload+optimize.
+  useEffect(() => {
+    if (reps.length > 0 && selectedReps.length === 0) {
+      setSelectedReps(reps.map(r => r.id));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reps.length]);
 
   const { data: outlets = [] } = useQuery<Outlet[]>({ 
     queryKey: ["/api/outlets"] 
