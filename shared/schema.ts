@@ -9,7 +9,7 @@ export const outlets = pgTable("outlets", {
   address: text("address").notNull(),
   latitude: real("latitude").notNull(),
   longitude: real("longitude").notNull(),
-  visitFrequency: integer("visit_frequency").notNull(), // 1, 2, or 4 (VF1, VF2, VF4)
+  visitFrequency: integer("visit_frequency").notNull(), // 1, 2, 3, or 4 (VF1=monthly, VF2=biweekly, VF3=3 of 4 weeks, VF4=weekly)
   timePerVisit: integer("time_per_visit").notNull().default(30), // minutes per visit
   territory: text("territory"),
   repId: varchar("rep_id"),

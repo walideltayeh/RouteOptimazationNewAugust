@@ -1489,69 +1489,14 @@ function assignZonesToReps(clusters: GeographicCluster[], reps: Rep[], zonesPerR
 }
 
 function generateZoneBasedSchedules(rep: Rep, zones: GeographicCluster[], allClusters: GeographicCluster[]): InsertSchedule[] {
-  const schedules: InsertSchedule[] = [];
-  const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-  const workingDays = daysOfWeek.slice(0, rep.workingDaysPerWeek);
-  
   const allOutlets: Outlet[] = [];
   for (const zone of zones) {
     allOutlets.push(...zone.outlets);
   }
-  
-  if (allOutlets.length === 0) return schedules;
-  
-  const numDailyGroups = workingDays.length;
-  
-  const dailyGroups = clusterOutletsIntoDailyGroups(allOutlets, numDailyGroups);
-  
-  for (let dayIndex = 0; dayIndex < workingDays.length && dayIndex < dailyGroups.length; dayIndex++) {
-    const groupOutlets = dailyGroups[dayIndex];
-    if (groupOutlets.length === 0) continue;
-    
-    const vf4 = groupOutlets.filter(o => o.visitFrequency === 4);
-    const vf2 = groupOutlets.filter(o => o.visitFrequency === 2);
-    const vf1 = groupOutlets.filter(o => o.visitFrequency === 1 || !o.visitFrequency);
-    
-    const vf2GroupA = vf2.filter((_, i) => i % 2 === 0);
-    const vf2GroupB = vf2.filter((_, i) => i % 2 === 1);
-    const vf1GroupA = vf1.filter((_, i) => i % 4 === 0);
-    const vf1GroupB = vf1.filter((_, i) => i % 4 === 1);
-    const vf1GroupC = vf1.filter((_, i) => i % 4 === 2);
-    const vf1GroupD = vf1.filter((_, i) => i % 4 === 3);
-    
-    for (let week = 1; week <= 4; week++) {
-      const weekOutlets = [...vf4];
-      
-      if (week === 1 || week === 3) {
-        weekOutlets.push(...vf2GroupA);
-      } else {
-        weekOutlets.push(...vf2GroupB);
-      }
-      
-      if (week === 1) weekOutlets.push(...vf1GroupA);
-      else if (week === 2) weekOutlets.push(...vf1GroupB);
-      else if (week === 3) weekOutlets.push(...vf1GroupC);
-      else weekOutlets.push(...vf1GroupD);
-      
-      if (weekOutlets.length === 0) continue;
-      
-      const optimizedOutlets = optimizeRoute(weekOutlets);
-      const outletIds = optimizedOutlets.map(o => o.id);
-      const totalDistance = calculateTotalDistance(optimizedOutlets);
-      
-      schedules.push({
-        repId: rep.id,
-        week: week,
-        dayOfWeek: dayIndex + 1,
-        outletIds: outletIds,
-        routeOrder: outletIds,
-        totalDistance: totalDistance,
-        estimatedDuration: weekOutlets.length * 15
-      });
-    }
-  }
-  
-  return schedules;
+  if (allOutlets.length === 0) return [];
+  // Delegate to the anchor-aware scheduler. This handles VF1/VF2/VF3/VF4
+  // correctly with same-day-of-week guarantee and balanced weekly load.
+  return buildAnchorAwareSchedules(rep, allOutlets);
 }
 
 function clusterOutletsIntoDailyGroups(outlets: Outlet[], k: number): Outlet[][] {
@@ -2241,6 +2186,178 @@ function clusterOutletsIntoDailyGroups(outlets: Outlet[], k: number): Outlet[][]
       const bLng = b.reduce((s, o) => s + o.longitude, 0) / b.length;
       return aLng - bLng;
     });
+}
+
+// Anchor-first weekly schedule builder. Implements the visit-frequency-aware
+// rotation algorithm:
+//   STEP 1: Cluster VF3+VF4 "anchor" outlets into one geographic group per
+//           working day. These anchors define where the rep is each
+//           day-of-week (their high frequency makes them the stable backbone).
+//   STEP 2: Attach lower-VF outlets (VF1, VF2) to the day whose centroid is
+//           geographically closest, so every week's Monday route stays inside
+//           the Monday zone.
+//   STEP 3: Within each day, spatially sub-cluster VF1/VF2/VF3 into rotation
+//           buckets and assign each bucket to a week-pattern:
+//             VF4 → every week                                {1,2,3,4}
+//             VF3 → 4 buckets × 4 patterns (each skips one week)
+//                   {1,2,3} {1,2,4} {1,3,4} {2,3,4}
+//             VF2 → 2 buckets × 2 patterns                    {1,3} {2,4}
+//             VF1 → 4 buckets × 4 single-week patterns        {1} {2} {3} {4}
+//           The rotation guarantees every week gets roughly equal load.
+//   STEP 4: For every (week, day) cell, build the outlet set and optimize the
+//           route via the existing NN+2opt+Or-opt+3opt solver.
+//
+// Industry journey-plan rule: same outlet always same dayOfWeek across weeks.
+function buildAnchorAwareSchedules(rep: Rep, repOutlets: Outlet[]): InsertSchedule[] {
+  const numDays = rep.workingDaysPerWeek || 5;
+  if (repOutlets.length === 0) return [];
+
+  // STEP 1: Anchor clustering on VF3 + VF4 outlets only. Fall back to all
+  // outlets if anchors are too sparse to form meaningful daily zones.
+  const anchors = repOutlets.filter(o => (o.visitFrequency ?? 1) >= 3);
+  const useAnchorMode = anchors.length >= numDays * 3;
+  const seedOutlets = useAnchorMode ? anchors : repOutlets;
+
+  const dailyClusters: Outlet[][] = clusterOutletsIntoDailyGroups(seedOutlets, numDays)
+    .map(group => [...group]);
+  while (dailyClusters.length < numDays) dailyClusters.push([]);
+
+  // STEP 2: Attach lower-VF outlets to nearest daily centroid (anchor mode only).
+  if (useAnchorMode) {
+    const centroids = dailyClusters.map(group => {
+      if (group.length === 0) return { lat: 0, lng: 0, valid: false };
+      const lat = group.reduce((s, o) => s + o.latitude, 0) / group.length;
+      const lng = group.reduce((s, o) => s + o.longitude, 0) / group.length;
+      return { lat, lng, valid: true };
+    });
+    const lowerVF = repOutlets.filter(o => (o.visitFrequency ?? 1) < 3);
+    for (const outlet of lowerVF) {
+      let bestDay = -1;
+      let bestDist = Infinity;
+      for (let d = 0; d < numDays; d++) {
+        if (!centroids[d].valid) continue;
+        const dist = haversineDistance(
+          outlet.latitude, outlet.longitude,
+          centroids[d].lat, centroids[d].lng
+        );
+        if (dist < bestDist) { bestDist = dist; bestDay = d; }
+      }
+      // Fallback: if no valid centroid exists, drop into the smallest day
+      // so anchor-sparse days still get visited and no outlet is lost.
+      if (bestDay === -1) {
+        bestDay = 0;
+        for (let d = 1; d < numDays; d++) {
+          if (dailyClusters[d].length < dailyClusters[bestDay].length) bestDay = d;
+        }
+      }
+      dailyClusters[bestDay].push(outlet);
+    }
+  }
+
+  // STEP 3+4: Per-day VF rotation with spatial sub-clustering.
+  const VF3_PATTERNS: number[][] = [[1, 2, 3], [1, 2, 4], [1, 3, 4], [2, 3, 4]];
+  const VF2_PATTERNS: number[][] = [[1, 3], [2, 4]];
+  const VF1_PATTERNS: number[][] = [[1], [2], [3], [4]];
+
+  const subCluster = (outlets: Outlet[], k: number): Outlet[][] => {
+    const buckets: Outlet[][] = Array.from({ length: k }, () => []);
+    if (outlets.length === 0) return buckets;
+    if (outlets.length <= k) {
+      outlets.forEach((o, i) => buckets[i].push(o));
+      return buckets;
+    }
+    // Reuse the same anchor clusterer for spatial sub-grouping.
+    const groups = clusterOutletsIntoDailyGroups(outlets, k);
+    // Track placement so no outlet is silently dropped if the clusterer
+    // returns more than k groups or omits any.
+    const placed = new Set<string>();
+    groups.forEach((g, i) => {
+      if (i < k) {
+        buckets[i] = [...g];
+        for (const o of g) placed.add(o.id);
+      }
+    });
+    // Any outlets that ended up in extra groups (or were dropped) are
+    // pushed into the smallest bucket so coverage is preserved.
+    for (const o of outlets) {
+      if (placed.has(o.id)) continue;
+      let smallestIdx = 0;
+      for (let i = 1; i < k; i++) {
+        if (buckets[i].length < buckets[smallestIdx].length) smallestIdx = i;
+      }
+      buckets[smallestIdx].push(o);
+    }
+    return buckets;
+  };
+
+  const schedules: InsertSchedule[] = [];
+  for (let d = 0; d < numDays; d++) {
+    const dayOutlets = dailyClusters[d];
+    if (dayOutlets.length === 0) continue;
+
+    const vf4 = dayOutlets.filter(o => o.visitFrequency === 4);
+    const vf3 = dayOutlets.filter(o => o.visitFrequency === 3);
+    const vf2 = dayOutlets.filter(o => o.visitFrequency === 2);
+    const vf1 = dayOutlets.filter(o => (o.visitFrequency ?? 1) === 1);
+
+    const vf3Buckets = subCluster(vf3, 4);
+    const vf2Buckets = subCluster(vf2, 2);
+    const vf1Buckets = subCluster(vf1, 4);
+
+    for (let week = 1; week <= 4; week++) {
+      const weekOutlets: Outlet[] = [...vf4];
+      vf3Buckets.forEach((bucket, i) => {
+        if (VF3_PATTERNS[i].includes(week)) weekOutlets.push(...bucket);
+      });
+      vf2Buckets.forEach((bucket, i) => {
+        if (VF2_PATTERNS[i].includes(week)) weekOutlets.push(...bucket);
+      });
+      vf1Buckets.forEach((bucket, i) => {
+        if (VF1_PATTERNS[i].includes(week)) weekOutlets.push(...bucket);
+      });
+
+      if (weekOutlets.length === 0) continue;
+
+      const optimized = optimizeRoute(weekOutlets);
+      const optimizedIds = optimized.map(o => o.id);
+      const dist = calculateTotalDistance(optimized);
+
+      schedules.push({
+        repId: rep.id,
+        week,
+        dayOfWeek: d + 1,
+        outletIds: optimizedIds,
+        routeOrder: optimizedIds,
+        totalDistance: Math.round(dist * 100) / 100,
+        estimatedDuration: optimized.length * 15,
+      });
+    }
+  }
+
+  // End-to-end validation: each outlet should be visited exactly visitFrequency
+  // times, and always on the same dayOfWeek across weeks.
+  const visitCounts = new Map<string, number>();
+  const dayByOutlet = new Map<string, number>();
+  let consistencyOk = true;
+  for (const s of schedules) {
+    for (const id of (s.outletIds as string[])) {
+      visitCounts.set(id, (visitCounts.get(id) || 0) + 1);
+      const prevDay = dayByOutlet.get(id);
+      if (prevDay === undefined) dayByOutlet.set(id, s.dayOfWeek);
+      else if (prevDay !== s.dayOfWeek) consistencyOk = false;
+    }
+  }
+  let coverageOk = true;
+  for (const o of repOutlets) {
+    const expected = o.visitFrequency ?? 1;
+    const actual = visitCounts.get(o.id) || 0;
+    if (actual !== expected) { coverageOk = false; break; }
+  }
+  if (!coverageOk || !consistencyOk) {
+    console.warn(`[buildAnchorAwareSchedules] Validation issues for rep ${rep.name}: coverage=${coverageOk}, sameDayOfWeek=${consistencyOk}`);
+  }
+
+  return schedules;
 }
 
 // Helper function to generate weekly schedules for a route
@@ -4516,54 +4633,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
             continue;
           }
 
-          const numDailyGroups = rep.workingDaysPerWeek || 5;
-
-          // Cluster ALL of the rep's outlets into daily groups so reps stay in
-          // one geographic area per day. This is the key for tight grouping.
-          const dailyGroups = clusterOutletsIntoDailyGroups(repOutlets, numDailyGroups);
-
-          const newSchedules: InsertSchedule[] = [];
-          for (let dayIndex = 0; dayIndex < numDailyGroups && dayIndex < dailyGroups.length; dayIndex++) {
-            const dayOutlets = dailyGroups[dayIndex];
-            if (dayOutlets.length === 0) continue;
-
-            const dayVf4 = dayOutlets.filter(o => o.visitFrequency === 4);
-            const dayVf2 = dayOutlets.filter(o => o.visitFrequency === 2);
-            const dayVf1 = dayOutlets.filter(o => o.visitFrequency === 1 || !o.visitFrequency);
-
-            const vf2GroupA = dayVf2.filter((_, i) => i % 2 === 0);
-            const vf2GroupB = dayVf2.filter((_, i) => i % 2 === 1);
-            const vf1GroupA = dayVf1.filter((_, i) => i % 4 === 0);
-            const vf1GroupB = dayVf1.filter((_, i) => i % 4 === 1);
-            const vf1GroupC = dayVf1.filter((_, i) => i % 4 === 2);
-            const vf1GroupD = dayVf1.filter((_, i) => i % 4 === 3);
-
-            for (let week = 1; week <= 4; week++) {
-              const weekOutlets: Outlet[] = [...dayVf4];
-              if (week === 1 || week === 3) weekOutlets.push(...vf2GroupA);
-              else weekOutlets.push(...vf2GroupB);
-              if (week === 1) weekOutlets.push(...vf1GroupA);
-              else if (week === 2) weekOutlets.push(...vf1GroupB);
-              else if (week === 3) weekOutlets.push(...vf1GroupC);
-              else weekOutlets.push(...vf1GroupD);
-
-              if (weekOutlets.length === 0) continue;
-
-              const optimized = optimizeRoute(weekOutlets);
-              const optimizedIds = optimized.map(o => o.id);
-              const dist = calculateTotalDistance(optimized);
-
-              newSchedules.push({
-                repId,
-                week,
-                dayOfWeek: dayIndex + 1,
-                outletIds: optimizedIds,
-                routeOrder: optimizedIds,
-                totalDistance: Math.round(dist * 100) / 100,
-                estimatedDuration: optimized.length * 15,
-              });
-            }
-          }
+          // Anchor-aware rebuild: VF3+VF4 outlets define daily zones, lower-VF
+          // outlets attach to nearest day, then per-day rotation patterns
+          // distribute VF1/VF2/VF3 evenly across the 4 weeks.
+          const newSchedules = buildAnchorAwareSchedules(rep, repOutlets);
 
           await storage.createSchedules(newSchedules);
           totalRegrouped++;
@@ -4924,17 +4997,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       
       const { minVisitsPerDay = 25, maxVisitsPerDay = 27, workingDaysPerWeek = 5 } = req.body;
-      
+
       // Clear existing schedules
       await storage.clearSchedules();
-      
-      // Generate new schedules using the advanced scheduling algorithm
-      const schedules = reoptimizeSchedules(
-        outlets,
-        reps.map(r => ({ id: r.id, territory: r.territory })),
-        { minVisitsPerDay, maxVisitsPerDay, workingDaysPerWeek, weeksInMonth: 4 }
-      );
-      
+
+      // Generate new schedules using the anchor-aware VF1/VF2/VF3/VF4
+      // scheduler. Outlet→rep linkage uses the territory string here (this
+      // endpoint is the full bulk re-optimization).
+      const schedules: InsertSchedule[] = [];
+      for (const rep of reps) {
+        const repOutlets = outlets.filter(o => o.territory === rep.territory);
+        if (repOutlets.length === 0) continue;
+        const repSchedules = buildAnchorAwareSchedules(
+          { ...rep, workingDaysPerWeek: rep.workingDaysPerWeek || workingDaysPerWeek } as Rep,
+          repOutlets
+        );
+        schedules.push(...repSchedules);
+      }
+
       // Save new schedules
       await storage.createSchedules(schedules);
       
@@ -5005,24 +5085,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { territory } = req.params;
       const { repId, minVisitsPerDay = 25, maxVisitsPerDay = 27, workingDaysPerWeek = 5 } = req.body;
       
-      const outlets = await storage.getOutletsByTerritory(territory);
-      if (outlets.length === 0) {
+      const territoryOutlets = await storage.getOutletsByTerritory(territory);
+      if (territoryOutlets.length === 0) {
         return res.status(404).json({ message: "No outlets found in this territory" });
       }
-      
+
       // Clear existing schedules for this rep
       if (repId) {
         await storage.deleteSchedulesByRepId(repId);
       }
-      
-      // Generate new schedules
-      const schedules = generateAdvancedSchedule(
-        outlets,
-        repId,
-        territory,
-        { minVisitsPerDay, maxVisitsPerDay, workingDaysPerWeek, weeksInMonth: 4 }
+
+      // If a specific rep was provided, only schedule the outlets that
+      // actually belong to that rep (territory may be shared across reps).
+      const outlets = repId
+        ? territoryOutlets.filter(o => o.repId === repId)
+        : territoryOutlets;
+
+      if (outlets.length === 0) {
+        return res.status(404).json({ message: "No outlets assigned to this rep in this territory" });
+      }
+
+      // Generate new schedules using the anchor-aware VF-aware scheduler
+      const repForSchedule = repId
+        ? (await storage.getRep(repId))
+        : null;
+      const schedules = buildAnchorAwareSchedules(
+        (repForSchedule || { id: repId || territory, workingDaysPerWeek }) as Rep,
+        outlets
       );
-      
+
       // Save schedules
       await storage.createSchedules(schedules);
       
@@ -5042,6 +5133,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         vfBreakdown: {
           vf1: outlets.filter(o => o.visitFrequency === 1).length,
           vf2: outlets.filter(o => o.visitFrequency === 2).length,
+          vf3: outlets.filter(o => o.visitFrequency === 3).length,
           vf4: outlets.filter(o => o.visitFrequency === 4).length
         },
         validation: {
