@@ -51,6 +51,23 @@ const ZONE_COLORS = [
   '#E74C3C', '#2ECC71', '#3498DB', '#9B59B6', '#F39C12'
 ];
 
+// Visit Frequency colors. Cool→warm ramp matches frequency intensity:
+// VF1 monthly (low) → slate, VF2 biweekly → blue, VF3 3-of-4 → amber,
+// VF4 weekly (high) → brand dark red.
+const VF_COLORS: Record<number, string> = {
+  1: '#94A3B8',
+  2: '#3B82F6',
+  3: '#F59E0B',
+  4: '#8B0000',
+};
+const VF_LABELS: Record<number, string> = {
+  1: 'VF1 · Monthly',
+  2: 'VF2 · Biweekly',
+  3: 'VF3 · 3 of 4 weeks',
+  4: 'VF4 · Weekly',
+};
+const vfColor = (vf: number | null | undefined) => VF_COLORS[vf ?? 1] || VF_COLORS[1];
+
 export function RepMap() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
@@ -60,6 +77,8 @@ export function RepMap() {
   const [selectedDays, setSelectedDays] = useState<number[]>([1, 2, 3, 4, 5]); // Default to weekdays
   const [selectedWeeks, setSelectedWeeks] = useState<number[]>([1]); // Default to week 1
   const [selectedRoles, setSelectedRoles] = useState<string[]>(['rep']); // Default to Sales Rep, now multi-select
+  const [selectedVfs, setSelectedVfs] = useState<number[]>([1, 2, 3, 4]); // VF filter
+  const [colorBy, setColorBy] = useState<'day' | 'vf'>('day'); // Marker coloring mode
   const [showAllLinkedRoles, setShowAllLinkedRoles] = useState(false); // Show rep + all linked role routes
   const [isMapLoaded, setIsMapLoaded] = useState(false);
   const [isOptimizing, setIsOptimizing] = useState(false);
@@ -274,7 +293,11 @@ export function RepMap() {
       
       const scheduleOutlets = outletIdArray
         .map((id: string) => outletMap.get(id))
-        .filter((o: Outlet | undefined): o is Outlet => o !== undefined);
+        .filter((o: Outlet | undefined): o is Outlet => o !== undefined)
+        .filter((o: Outlet) => selectedVfs.includes(o.visitFrequency ?? 1));
+
+      // If the VF filter eliminated every outlet on this schedule, skip it.
+      if (scheduleOutlets.length === 0) return;
 
       if (!result[rep.id]) {
         result[rep.id] = {
@@ -319,7 +342,10 @@ export function RepMap() {
         
         const scheduleOutlets = outletIdArray
           .map((id: string) => outletMap.get(id))
-          .filter((o: Outlet | undefined): o is Outlet => o !== undefined);
+          .filter((o: Outlet | undefined): o is Outlet => o !== undefined)
+          .filter((o: Outlet) => selectedVfs.includes(o.visitFrequency ?? 1));
+
+        if (scheduleOutlets.length === 0) return;
 
         if (!result[rep.id]) {
           result[rep.id] = {
@@ -356,7 +382,7 @@ export function RepMap() {
     }
 
     return result;
-  }, [filteredSchedules, reps, outlets, selectedRoles, availableRoles, roleSchedules, schedules, schedulesLoading, showAllLinkedRoles, linkedRoleSchedules]);
+  }, [filteredSchedules, reps, outlets, selectedRoles, availableRoles, roleSchedules, schedules, schedulesLoading, showAllLinkedRoles, linkedRoleSchedules, selectedVfs]);
 
   const routeStats = useMemo(() => {
     let totalOutlets = 0;
@@ -395,8 +421,10 @@ export function RepMap() {
       }
     });
     
-    // Get outlet objects and group by territory
-    const repOutlets = outlets.filter(o => repOutletIds.has(o.id));
+    // Get outlet objects and group by territory (filtered by VF)
+    const repOutlets = outlets
+      .filter(o => repOutletIds.has(o.id))
+      .filter(o => selectedVfs.includes(o.visitFrequency ?? 1));
     const zoneGroups: Record<string, { outlets: Outlet[]; color: string }> = {};
     const zoneList: string[] = [];
     
@@ -413,7 +441,7 @@ export function RepMap() {
     });
     
     return { zoneGroups, zoneList, totalOutlets: repOutlets.length };
-  }, [viewMode, selectedReps, schedules, outlets]);
+  }, [viewMode, selectedReps, schedules, outlets, selectedVfs]);
 
   // Get all unique zones from outlets
   const allZones = useMemo(() => {
@@ -701,7 +729,15 @@ export function RepMap() {
             source: sourceId,
             paint: {
               'circle-radius': 10,
-              'circle-color': zoneData.color,
+              'circle-color': colorBy === 'vf'
+                ? ['match', ['get', 'vf'],
+                    1, VF_COLORS[1],
+                    2, VF_COLORS[2],
+                    3, VF_COLORS[3],
+                    4, VF_COLORS[4],
+                    VF_COLORS[1]
+                  ] as any
+                : zoneData.color,
               'circle-stroke-width': 2,
               'circle-stroke-color': '#ffffff'
             }
@@ -822,6 +858,7 @@ export function RepMap() {
               dayName: daysOfWeek[dayData.dayOfWeek - 1] || `Day ${dayData.dayOfWeek}`,
               week: dayData.week,
               color: dayData.color,
+              vf: outlet.visitFrequency ?? 1,
               order: idx + 1,
               orderStr: (idx + 1).toString(),
               lat: outlet.latitude,
@@ -847,7 +884,15 @@ export function RepMap() {
               source: pointSourceId,
               paint: {
                 'circle-radius': 12,
-                'circle-color': dayData.color,
+                'circle-color': colorBy === 'vf'
+                  ? ['match', ['get', 'vf'],
+                      1, VF_COLORS[1],
+                      2, VF_COLORS[2],
+                      3, VF_COLORS[3],
+                      4, VF_COLORS[4],
+                      VF_COLORS[1]
+                    ] as any
+                  : dayData.color,
                 'circle-stroke-width': 2,
                 'circle-stroke-color': '#ffffff'
               }
@@ -884,6 +929,7 @@ export function RepMap() {
                     <strong>${props?.name}</strong><br/>
                     ${props?.address}<br/>
                     <span style="color: ${props?.color}">${props?.repName} - ${props?.dayName} (Week ${props?.week})</span><br/>
+                    <span style="color: ${vfColor(props?.vf)}; font-weight: 600;">${VF_LABELS[props?.vf] || `VF${props?.vf}`}</span><br/>
                     ${props?.territory ? `<span>Zone: ${props?.territory}</span><br/>` : ''}
                     <button id="reassign-sched-btn-${props?.id}" class="reassign-outlet-btn" style="margin-top: 8px; padding: 4px 12px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">
                       Reassign
@@ -937,7 +983,7 @@ export function RepMap() {
             el.className = 'rep-marker';
             el.style.width = '30px';
             el.style.height = '30px';
-            el.style.backgroundColor = dayData.color;
+            el.style.backgroundColor = colorBy === 'vf' ? vfColor(outlet.visitFrequency) : dayData.color;
             el.style.borderRadius = '50%';
             el.style.border = '2px solid white';
             el.style.boxShadow = '0 2px 4px rgba(0,0,0,0.3)';
@@ -955,6 +1001,7 @@ export function RepMap() {
                   <strong>${outlet.name}</strong><br/>
                   ${outlet.address}<br/>
                   <span style="color: ${dayData.color}">${repData.rep.name} - ${daysOfWeek[dayData.dayOfWeek - 1] || `Day ${dayData.dayOfWeek}`} (Week ${dayData.week})</span><br/>
+                  <span style="color: ${vfColor(outlet.visitFrequency)}; font-weight: 600;">${VF_LABELS[outlet.visitFrequency ?? 1] || `VF${outlet.visitFrequency}`}</span><br/>
                   ${outlet.territory ? `<span>Zone: ${outlet.territory}</span><br/>` : ''}
                   <button id="reassign-dom-btn-${outlet.id}" style="margin-top: 8px; padding: 4px 12px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">
                     Reassign
@@ -1055,7 +1102,7 @@ export function RepMap() {
         map.current.fitBounds(bounds, { padding: 50 });
       }
     }
-  }, [repDayOutlets, isMapLoaded, reps, selectedDays, viewMode, universeViewData]);
+  }, [repDayOutlets, isMapLoaded, reps, selectedDays, viewMode, universeViewData, colorBy]);
 
   const toggleRep = (repId: string) => {
     setSelectedReps(prev => 
@@ -1459,6 +1506,80 @@ export function RepMap() {
               </Button>
             </div>
           </div>
+
+          {/* Visit Frequency Filter */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-medium">Visit Frequency</label>
+              <div className="flex gap-1">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setSelectedVfs([1, 2, 3, 4])}
+                  className="h-6 px-2 text-xs"
+                  data-testid="button-vf-all"
+                >
+                  All
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setSelectedVfs([])}
+                  className="h-6 px-2 text-xs"
+                  data-testid="button-vf-none"
+                >
+                  None
+                </Button>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {[1, 2, 3, 4].map((vf) => (
+                <label key={vf} className="flex items-center space-x-2" data-testid={`checkbox-vf-${vf}`}>
+                  <input
+                    type="checkbox"
+                    checked={selectedVfs.includes(vf)}
+                    onChange={(e) => {
+                      if (e.target.checked) setSelectedVfs([...selectedVfs, vf].sort());
+                      else setSelectedVfs(selectedVfs.filter(x => x !== vf));
+                    }}
+                    className="rounded border-gray-300"
+                  />
+                  <div className="flex items-center gap-1.5">
+                    <div
+                      className="w-3 h-3 rounded-full"
+                      style={{ backgroundColor: VF_COLORS[vf] }}
+                    />
+                    <span className="text-sm">{VF_LABELS[vf]}</span>
+                  </div>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {/* Color By toggle */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Color outlets by</label>
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                variant={colorBy === 'day' ? 'default' : 'outline'}
+                onClick={() => setColorBy('day')}
+                className="flex-1"
+                data-testid="button-color-by-day"
+              >
+                Day
+              </Button>
+              <Button
+                size="sm"
+                variant={colorBy === 'vf' ? 'default' : 'outline'}
+                onClick={() => setColorBy('vf')}
+                className="flex-1"
+                data-testid="button-color-by-vf"
+              >
+                Visit Frequency
+              </Button>
+            </div>
+          </div>
         </div>
       </CardHeader>
       <CardContent className="flex-1 p-4">
@@ -1578,6 +1699,24 @@ export function RepMap() {
                   <span className="text-blue-700 dark:text-blue-300">min est.</span>
                 </div>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* VF Color Legend (shown when coloring by VF) */}
+        {colorBy === 'vf' && selectedReps.length > 0 && (
+          <div className="mt-4 p-3 border rounded-lg bg-gray-50 dark:bg-gray-900/30">
+            <h4 className="font-semibold mb-2 text-sm">Visit Frequency Legend</h4>
+            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+              {[1, 2, 3, 4].map((vf) => (
+                <div key={vf} className="flex items-center gap-1.5">
+                  <div
+                    className="w-3.5 h-3.5 rounded-full border border-white shadow-sm"
+                    style={{ backgroundColor: VF_COLORS[vf] }}
+                  />
+                  <span className="text-xs">{VF_LABELS[vf]}</span>
+                </div>
+              ))}
             </div>
           </div>
         )}
