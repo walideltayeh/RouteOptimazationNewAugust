@@ -1333,6 +1333,31 @@ export function RepMap() {
             <PopoverContent className="w-[300px] p-0">
               <Command>
                 <CommandInput placeholder="Search reps..." />
+                <div className="flex items-center justify-between gap-2 px-2 py-1.5 border-b">
+                  <span className="text-xs text-muted-foreground">
+                    {selectedReps.length} of {reps.length} selected
+                  </span>
+                  <div className="flex gap-1">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 px-2 text-xs"
+                      onClick={() => setSelectedReps(reps.map(r => r.id))}
+                      data-testid="button-reps-select-all"
+                    >
+                      Select all
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 px-2 text-xs"
+                      onClick={() => setSelectedReps([])}
+                      data-testid="button-reps-select-none"
+                    >
+                      Select none
+                    </Button>
+                  </div>
+                </div>
                 <CommandEmpty>No rep found.</CommandEmpty>
                 <CommandGroup className="max-h-[300px] overflow-y-auto">
                   {reps.map((rep) => {
