@@ -4,15 +4,7 @@ hidden = [".config", ".git", "generated-icon.png", "node_modules", "dist"]
 
 [nix]
 channel = "stable-24_05"
-packages = [
-  "glibcLocales",
-  "python311",
-  "python311Packages.hdbscan",
-  "python311Packages.numpy",
-  "python311Packages.ortools",
-  "python311Packages.pip",
-  "python311Packages.scikit-learn",
-]
+packages = ["glibcLocales", "python311", "python311Packages.hdbscan", "python311Packages.numpy", "python311Packages.ortools", "python311Packages.pip", "python311Packages.scikit-learn", "tmux"]
 
 [deployment]
 deploymentTarget = "autoscale"
