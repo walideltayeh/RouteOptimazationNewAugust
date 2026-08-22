@@ -293,7 +293,8 @@ export class MemStorage implements IStorage {
       repId: insertOutlet.repId || null,
       territory: insertOutlet.territory || null,
       cluster: insertOutlet.cluster || null,
-      timePerVisit: insertOutlet.timePerVisit ?? 30
+      timePerVisit: insertOutlet.timePerVisit ?? 30,
+      value: insertOutlet.value ?? null
     };
     this.outlets.set(id, outlet);
     return outlet;

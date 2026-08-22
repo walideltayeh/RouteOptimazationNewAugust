@@ -1524,8 +1524,274 @@ function assignZonesToReps(clusters: GeographicCluster[], reps: Rep[], zonesPerR
     
     assignments[repIndex] = repZones;
   }
-  
+
   return assignments;
+}
+
+function zoneMonthlyVisits(zone: GeographicCluster): number {
+  return zone.outlets.reduce((s, o) => s + (o.visitFrequency ?? 1), 0);
+}
+
+function territoryCentroidOf(zones: GeographicCluster[]): { lat: number; lng: number } {
+  let lat = 0, lng = 0, n = 0;
+  for (const z of zones) {
+    lat += z.centroid.lat * z.outlets.length;
+    lng += z.centroid.lng * z.outlets.length;
+    n += z.outlets.length;
+  }
+  return n > 0 ? { lat: lat / n, lng: lng / n } : { lat: 0, lng: 0 };
+}
+
+// Balanced, geography-aware zone-to-rep assignment. The classic districting
+// objectives are balance, compactness, and contiguity; the old chaining
+// approach (assignZonesToReps above) only optimized compactness, so reps
+// seeded late inherited whatever zones were left - producing 3x workload
+// spreads. This replacement:
+//   1. Seeds one zone per rep by farthest-point sampling (territories start
+//      spread across the map instead of chained end-to-end).
+//   2. Grows territories by always letting the currently least-loaded rep
+//      claim the unassigned zone nearest its territory centroid - balance
+//      and compactness advance together.
+//   3. Refines with bounded boundary-zone moves from over- to under-loaded
+//      reps, accepting a move only when it is geographically local (the zone
+//      must sit within max(15km, 2x its distance to its current territory) of
+//      the receiving territory). Imbalance between genuinely disconnected
+//      regions is deliberately left in place rather than paid for with long
+//      drives - the residual is reported, not hidden.
+// Workload = monthly visits (sum of visit frequencies), per user requirement.
+function assignZonesToRepsBalanced(
+  clusters: GeographicCluster[],
+  reps: Rep[],
+  tolerance: number = 0.10
+): GeographicCluster[][] {
+  const repCount = reps.length;
+  const assignments: GeographicCluster[][] = reps.map(() => []);
+  if (clusters.length === 0 || repCount === 0) return assignments;
+
+  const dist = (a: { lat: number; lng: number }, b: { lat: number; lng: number }) =>
+    calculateHaversineDistance(a.lat, a.lng, b.lat, b.lng);
+
+  // --- 1. Farthest-point seeding ---
+  const seedIdxs: number[] = [];
+  let heaviest = 0;
+  for (let i = 1; i < clusters.length; i++) {
+    if (zoneMonthlyVisits(clusters[i]) > zoneMonthlyVisits(clusters[heaviest])) heaviest = i;
+  }
+  seedIdxs.push(heaviest);
+  while (seedIdxs.length < Math.min(repCount, clusters.length)) {
+    let bestIdx = -1, bestScore = -1;
+    for (let i = 0; i < clusters.length; i++) {
+      if (seedIdxs.includes(i)) continue;
+      const minD = Math.min(...seedIdxs.map(s => dist(clusters[i].centroid, clusters[s].centroid)));
+      if (minD > bestScore) { bestScore = minD; bestIdx = i; }
+    }
+    seedIdxs.push(bestIdx);
+  }
+
+  const loads = new Array(repCount).fill(0);
+  const assigned = new Array(clusters.length).fill(false);
+  const addZone = (repIdx: number, zoneIdx: number) => {
+    assignments[repIdx].push(clusters[zoneIdx]);
+    loads[repIdx] += zoneMonthlyVisits(clusters[zoneIdx]);
+    assigned[zoneIdx] = true;
+  };
+  seedIdxs.forEach((zi, ri) => addZone(ri, zi));
+
+  // --- 2. Balance-driven growth ---
+  let remaining = clusters.length - seedIdxs.length;
+  while (remaining > 0) {
+    let repIdx = 0;
+    for (let r = 1; r < repCount; r++) {
+      if (loads[r] < loads[repIdx]) repIdx = r;
+    }
+    const c = territoryCentroidOf(assignments[repIdx]);
+    let bestZone = -1, bestD = Infinity;
+    for (let i = 0; i < clusters.length; i++) {
+      if (assigned[i]) continue;
+      const d = dist(clusters[i].centroid, c);
+      if (d < bestD) { bestD = d; bestZone = i; }
+    }
+    if (bestZone < 0) break;
+    addZone(repIdx, bestZone);
+    remaining--;
+  }
+
+  // --- 3. Bounded boundary-move refinement ---
+  const target = loads.reduce((a, b) => a + b, 0) / repCount;
+  const hi = target * (1 + tolerance);
+  const lo = target * (1 - tolerance);
+  for (let iter = 0; iter < 500; iter++) {
+    const over = reps.map((_, r) => r).filter(r => loads[r] > hi).sort((a, b) => loads[b] - loads[a]);
+    const under = reps.map((_, r) => r).filter(r => loads[r] < lo).sort((a, b) => loads[a] - loads[b]);
+    if (over.length === 0 || under.length === 0) break;
+
+    let moved = false;
+    for (const o of over) {
+      if (moved) break;
+      const oCentroid = territoryCentroidOf(assignments[o]);
+      for (const u of under) {
+        const uCentroid = territoryCentroidOf(assignments[u]);
+        let bestZi = -1, bestImprove = 0, bestDU = Infinity;
+        for (let zi = 0; zi < assignments[o].length; zi++) {
+          if (assignments[o].length <= 1) break;
+          const z = assignments[o][zi];
+          const w = zoneMonthlyVisits(z);
+          const dU = dist(z.centroid, uCentroid);
+          const dO = dist(z.centroid, oCentroid);
+          // Locality guard: only boundary zones may migrate.
+          if (dU > Math.max(15, 2 * dO)) continue;
+          const oldDev = Math.abs(loads[o] - target) + Math.abs(loads[u] - target);
+          const newDev = Math.abs(loads[o] - w - target) + Math.abs(loads[u] + w - target);
+          const improve = oldDev - newDev;
+          if (improve > bestImprove || (improve === bestImprove && improve > 0 && dU < bestDU)) {
+            bestImprove = improve; bestZi = zi; bestDU = dU;
+          }
+        }
+        if (bestZi >= 0) {
+          const [z] = assignments[o].splice(bestZi, 1);
+          assignments[u].push(z);
+          const w = zoneMonthlyVisits(z);
+          loads[o] -= w;
+          loads[u] += w;
+          moved = true;
+          break;
+        }
+      }
+    }
+    if (!moved) break; // no geographically acceptable move left
+  }
+
+  // Order each rep's zones by nearest-neighbor chaining so that when the
+  // day-builder merges consecutive zones (zones > working days) the merged
+  // pairs are geographically adjacent.
+  for (let r = 0; r < repCount; r++) {
+    const zones = assignments[r];
+    if (zones.length <= 2) continue;
+    const chained: GeographicCluster[] = [zones[0]];
+    const used = new Set([0]);
+    while (chained.length < zones.length) {
+      const last = chained[chained.length - 1];
+      let bestI = -1, bestD = Infinity;
+      for (let i = 0; i < zones.length; i++) {
+        if (used.has(i)) continue;
+        const d = dist(last.centroid, zones[i].centroid);
+        if (d < bestD) { bestD = d; bestI = i; }
+      }
+      chained.push(zones[bestI]);
+      used.add(bestI);
+    }
+    assignments[r] = chained;
+  }
+
+  return assignments;
+}
+
+type CoverageWeightMode = 'value' | 'isolation' | 'vf';
+
+interface CoverageSuggestion {
+  territory: string;
+  outletCount: number;
+  monthlyVisits: number;
+  isolationKm: number;
+  radiusKm: number;
+  costPerVisitKm: number;
+  totalValue: number | null;
+  outletIds: string[];
+  sampleOutlets: string[];
+  reason: string;
+}
+
+// Coverage-worthiness analysis: flags zones whose drive economics don't
+// justify direct rep coverage, as candidates the USER may choose to remove
+// (indirect coverage via distributor/wholesale/telesales). Never removes
+// anything by itself - it returns evidence-backed suggestions only.
+//   - weightMode 'isolation': flags zones purely on drive cost per visit
+//     (remote, sparse pockets), needs no extra data.
+//   - weightMode 'vf': same economics, but visit frequencies weight the
+//     visits, so a remote pocket of weekly outlets is harder to flag than a
+//     remote pocket of monthly ones.
+//   - weightMode 'value': combines drive cost with the commercial value
+//     column (VC/volume/sales) when the uploaded file provides one; falls
+//     back to isolation with a note when it doesn't.
+function analyzeCoverageWorthiness(
+  clusters: GeographicCluster[],
+  weightMode: CoverageWeightMode
+): { suggestions: CoverageSuggestion[]; weightModeUsed: string } {
+  if (clusters.length < 3) return { suggestions: [], weightModeUsed: weightMode };
+
+  const hasValueData = clusters.some(z => z.outlets.some(o => o.value != null));
+  let effectiveMode: CoverageWeightMode = weightMode;
+  let weightModeUsed: string = weightMode;
+  if (weightMode === 'value' && !hasValueData) {
+    effectiveMode = 'isolation';
+    weightModeUsed = 'isolation (no value/VC column found in uploaded file)';
+  }
+
+  const metrics = clusters.map((z, i) => {
+    const monthlyVisits = Math.max(1, zoneMonthlyVisits(z));
+    const radiusKm = calculateClusterRadius(z);
+    let isolationKm = Infinity;
+    for (let j = 0; j < clusters.length; j++) {
+      if (j === i) continue;
+      const d = calculateHaversineDistance(
+        z.centroid.lat, z.centroid.lng,
+        clusters[j].centroid.lat, clusters[j].centroid.lng
+      );
+      if (d < isolationKm) isolationKm = d;
+    }
+    // Out-and-back to the pocket plus local running around, amortized per visit.
+    const driveCostKm = 2 * isolationKm + 2 * radiusKm;
+    const costPerVisitKm = driveCostKm / monthlyVisits;
+    const totalValue = hasValueData
+      ? z.outlets.reduce((s, o) => s + (o.value ?? 0), 0)
+      : null;
+    return { zone: z, idx: i, monthlyVisits, radiusKm, isolationKm, costPerVisitKm, totalValue };
+  });
+
+  const median = (arr: number[]) => {
+    const s = [...arr].sort((a, b) => a - b);
+    return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
+  };
+  const medCPV = Math.max(0.1, median(metrics.map(m => m.costPerVisitKm)));
+
+  const suggestions: CoverageSuggestion[] = [];
+  for (const m of metrics) {
+    let flagged = false;
+    let reason = '';
+    if (effectiveMode === 'value') {
+      const valuePerKm = (m.totalValue ?? 0) / Math.max(0.1, 2 * m.isolationKm + 2 * m.radiusKm);
+      const medVPK = Math.max(0.001, median(metrics.map(x =>
+        (x.totalValue ?? 0) / Math.max(0.1, 2 * x.isolationKm + 2 * x.radiusKm))));
+      if (valuePerKm < medVPK / 3 && m.costPerVisitKm > medCPV * 2) {
+        flagged = true;
+        reason = `Low commercial value for the drive: ${(m.totalValue ?? 0).toFixed(0)} value over ~${(2 * m.isolationKm + 2 * m.radiusKm).toFixed(0)}km of driving (value/km is under 1/3 of the median), and cost per visit is ${m.costPerVisitKm.toFixed(1)}km vs ${medCPV.toFixed(1)}km median.`;
+      }
+    } else {
+      // 'isolation' and 'vf' share the drive-economics rule; under 'vf' the
+      // monthlyVisits denominator is already VF-weighted.
+      if (m.costPerVisitKm > Math.max(3 * medCPV, 2)) {
+        flagged = true;
+        reason = `Isolated pocket: nearest other zone is ${m.isolationKm.toFixed(1)}km away, costing ~${m.costPerVisitKm.toFixed(1)}km of driving per visit vs a ${medCPV.toFixed(1)}km median.`;
+      }
+    }
+    if (flagged) {
+      suggestions.push({
+        territory: `Zone ${m.idx + 1}`,
+        outletCount: m.zone.outlets.length,
+        monthlyVisits: m.monthlyVisits,
+        isolationKm: Math.round(m.isolationKm * 10) / 10,
+        radiusKm: Math.round(m.radiusKm * 10) / 10,
+        costPerVisitKm: Math.round(m.costPerVisitKm * 10) / 10,
+        totalValue: m.totalValue,
+        outletIds: m.zone.outlets.map(o => o.id),
+        sampleOutlets: m.zone.outlets.slice(0, 3).map(o => o.name),
+        reason
+      });
+    }
+  }
+
+  suggestions.sort((a, b) => b.costPerVisitKm - a.costPerVisitKm);
+  return { suggestions: suggestions.slice(0, 15), weightModeUsed };
 }
 
 function generateZoneBasedSchedules(rep: Rep, zones: GeographicCluster[], allClusters: GeographicCluster[]): InsertSchedule[] {
@@ -2313,19 +2579,29 @@ function buildDailyClustersFromZones(zoneGroups: Outlet[][], numDays: number): O
   }
 
   if (zones.length > numDays) {
-    // More zones than day slots: merge consecutive zones. Zones arrive
-    // ordered by nearest-neighbor chaining (assignZonesToReps), so
-    // consecutive zones are already geographically close to each other.
-    const merged: Outlet[][] = [];
-    let idx = 0;
-    for (let d = 0; d < numDays; d++) {
-      const targetIdx = Math.round(((d + 1) * zones.length) / numDays);
-      const group: Outlet[] = [];
-      while (idx < targetIdx) { group.push(...zones[idx]); idx++; }
-      merged.push(group);
+    // More zones than day slots: agglomerative merging - repeatedly merge
+    // the two geographically closest groups until numDays remain. Unlike
+    // quota-slicing along the chain, this never forces a distant zone into a
+    // neighbor's day just to satisfy counts: an isolated zone simply stays
+    // its own (smaller) day, keeping every day-route tight.
+    const groups: Outlet[][] = zones;
+    const centroidOf = (g: Outlet[]) => ({
+      lat: g.reduce((s, o) => s + o.latitude, 0) / g.length,
+      lng: g.reduce((s, o) => s + o.longitude, 0) / g.length,
+    });
+    while (groups.length > numDays) {
+      const cs = groups.map(centroidOf);
+      let bi = 0, bj = 1, bestD = Infinity;
+      for (let i = 0; i < groups.length; i++) {
+        for (let j = i + 1; j < groups.length; j++) {
+          const d = calculateHaversineDistance(cs[i].lat, cs[i].lng, cs[j].lat, cs[j].lng);
+          if (d < bestD) { bestD = d; bi = i; bj = j; }
+        }
+      }
+      groups[bi] = [...groups[bi], ...groups[bj]];
+      groups.splice(bj, 1);
     }
-    while (idx < zones.length) { merged[merged.length - 1].push(...zones[idx]); idx++; }
-    return merged;
+    return groups;
   }
 
   // Fewer zones than day slots: split the largest zone(s) geographically so
@@ -3425,9 +3701,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
                     row.address || row.Address || "",
             latitude: parsedLat,
             longitude: parsedLng,
-            visitFrequency: parseInt(normalizedRow['vf'] || normalizedRow['visitfrequency'] || 
+            visitFrequency: parseInt(normalizedRow['vf'] || normalizedRow['visitfrequency'] ||
                                     row.vf || row.VF || row.visit_frequency || row["Visit Frequency"] || "2"),
             timePerVisit: isNaN(timePerVisit) ? 30 : Math.max(5, Math.min(120, timePerVisit)),
+            value: (() => {
+              // Commercial weight of the outlet (VC / volume class / sales value)
+              // used by weightMode 'value' in coverage-worthiness analysis.
+              const raw = normalizedRow['vc'] || normalizedRow['value'] || normalizedRow['volume'] ||
+                          normalizedRow['volumeclass'] || normalizedRow['sales'] || normalizedRow['salesvalue'];
+              const parsedValue = parseFloat(raw);
+              return isNaN(parsedValue) ? null : parsedValue;
+            })(),
             territory: normalizedRow['district'] || normalizedRow['territory'] || normalizedRow['zone'] || normalizedRow['region'] ||
                       row.District || row.territory || row.Territory || row.zone || row.Zone || null,
             repId: null,
@@ -4286,17 +4570,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
     
     try {
       await emitProgress(2, 'Starting', 'Loading outlets from database...');
-      const outlets = await storage.getOutlets();
+      const allStoredOutlets = await storage.getOutlets();
+
+      // Outlets the user chose to exclude after reviewing coverage
+      // suggestions (indirect-coverage candidates). They keep existing but
+      // are left out of territories and schedules for this run.
+      const excludedOutletIds: string[] = Array.isArray(req.body.excludedOutletIds)
+        ? req.body.excludedOutletIds.filter((x: unknown) => typeof x === 'string')
+        : [];
+      const excludedSet = new Set(excludedOutletIds);
+      const outlets = allStoredOutlets.filter(o => !excludedSet.has(o.id));
+      for (const o of allStoredOutlets) {
+        if (excludedSet.has(o.id)) {
+          await storage.updateOutlet(o.id, { territory: 'Excluded', cluster: null, repId: null });
+        }
+      }
+
       if (outlets.length === 0) {
         if (progressId) progressManager.error(progressId, 'No outlets available');
         return res.status(400).json({ message: "No outlets available for optimization" });
       }
-      
+
       await emitProgress(5, 'Analyzing', `Processing ${outlets.length} outlets...`);
 
       // Calculate total weekly visits required based on visit frequency
       const totalWeeklyVisits = outlets.reduce((sum, outlet) => sum + outlet.visitFrequency, 0);
-      
+
       // Set default values for rep constraints (use body params if provided)
       const workingDaysPerWeek = req.body.workingDaysPerWeek || 5; // Monday to Friday
       const calculationMode = req.body.calculationMode || 'manual'; // 'manual' or 'time-based'
@@ -4450,7 +4749,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       
       // Assign zones to reps based on geographic proximity
-      const zoneAssignments = assignZonesToReps(clusters, allReps, zonesPerRep);
+      // Balanced assignment: equalize monthly-visit workload across reps
+      // (within the tolerance band) while keeping territories compact.
+      const balanceTolerance = typeof req.body.balanceTolerancePct === 'number'
+        ? Math.min(0.5, Math.max(0.01, req.body.balanceTolerancePct / 100))
+        : 0.10;
+      const zoneAssignments = assignZonesToRepsBalanced(clusters, allReps, balanceTolerance);
       
       await emitProgress(70, 'Scheduling', `Generating schedules for ${allReps.length} reps...`);
       
@@ -4548,21 +4852,56 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const updatedOutlets = await storage.getOutlets();
       const updatedReps = await storage.getReps();
 
+      // Territory balance report: how even the monthly-visit workload came
+      // out per rep, against the ±tolerance band the user asked for.
+      const balanceTarget = zoneAssignments.reduce(
+        (s, zones) => s + zones.reduce((zs, z) => zs + zoneMonthlyVisits(z), 0), 0
+      ) / Math.max(1, allReps.length);
+      const perRepBalance = allReps.map((rep, i) => {
+        const monthlyVisits = (zoneAssignments[i] || []).reduce((s, z) => s + zoneMonthlyVisits(z), 0);
+        return {
+          name: rep.name,
+          code: rep.code,
+          monthlyVisits,
+          uniqueOutlets: (zoneAssignments[i] || []).reduce((s, z) => s + z.outlets.length, 0),
+          deviationPct: balanceTarget > 0
+            ? Math.round(((monthlyVisits - balanceTarget) / balanceTarget) * 1000) / 10
+            : 0
+        };
+      });
+      const maxDeviationPct = perRepBalance.reduce((m, r) => Math.max(m, Math.abs(r.deviationPct)), 0);
+
+      // Coverage-worthiness suggestions (advisory only - the user decides).
+      const weightMode: CoverageWeightMode =
+        req.body.weightMode === 'value' || req.body.weightMode === 'vf' ? req.body.weightMode : 'isolation';
+      const coverage = analyzeCoverageWorthiness(clusters, weightMode);
+
       if (progressId) progressManager.complete(progressId);
-      
+
       // Increment trial optimization run count if in trial mode
       if (trialId && !isSuperuser) {
         await storage.incrementOptimizationRuns(trialId);
       }
-      
+
       res.json({
         success: true,
         requiredReps: finalRequiredReps,
         assignedOutlets: updatedOutlets.filter(o => o.repId !== null).length,
+        excludedOutlets: excludedOutletIds.length,
         totalWeeklyVisits,
         maxWeeklyCapacityPerRep,
         minWeeklyCapacityPerRep,
         roleSchedulesGenerated: totalRoleSchedules,
+        territoryBalance: {
+          metric: 'monthlyVisits',
+          targetPerRep: Math.round(balanceTarget),
+          tolerancePct: Math.round(balanceTolerance * 100),
+          maxDeviationPct,
+          withinTolerance: maxDeviationPct <= balanceTolerance * 100,
+          perRep: perRepBalance
+        },
+        coverageSuggestions: coverage.suggestions,
+        coverageWeightModeUsed: coverage.weightModeUsed,
         calculation: {
           totalOutlets: outlets.length,
           totalWeeklyVisits,
@@ -4571,7 +4910,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           maxVisitsPerDay,
           estimatedReps: finalRequiredReps
         },
-        message: `Optimization completed. ${finalRequiredReps} routes created for ${totalWeeklyVisits} weekly visits (${minVisitsPerDay}-${maxVisitsPerDay} visits/day). ${outlets.length} outlets assigned.${totalRoleSchedules > 0 ? ` ${totalRoleSchedules} role schedules generated.` : ''}`
+        message: `Optimization completed. ${finalRequiredReps} routes created for ${totalWeeklyVisits} weekly visits (${minVisitsPerDay}-${maxVisitsPerDay} visits/day). ${outlets.length} outlets assigned.${excludedOutletIds.length > 0 ? ` ${excludedOutletIds.length} outlets excluded per user selection.` : ''}${totalRoleSchedules > 0 ? ` ${totalRoleSchedules} role schedules generated.` : ''}`
       });
 
     } catch (error) {
