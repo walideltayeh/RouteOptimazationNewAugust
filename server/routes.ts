@@ -1400,15 +1400,55 @@ function findMostCentralOutlet(outlets: Outlet[]): Outlet {
 
 function calculateClusterRadius(cluster: GeographicCluster): number {
   if (cluster.outlets.length <= 1) return 0;
-  
+
   const distances = cluster.outlets.map(outlet =>
     calculateHaversineDistance(
       outlet.latitude, outlet.longitude,
       cluster.centroid.lat, cluster.centroid.lng
     )
   );
-  
+
   return Math.max(...distances);
+}
+
+function computeOutletsCentroid(outlets: Outlet[]): { lat: number; lng: number } {
+  const lat = outlets.reduce((s, o) => s + o.latitude, 0) / outlets.length;
+  const lng = outlets.reduce((s, o) => s + o.longitude, 0) / outlets.length;
+  return { lat, lng };
+}
+
+// Splits any zone whose radius-from-centroid exceeds maxRadiusKm into tighter
+// sub-zones, even if that drops a sub-zone below minVisitsPerDay. Zone size
+// (min/max visits per day) was previously the only constraint the clustering
+// step enforced, so when a neighborhood's real outlet density didn't match
+// that size target, the clusterer bridged distant, unrelated neighborhoods
+// into one "zone" just to hit the count - producing zones with 80+ km radii
+// that no rep could realistically drive in a day. A tight day-route is the
+// actual goal, so geographic spread is enforced here as a hard cap that
+// takes priority over the outlet-count target.
+function splitOversizedZones(clusters: GeographicCluster[], maxRadiusKm: number): GeographicCluster[] {
+  const finished: Outlet[][] = [];
+  for (const cluster of clusters) {
+    const queue: Outlet[][] = [cluster.outlets];
+    while (queue.length > 0) {
+      const group = queue.shift()!;
+      const centroid = computeOutletsCentroid(group);
+      const radius = Math.max(...group.map(o =>
+        calculateHaversineDistance(o.latitude, o.longitude, centroid.lat, centroid.lng)
+      ));
+      if (radius <= maxRadiusKm || group.length < 2) {
+        finished.push(group);
+        continue;
+      }
+      const [a, b] = clusterOutletsIntoDailyGroups(group, 2);
+      if (a.length === 0 || b.length === 0) {
+        finished.push(group);
+      } else {
+        queue.push(a, b);
+      }
+    }
+  }
+  return finished.map((outlets, id) => ({ id, centroid: computeOutletsCentroid(outlets), outlets }));
 }
 
 function assignClustersToReps(clusters: GeographicCluster[], repCount: number): GeographicCluster[] {
@@ -1489,14 +1529,16 @@ function assignZonesToReps(clusters: GeographicCluster[], reps: Rep[], zonesPerR
 }
 
 function generateZoneBasedSchedules(rep: Rep, zones: GeographicCluster[], allClusters: GeographicCluster[]): InsertSchedule[] {
-  const allOutlets: Outlet[] = [];
-  for (const zone of zones) {
-    allOutlets.push(...zone.outlets);
-  }
-  if (allOutlets.length === 0) return [];
-  // Delegate to the anchor-aware scheduler. This handles VF1/VF2/VF3/VF4
-  // correctly with same-day-of-week guarantee and balanced weekly load.
-  return buildAnchorAwareSchedules(rep, allOutlets);
+  const zoneGroups = zones.map(zone => zone.outlets);
+  if (zoneGroups.every(g => g.length === 0)) return [];
+  // Delegate to the zone-preserving anchor-aware scheduler: it keeps each
+  // pre-computed geographic zone as its own day-route (merging/splitting only
+  // when the zone count doesn't match workingDaysPerWeek) instead of
+  // flattening every zone into one pool and re-deriving daily groups from
+  // scratch, which was free to blend outlets from unrelated, distant zones
+  // onto the same day. Still handles VF1/VF2/VF3/VF4 with same-day-of-week
+  // guarantee and balanced weekly load.
+  return buildAnchorAwareSchedulesFromZones(rep, zoneGroups);
 }
 
 function clusterOutletsIntoDailyGroups(outlets: Outlet[], k: number): Outlet[][] {
@@ -2254,7 +2296,73 @@ function buildAnchorAwareSchedules(rep: Rep, repOutlets: Outlet[]): InsertSchedu
     }
   }
 
-  // STEP 3+4: Per-day VF rotation with spatial sub-clustering.
+  return scheduleFromDailyClusters(rep, dailyClusters, repOutlets);
+}
+
+// Builds numDays daily clusters directly from pre-computed geographic zones,
+// preserving their boundaries instead of flattening everything into one pool
+// and re-deriving daily groups from scratch (which was free to blend outlets
+// from distant, unrelated zones onto the same day). Falls back to merging or
+// splitting zones only when the zone count doesn't already match numDays.
+function buildDailyClustersFromZones(zoneGroups: Outlet[][], numDays: number): Outlet[][] {
+  const zones = zoneGroups.filter(z => z.length > 0).map(z => [...z]);
+  if (zones.length === 0) return Array.from({ length: numDays }, () => []);
+
+  if (zones.length === numDays) {
+    return zones;
+  }
+
+  if (zones.length > numDays) {
+    // More zones than day slots: merge consecutive zones. Zones arrive
+    // ordered by nearest-neighbor chaining (assignZonesToReps), so
+    // consecutive zones are already geographically close to each other.
+    const merged: Outlet[][] = [];
+    let idx = 0;
+    for (let d = 0; d < numDays; d++) {
+      const targetIdx = Math.round(((d + 1) * zones.length) / numDays);
+      const group: Outlet[] = [];
+      while (idx < targetIdx) { group.push(...zones[idx]); idx++; }
+      merged.push(group);
+    }
+    while (idx < zones.length) { merged[merged.length - 1].push(...zones[idx]); idx++; }
+    return merged;
+  }
+
+  // Fewer zones than day slots: split the largest zone(s) geographically so
+  // every working day still gets its own tight group.
+  const groups = zones;
+  while (groups.length < numDays) {
+    let largestIdx = 0;
+    for (let i = 1; i < groups.length; i++) {
+      if (groups[i].length > groups[largestIdx].length) largestIdx = i;
+    }
+    if (groups[largestIdx].length < 2) break; // nothing left worth splitting
+    const [a, b] = clusterOutletsIntoDailyGroups(groups[largestIdx], 2);
+    groups.splice(largestIdx, 1, a, b);
+  }
+  while (groups.length < numDays) groups.push([]);
+  return groups;
+}
+
+// Same VF1-4 anchor-aware weekly rotation as buildAnchorAwareSchedules, but
+// takes pre-computed geographic zones (one per working day, ideally) instead
+// of a flat outlet pool, so the already-tight zone boundaries from the
+// clustering step survive into the final day-routes.
+function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[][]): InsertSchedule[] {
+  const numDays = rep.workingDaysPerWeek || 5;
+  const repOutlets = zoneGroups.flat();
+  if (repOutlets.length === 0) return [];
+
+  const dailyClusters = buildDailyClustersFromZones(zoneGroups, numDays);
+  while (dailyClusters.length < numDays) dailyClusters.push([]);
+
+  return scheduleFromDailyClusters(rep, dailyClusters, repOutlets);
+}
+
+// STEP 3+4 of the anchor-aware scheduler: per-day VF rotation with spatial
+// sub-clustering, shared by both the flat-pool and zone-preserving builders.
+function scheduleFromDailyClusters(rep: Rep, dailyClusters: Outlet[][], repOutlets: Outlet[]): InsertSchedule[] {
+  const numDays = rep.workingDaysPerWeek || 5;
   const VF3_PATTERNS: number[][] = [[1, 2, 3], [1, 2, 4], [1, 3, 4], [2, 3, 4]];
   const VF2_PATTERNS: number[][] = [[1, 3], [2, 4]];
   const VF1_PATTERNS: number[][] = [[1], [2], [3], [4]];
@@ -4269,15 +4377,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Perform advanced clustering using JavaScript implementation (HDBSCAN + VRP + Capacitated K-Means)
       // Pass progress callback to allow SSE updates during long-running clustering
       const advancedClusters = await performAdvancedClusteringJS(outlets, targetZones, minVisitsPerDay, maxVisitsPerDay, emitProgress);
-      const clusters = advancedClusters.map(cluster => ({
+      const rawClusters = advancedClusters.map(cluster => ({
         id: cluster.id,
         centroid: cluster.centroid,
         outlets: cluster.outlets
       }));
+      // Enforce a hard geographic-tightness cap: a "zone" whose outlets are
+      // spread more than maxZoneRadiusKm apart isn't a real day-route no
+      // matter how well its outlet count matches minVisitsPerDay/maxVisitsPerDay,
+      // so oversized zones get split into tighter sub-zones here.
+      const maxZoneRadiusKm = req.body.maxZoneRadiusKm || 15;
+      const clusters = splitOversizedZones(rawClusters, maxZoneRadiusKm);
       const actualZoneCount = clusters.length;
-      
+
       await emitProgress(45, 'Zones Created', `Created ${actualZoneCount} geographic zones`);
-      console.log(`Created ${actualZoneCount} geographic zones`);
+      console.log(`Created ${actualZoneCount} geographic zones (max ${maxZoneRadiusKm}km radius)`);
       
       // First, assign outlets to their zones
       for (let i = 0; i < actualZoneCount; i++) {
@@ -4300,13 +4414,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
       
-      // Calculate how many reps we need based on actual zones created
-      // Each rep visits 10 zones (5 per week * 2 weeks)
-      // So we need zones/10 reps (rounded up)
-      const requiredRepCount = Math.ceil(actualZoneCount / 10);
-      
+      // Calculate how many reps we need based on actual zones created.
+      // Each rep covers one zone per working day (zonesPerRep), the same
+      // ratio used above to size targetZones and below to assign zones to
+      // reps - previously this was a hardcoded "10 zones per rep" constant
+      // that ignored workingDaysPerWeek, silently dropping any zones beyond
+      // reps.length * zonesPerRep (they were never assigned to any rep).
+      const requiredRepCount = Math.ceil(actualZoneCount / zonesPerRep);
+
       await emitProgress(55, 'Assigning', `Assigning ${outlets.length} outlets to ${actualZoneCount} zones...`);
-      console.log(`Need ${requiredRepCount} reps to cover ${actualZoneCount} zones (10 zones per rep)`);
+      console.log(`Need ${requiredRepCount} reps to cover ${actualZoneCount} zones (${zonesPerRep} zones per rep)`);
       
       // Check if working days have changed for existing optimization
       const existingSchedules = await storage.getSchedules();
