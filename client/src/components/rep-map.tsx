@@ -112,10 +112,13 @@ export function RepMap() {
     queryKey: ["/api/reps"] 
   });
 
-  // Auto-select all reps the first time they load so the map isn't blank after upload+optimize.
+  // Auto-select the first rep when reps load so the map isn't blank after
+  // upload+optimize. Selecting ALL reps by default painted thousands of
+  // markers in 28+ colors at once - unreadable and slow; "Select All"
+  // remains one click away for whoever wants the full picture.
   useEffect(() => {
     if (reps.length > 0 && selectedReps.length === 0) {
-      setSelectedReps(reps.map(r => r.id));
+      setSelectedReps([reps[0].id]);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reps.length]);

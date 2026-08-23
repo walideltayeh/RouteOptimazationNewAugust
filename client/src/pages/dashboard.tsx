@@ -249,9 +249,8 @@ export default function Dashboard() {
                   <p className="text-3xl font-bold text-gray-900 mt-1">
                     {metrics?.totalOutlets.toLocaleString() || 0}
                   </p>
-                  <p className="text-sm text-green-600 mt-2 flex items-center">
-                    <ArrowUp className="mr-1 h-3 w-3" />
-                    12% vs last month
+                  <p className="text-sm text-gray-500 mt-2">
+                    Across <span className="font-semibold">{metrics?.activeReps || 0}</span> territories
                   </p>
                 </div>
                 <div className="w-12 h-12 bg-primary/10 rounded-xl flex items-center justify-center">
@@ -289,7 +288,7 @@ export default function Dashboard() {
                     {metrics?.avgDailyVisits || 0}
                   </p>
                   <p className="text-sm text-gray-500 mt-2">
-                    Range: <span className="font-semibold">25-30</span> per rep
+                    Target: <span className="font-semibold">{metrics?.minDailyVisits || 0}-{metrics?.maxDailyVisits || 0}</span> per rep
                   </p>
                 </div>
                 <div className="w-12 h-12 bg-yellow-100 rounded-xl flex items-center justify-center">
@@ -305,11 +304,10 @@ export default function Dashboard() {
                 <div>
                   <p className="text-sm font-medium text-gray-600">Territory Balance</p>
                   <p className="text-3xl font-bold text-gray-900 mt-1">
-                    {metrics?.territoryBalance || 95}%
+                    {metrics?.territoryBalance ?? 0}%
                   </p>
-                  <p className="text-sm text-green-600 mt-2 flex items-center">
-                    <ArrowUp className="mr-1 h-3 w-3" />
-                    Optimized zones
+                  <p className="text-sm text-gray-500 mt-2">
+                    Workload evenness across reps
                   </p>
                 </div>
                 <div className="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center">

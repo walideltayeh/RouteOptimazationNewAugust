@@ -326,8 +326,12 @@ export class MemStorage implements IStorage {
     }, AUTOSAVE_INTERVAL_MS);
     timer.unref(); // never keep the process alive just for autosave
     const flush = () => { if (this.dirtyCount !== this.savedCount) this.saveToDisk(); };
-    process.on("SIGTERM", flush);
-    process.on("SIGINT", flush);
+    // Signal handlers must still terminate the process - installing a
+    // handler replaces Node's default exit-on-signal behavior, so without
+    // the explicit exit a "killed" server would flush and keep running.
+    const flushAndExit = () => { flush(); process.exit(0); };
+    process.on("SIGTERM", flushAndExit);
+    process.on("SIGINT", flushAndExit);
     process.on("beforeExit", flush);
   }
 
@@ -840,11 +844,10 @@ export class MemStorage implements IStorage {
       activeReps: activeReps.length,
       recommendedReps,
       avgDailyVisits,
-      routeEfficiency: 87,
       territoryBalance,
       totalDistance,
-      avgTravelTime: 2.3,
-      visitEfficiency: 94
+      minDailyVisits: activeReps.length > 0 ? Math.min(...activeReps.map(r => r.minDailyVisits)) : 0,
+      maxDailyVisits: activeReps.length > 0 ? Math.max(...activeReps.map(r => r.maxDailyVisits)) : 0
     };
   }
 

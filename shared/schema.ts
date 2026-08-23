@@ -805,11 +805,10 @@ export interface DashboardMetrics {
   activeReps: number;
   recommendedReps: number;
   avgDailyVisits: number;
-  routeEfficiency: number;
   territoryBalance: number;
   totalDistance: number;
-  avgTravelTime: number;
-  visitEfficiency: number;
+  minDailyVisits: number;
+  maxDailyVisits: number;
 }
 
 export interface FileAnalysis {

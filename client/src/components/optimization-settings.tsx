@@ -24,7 +24,6 @@ interface DashboardMetrics {
   totalOutlets: number;
   activeReps: number;
   recommendedReps: number;
-  routeEfficiency: number;
 }
 
 interface OptimizationSettingsProps {
