@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useLocation } from "wouter";
 import FileUpload from "@/components/file-upload";
 import RepScheduleTable from "@/components/rep-schedule-table";
 import OptimizationSettings from "@/components/optimization-settings";
@@ -50,6 +51,7 @@ export default function Dashboard() {
   const [roles, setRoles] = useState<RoleConfig[]>(DEFAULT_ROLES);
   const [hierarchySaved, setHierarchySaved] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [, setLocation] = useLocation();
   const [offsetMode, setOffsetMode] = useState<OffsetMode>('global');
   const [selectedRepIds, setSelectedRepIds] = useState<string[]>([]);
 
@@ -164,16 +166,11 @@ export default function Dashboard() {
     },
   });
 
-  // "New Optimization" should take you to the optimizer, not destroy your
-  // data - previously this button cleared every outlet, rep and schedule on
-  // a single click with no confirmation, which is not what its label implied.
+  // Run new optimizations on the Scenarios page: it keeps the previous plan
+  // alongside the new one and shows the KPI differences, instead of silently
+  // replacing what you already have. (Every run is captured either way.)
   const handleNewOptimization = () => {
-    const el = document.getElementById("optimization-settings");
-    if (el) {
-      el.scrollIntoView({ behavior: "smooth", block: "start" });
-      el.classList.add("ring-2", "ring-primary", "ring-offset-2", "rounded-2xl");
-      setTimeout(() => el.classList.remove("ring-2", "ring-primary", "ring-offset-2", "rounded-2xl"), 2000);
-    }
+    setLocation("/scenarios");
   };
 
   if (isLoading) {

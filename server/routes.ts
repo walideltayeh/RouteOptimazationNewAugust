@@ -4567,10 +4567,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
         await storage.updateOutlet(g.id, { geoStatus: 'offset' });
       }
 
+      // Every optimization is captured as a scenario automatically. A run
+      // replaces the live plan, so without this the previous plan would be
+      // gone for good - capturing means you can always compare against it
+      // and restore it from the Scenarios page.
+      let capturedScenarioId: string | null = null;
+      try {
+        capturedScenarioId = await captureCurrentPlanAsScenario({
+          workingDaysPerWeek, minVisitsPerDay, maxVisitsPerDay,
+          maxZoneRadiusKm, distanceMode, weightMode,
+        });
+      } catch (err) {
+        console.error("[scenarios] auto-capture failed:", (err as Error).message);
+      }
+
       if (progressId) progressManager.complete(progressId);
 
       res.json({
         success: true,
+        capturedScenarioId,
         requiredReps: finalRequiredReps,
         assignedOutlets: updatedOutlets.filter(o => o.repId !== null).length,
         excludedOutlets: excludedOutletIds.length,
@@ -4682,6 +4697,40 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try { fs.unlinkSync(scenarioFile(id)); } catch { /* already gone */ }
   };
   loadScenarioIndex();
+
+  // Captures whatever plan is currently in storage as a scenario and returns
+  // its id. Used by /api/optimize so no run is ever lost.
+  async function captureCurrentPlanAsScenario(params: Record<string, any>, name?: string): Promise<string | null> {
+    const allSchedules = await storage.getSchedules();
+    if (allSchedules.length === 0) return null;
+    const allOutlets = await storage.getOutlets();
+    const id = randomUUID();
+    const label = name || [
+      `${params.workingDaysPerWeek}d`,
+      `${params.minVisitsPerDay}-${params.maxVisitsPerDay}/day`,
+      `${params.maxZoneRadiusKm ?? 15}km`,
+      params.distanceMode === 'road' ? 'road' : null,
+    ].filter(Boolean).join(' · ');
+    const summary: ScenarioSummary = {
+      id,
+      name: label.slice(0, 80),
+      createdAt: new Date().toISOString(),
+      params,
+      kpis: await computePlanKPIs(),
+    };
+    writeScenarioSnapshot(id, {
+      outlets: allOutlets.map(o => ({ id: o.id, repId: o.repId, territory: o.territory, cluster: o.cluster })),
+      reps: await storage.getReps(),
+      schedules: allSchedules,
+    });
+    scenarioIndex.push(summary);
+    while (scenarioIndex.length > 10) {
+      const dropped = scenarioIndex.shift();
+      if (dropped) deleteScenarioSnapshot(dropped.id);
+    }
+    saveScenarioIndex();
+    return id;
+  }
 
   // Solution-quality KPIs for the plan currently in storage. These are the
   // numbers a planner actually judges a route plan by.
@@ -4830,6 +4879,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.error("Scenario apply error:", error);
       res.status(500).json({ message: "Failed to apply scenario" });
     }
+  });
+
+  // Rename a scenario (auto-captured runs get a parameter-derived name).
+  app.patch("/api/scenarios/:id", async (req, res) => {
+    const scenario = scenarioIndex.find(s => s.id === req.params.id);
+    if (!scenario) return res.status(404).json({ message: "Scenario not found" });
+    const { name } = req.body as { name?: string };
+    if (typeof name === "string" && name.trim()) {
+      scenario.name = name.trim().slice(0, 80);
+      saveScenarioIndex();
+    }
+    res.json(scenario);
   });
 
   app.delete("/api/scenarios/:id", async (req, res) => {

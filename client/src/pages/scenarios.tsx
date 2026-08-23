@@ -57,13 +57,15 @@ export default function ScenariosPage() {
     setBusy(true);
     try {
       const params = { workingDaysPerWeek, minVisitsPerDay, maxVisitsPerDay, maxZoneRadiusKm, distanceMode };
+      // The server captures every optimization as a scenario automatically,
+      // so running one here is all that is needed. A custom name, if given,
+      // is applied to the run it just created.
       const opt = await apiRequest("POST", "/api/optimize", { ...params, weightMode: "isolation" });
       if (!opt.ok) throw new Error((await opt.json()).message || "Optimization failed");
-      const cap = await apiRequest("POST", "/api/scenarios/capture", {
-        name: name || `${workingDaysPerWeek}d · ${minVisitsPerDay}-${maxVisitsPerDay}/day · ${maxZoneRadiusKm}km`,
-        params,
-      });
-      if (!cap.ok) throw new Error((await cap.json()).message || "Capture failed");
+      const { capturedScenarioId } = await opt.json();
+      if (name && capturedScenarioId) {
+        await apiRequest("PATCH", `/api/scenarios/${capturedScenarioId}`, { name });
+      }
       setName("");
       queryClient.invalidateQueries({ queryKey: ["/api/scenarios"] });
       queryClient.invalidateQueries({ queryKey: ["/api/reps"] });
