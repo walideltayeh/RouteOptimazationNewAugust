@@ -1941,24 +1941,88 @@ export interface GeoOutlier {
 // flow after seeing the evidence.
 function detectGeoOutliers(
   outlets: { id: string; name: string; latitude: number; longitude: number }[],
-  radiusKm: number = 60
+  radiusKm: number = 30
 ): GeoOutlier[] {
   if (outlets.length < 10) return [];
   const median = (arr: number[]) => {
     const s = [...arr].sort((a, b) => a - b);
     return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
   };
-  const centerLat = median(outlets.map(o => o.latitude));
-  const centerLng = median(outlets.map(o => o.longitude));
-  const flagged: GeoOutlier[] = [];
+  // Cluster-level isolation. Two weaker tests fail on real data: distance
+  // from a median centre punishes legitimately distant-but-populated regions
+  // (it flagged 483 real Lebanese outlets, 18% of that universe), while
+  // k-nearest-neighbour distance misses the most common bad-data shape -
+  // several records sharing one wrong coordinate, which look perfectly
+  // neighbourly to each other (6 co-located Baghdad records 450km away
+  // scored 0km). So: link outlets into components by proximity, then flag
+  // whole components that are both small and far from the market's mass.
+  const LINK_KM = 5;            // outlets within 5km belong to one component
+  const CELL = LINK_KM / 111;   // degrees, ~5km
+  const grid = new Map<string, typeof outlets>();
+  const keyOf = (lat: number, lng: number) => `${Math.floor(lat / CELL)}:${Math.floor(lng / CELL)}`;
   for (const o of outlets) {
-    const d = haversineKm(o.latitude, o.longitude, centerLat, centerLng);
-    if (d > radiusKm) {
-      flagged.push({
-        id: o.id, name: o.name,
-        latitude: o.latitude, longitude: o.longitude,
-        distanceKm: Math.round(d * 10) / 10
-      });
+    const k = keyOf(o.latitude, o.longitude);
+    if (!grid.has(k)) grid.set(k, []);
+    grid.get(k)!.push(o);
+  }
+
+  const componentOf = new Map<string, number>();
+  const components: { outlets: typeof outlets; lat: number; lng: number }[] = [];
+  for (const seed of outlets) {
+    if (componentOf.has(seed.id)) continue;
+    const idx = components.length;
+    const queue = [seed];
+    const members: typeof outlets = [];
+    componentOf.set(seed.id, idx);
+    while (queue.length > 0) {
+      const cur = queue.pop()!;
+      members.push(cur);
+      const cy = Math.floor(cur.latitude / CELL);
+      const cx = Math.floor(cur.longitude / CELL);
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const cell = grid.get(`${cy + dy}:${cx + dx}`);
+          if (!cell) continue;
+          for (const n of cell) {
+            if (componentOf.has(n.id)) continue;
+            if (haversineKm(cur.latitude, cur.longitude, n.latitude, n.longitude) <= LINK_KM) {
+              componentOf.set(n.id, idx);
+              queue.push(n);
+            }
+          }
+        }
+      }
+    }
+    components.push({
+      outlets: members,
+      lat: members.reduce((s, o) => s + o.latitude, 0) / members.length,
+      lng: members.reduce((s, o) => s + o.longitude, 0) / members.length,
+    });
+  }
+
+  // A component is part of the market if it holds a meaningful share of the
+  // universe; anything smaller must prove it sits near one that does.
+  const minRealSize = Math.max(10, Math.floor(outlets.length * 0.01));
+  const mainComponents = components.filter(c => c.outlets.length >= minRealSize);
+  if (mainComponents.length === 0) return [];
+
+  const flagged: GeoOutlier[] = [];
+  for (const c of components) {
+    if (c.outlets.length >= minRealSize) continue;
+    let nearest = Infinity;
+    for (const m of mainComponents) {
+      if (m === c) continue;
+      const d = haversineKm(c.lat, c.lng, m.lat, m.lng);
+      if (d < nearest) nearest = d;
+    }
+    if (nearest > radiusKm) {
+      for (const o of c.outlets) {
+        flagged.push({
+          id: o.id, name: o.name,
+          latitude: o.latitude, longitude: o.longitude,
+          distanceKm: Math.round(nearest * 10) / 10
+        });
+      }
     }
   }
   flagged.sort((a, b) => b.distanceKm - a.distanceKm);
@@ -2787,10 +2851,24 @@ function buildDailyClustersFromZones(zoneGroups: Outlet[][], numDays: number, ma
         }
       }
       // No pair fits under the cap -> merge the lightest pair (the day count
-      // must still come out to numDays). If every remaining pair involves an
-      // outlier zone, stop merging: too many days beats a cross-country day.
+      // must still come out to numDays).
       if (bi < 0) { bi = fi; bj = fj; }
-      if (bi < 0 || bj < 0) break;
+      if (bi < 0 || bj < 0) {
+        // Every remaining pair involves an outlier zone. Outlier containment
+        // is best-effort ONLY: the group count must still reach numDays,
+        // because groups beyond numDays get no day and their outlets would
+        // silently vanish from the plan. Merge the two closest groups
+        // regardless of outlier status.
+        let ci2 = -1, cj2 = -1, cd = Infinity;
+        for (let i = 0; i < groups.length; i++) {
+          for (let j = i + 1; j < groups.length; j++) {
+            const d = calculateHaversineDistance(cs[i].lat, cs[i].lng, cs[j].lat, cs[j].lng);
+            if (d < cd) { cd = d; ci2 = i; cj2 = j; }
+          }
+        }
+        if (ci2 < 0 || cj2 < 0) break;
+        bi = ci2; bj = cj2;
+      }
       groups[bi] = [...groups[bi], ...groups[bj]];
       groups.splice(bj, 1);
     }
@@ -3948,7 +4026,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Highlight outlets whose GPS point sits far outside the dataset's
       // core coverage area (market + rural belt). Flag only - the user
       // decides later whether to exclude them.
-      const geoOutlierRadiusKm = parseFloat(String(req.body?.geoOutlierRadiusKm ?? '')) || 60;
+      const geoOutlierRadiusKm = parseFloat(String(req.body?.geoOutlierRadiusKm ?? '')) || 30;
       const geoOutliers = detectGeoOutliers(createdOutlets, geoOutlierRadiusKm);
       for (const g of geoOutliers) {
         await storage.updateOutlet(g.id, { geoStatus: 'offset' });
@@ -5100,7 +5178,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Geographic outliers: outlets far outside the core coverage area,
       // highlighted for the user to review before deciding on removal.
-      const geoOutlierRadiusKm = req.body.geoOutlierRadiusKm || 60;
+      const geoOutlierRadiusKm = req.body.geoOutlierRadiusKm || 30;
       const geoOutliers = detectGeoOutliers(outlets, geoOutlierRadiusKm);
       for (const g of geoOutliers) {
         await storage.updateOutlet(g.id, { geoStatus: 'offset' });
