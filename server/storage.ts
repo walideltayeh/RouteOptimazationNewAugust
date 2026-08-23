@@ -7,22 +7,8 @@ import {
   type InsertSchedule,
   type OptimizationRun,
   type InsertOptimizationRun,
-  type Vehicle,
-  type InsertVehicle,
-  type VehicleMaintenance,
-  type InsertVehicleMaintenance,
-  type VehicleUsage,
-  type InsertVehicleUsage,
-  type MaintenancePolicy,
-  type InsertMaintenancePolicy,
-  type MaintenanceForecast,
-  type InsertMaintenanceForecast,
-  type VehicleMileageSnapshot,
-  type InsertVehicleMileageSnapshot,
   type DashboardMetrics,
   type FileAnalysis,
-  type VehicleAlert,
-  type VehicleFullDashboard,
   type RoleHierarchy,
   type InsertRoleHierarchy,
   type RoleSchedule,
@@ -102,44 +88,12 @@ export interface IStorage {
   createOptimizationRun(run: InsertOptimizationRun): Promise<OptimizationRun>;
   updateOptimizationRun(id: string, run: Partial<InsertOptimizationRun>): Promise<OptimizationRun | undefined>;
 
-  // Vehicles
-  getVehicles(): Promise<Vehicle[]>;
-  getVehicle(id: string): Promise<Vehicle | undefined>;
-  createVehicle(vehicle: InsertVehicle): Promise<Vehicle>;
-  updateVehicle(id: string, vehicle: Partial<InsertVehicle>): Promise<Vehicle | undefined>;
-  deleteVehicle(id: string): Promise<void>;
 
-  // Vehicle Maintenance
-  getVehicleMaintenanceRecords(vehicleId?: string): Promise<VehicleMaintenance[]>;
-  createVehicleMaintenanceRecord(record: InsertVehicleMaintenance): Promise<VehicleMaintenance>;
-  updateVehicleMaintenanceRecord(id: string, record: Partial<InsertVehicleMaintenance>): Promise<VehicleMaintenance | undefined>;
-  deleteVehicleMaintenanceRecord(id: string): Promise<void>;
 
-  // Vehicle Usage
-  getVehicleUsageRecords(vehicleId?: string): Promise<VehicleUsage[]>;
-  createVehicleUsageRecord(record: InsertVehicleUsage): Promise<VehicleUsage>;
-  getVehicleAlerts(): Promise<VehicleAlert[]>;
 
-  // Maintenance Policies
-  getMaintenancePolicies(): Promise<MaintenancePolicy[]>;
-  getMaintenancePolicy(id: string): Promise<MaintenancePolicy | undefined>;
-  createMaintenancePolicy(policy: InsertMaintenancePolicy): Promise<MaintenancePolicy>;
-  updateMaintenancePolicy(id: string, policy: Partial<InsertMaintenancePolicy>): Promise<MaintenancePolicy | undefined>;
-  deleteMaintenancePolicy(id: string): Promise<void>;
 
-  // Maintenance Forecasts
-  getMaintenanceForecasts(vehicleId?: string): Promise<MaintenanceForecast[]>;
-  createMaintenanceForecast(forecast: InsertMaintenanceForecast): Promise<MaintenanceForecast>;
-  updateMaintenanceForecast(id: string, forecast: Partial<InsertMaintenanceForecast>): Promise<MaintenanceForecast | undefined>;
-  deleteMaintenanceForecastsByVehicle(vehicleId: string): Promise<void>;
 
-  // Mileage Snapshots
-  getVehicleMileageSnapshots(vehicleId: string): Promise<VehicleMileageSnapshot[]>;
-  createVehicleMileageSnapshot(snapshot: InsertVehicleMileageSnapshot): Promise<VehicleMileageSnapshot>;
-  getLatestMileageSnapshot(vehicleId: string): Promise<VehicleMileageSnapshot | undefined>;
 
-  // Vehicle Dashboard
-  getVehicleDashboard(vehicleId: string): Promise<VehicleFullDashboard | undefined>;
 
   // Analytics
   getDashboardMetrics(): Promise<DashboardMetrics>;
@@ -176,11 +130,8 @@ export interface IStorage {
   createTrialUsage(trialId: string): Promise<TrialUsage>;
   getTrialUsage(trialId: string): Promise<TrialUsage | undefined>;
   incrementOutletCount(trialId: string, count?: number): Promise<TrialUsage | undefined>;
-  incrementVehicleCount(trialId: string, count?: number): Promise<TrialUsage | undefined>;
   decrementOutletCount(trialId: string, count?: number): Promise<TrialUsage | undefined>;
-  decrementVehicleCount(trialId: string, count?: number): Promise<TrialUsage | undefined>;
   setOutletCount(trialId: string, count: number): Promise<TrialUsage | undefined>;
-  setVehicleCount(trialId: string, count: number): Promise<TrialUsage | undefined>;
   incrementOptimizationRuns(trialId: string): Promise<TrialUsage | undefined>;
 
   // Device Fingerprints
@@ -208,12 +159,6 @@ export class MemStorage implements IStorage {
   private reps: Map<string, Rep>;
   private schedules: Map<string, Schedule>;
   private optimizationRuns: Map<string, OptimizationRun>;
-  private vehicles: Map<string, Vehicle>;
-  private vehicleMaintenanceRecords: Map<string, VehicleMaintenance>;
-  private vehicleUsageRecords: Map<string, VehicleUsage>;
-  private maintenancePolicies: Map<string, MaintenancePolicy>;
-  private maintenanceForecasts: Map<string, MaintenanceForecast>;
-  private vehicleMileageSnapshots: Map<string, VehicleMileageSnapshot>;
   private roleHierarchies: Map<string, RoleHierarchy>;
   private roleSchedules: Map<string, RoleSchedule>;
   private trialAccounts: Map<string, TrialAccount>;
@@ -237,12 +182,6 @@ export class MemStorage implements IStorage {
       roleHierarchies: this.roleHierarchies,
       roleSchedules: this.roleSchedules,
       optimizationRuns: this.optimizationRuns,
-      vehicles: this.vehicles,
-      vehicleMaintenanceRecords: this.vehicleMaintenanceRecords,
-      vehicleUsageRecords: this.vehicleUsageRecords,
-      maintenancePolicies: this.maintenancePolicies,
-      maintenanceForecasts: this.maintenanceForecasts,
-      vehicleMileageSnapshots: this.vehicleMileageSnapshots,
       trialAccounts: this.trialAccounts,
       trialUsages: this.trialUsages,
       deviceFingerprints: this.deviceFingerprints,
@@ -259,12 +198,6 @@ export class MemStorage implements IStorage {
     this.roleHierarchies = trackedMap(this.markDirty);
     this.roleSchedules = trackedMap(this.markDirty);
     this.optimizationRuns = trackedMap(this.markDirty);
-    this.vehicles = trackedMap(this.markDirty);
-    this.vehicleMaintenanceRecords = trackedMap(this.markDirty);
-    this.vehicleUsageRecords = trackedMap(this.markDirty);
-    this.maintenancePolicies = trackedMap(this.markDirty);
-    this.maintenanceForecasts = trackedMap(this.markDirty);
-    this.vehicleMileageSnapshots = trackedMap(this.markDirty);
     this.trialAccounts = trackedMap(this.markDirty);
     this.trialUsages = trackedMap(this.markDirty);
     this.deviceFingerprints = trackedMap(this.markDirty);
@@ -273,12 +206,6 @@ export class MemStorage implements IStorage {
     this.trialConversions = trackedMap(this.markDirty);
 
     this.restoreFromDisk();
-
-    // Initialize default maintenance policies (only on a fresh store -
-    // restored snapshots already contain them)
-    if (this.maintenancePolicies.size === 0) {
-      this.initializeDefaultPolicies();
-    }
 
     this.startAutosave();
   }
@@ -334,55 +261,6 @@ export class MemStorage implements IStorage {
     process.on("SIGTERM", flushAndExit);
     process.on("SIGINT", flushAndExit);
     process.on("beforeExit", flush);
-  }
-
-  private async initializeDefaultPolicies(): Promise<void> {
-    const defaultPolicies: InsertMaintenancePolicy[] = [
-      {
-        name: 'Oil Change',
-        maintenanceType: 'oil_change',
-        intervalKm: 5000,
-        intervalDays: 90,
-        warningThresholdKm: 500,
-        warningThresholdDays: 14,
-        criticalThresholdKm: 1000,
-        isActive: true
-      },
-      {
-        name: 'Tire Replacement',
-        maintenanceType: 'tire_change',
-        intervalKm: 40000,
-        intervalDays: 730,
-        warningThresholdKm: 5000,
-        warningThresholdDays: 60,
-        criticalThresholdKm: 10000,
-        isActive: true
-      },
-      {
-        name: 'Brake Service',
-        maintenanceType: 'brake_service',
-        intervalKm: 30000,
-        intervalDays: 365,
-        warningThresholdKm: 3000,
-        warningThresholdDays: 30,
-        criticalThresholdKm: 5000,
-        isActive: true
-      },
-      {
-        name: 'General Service',
-        maintenanceType: 'general_service',
-        intervalKm: 10000,
-        intervalDays: 180,
-        warningThresholdKm: 1000,
-        warningThresholdDays: 14,
-        criticalThresholdKm: 2000,
-        isActive: true
-      }
-    ];
-
-    for (const policy of defaultPolicies) {
-      await this.createMaintenancePolicy(policy);
-    }
   }
 
   // Outlets
@@ -500,8 +378,7 @@ export class MemStorage implements IStorage {
       minDailyVisits: insertRep.minDailyVisits || 15,
       maxDailyVisits: insertRep.maxDailyVisits || 25,
       workingDaysPerWeek: insertRep.workingDaysPerWeek || 5,
-      isActive: insertRep.isActive !== undefined ? insertRep.isActive : true,
-      vehicleId: insertRep.vehicleId || null
+      isActive: insertRep.isActive !== undefined ? insertRep.isActive : true
     };
     this.reps.set(id, rep);
     return rep;
@@ -605,200 +482,6 @@ export class MemStorage implements IStorage {
     return updatedRun;
   }
 
-  // Vehicles
-  async getVehicles(): Promise<Vehicle[]> {
-    return Array.from(this.vehicles.values());
-  }
-
-  async getVehicle(id: string): Promise<Vehicle | undefined> {
-    return this.vehicles.get(id);
-  }
-
-  async createVehicle(insertVehicle: InsertVehicle): Promise<Vehicle> {
-    const id = randomUUID();
-    const vehicle: Vehicle = {
-      ...insertVehicle,
-      id,
-      createdAt: new Date(),
-      status: insertVehicle.status || "active",
-      assignedRepId: insertVehicle.assignedRepId || null
-    };
-    this.vehicles.set(id, vehicle);
-    return vehicle;
-  }
-
-  async updateVehicle(id: string, update: Partial<InsertVehicle>): Promise<Vehicle | undefined> {
-    const vehicle = this.vehicles.get(id);
-    if (!vehicle) return undefined;
-    
-    const updatedVehicle = { ...vehicle, ...update };
-    this.vehicles.set(id, updatedVehicle);
-    return updatedVehicle;
-  }
-
-  async deleteVehicle(id: string): Promise<void> {
-    this.vehicles.delete(id);
-  }
-
-  // Vehicle Maintenance
-  async getVehicleMaintenanceRecords(vehicleId?: string): Promise<VehicleMaintenance[]> {
-    const records = Array.from(this.vehicleMaintenanceRecords.values());
-    if (vehicleId) {
-      return records.filter(r => r.vehicleId === vehicleId);
-    }
-    return records;
-  }
-
-  async createVehicleMaintenanceRecord(insertRecord: InsertVehicleMaintenance): Promise<VehicleMaintenance> {
-    const id = randomUUID();
-    const record: VehicleMaintenance = {
-      ...insertRecord,
-      id,
-      createdAt: new Date(),
-      description: insertRecord.description || null,
-      cost: insertRecord.cost || null,
-      oilType: insertRecord.oilType || null,
-      tireType: insertRecord.tireType || null,
-      nextServiceMileage: insertRecord.nextServiceMileage || null,
-      nextServiceDate: insertRecord.nextServiceDate || null,
-      notes: insertRecord.notes || null
-    };
-    this.vehicleMaintenanceRecords.set(id, record);
-    return record;
-  }
-
-  async updateVehicleMaintenanceRecord(id: string, update: Partial<InsertVehicleMaintenance>): Promise<VehicleMaintenance | undefined> {
-    const record = this.vehicleMaintenanceRecords.get(id);
-    if (!record) return undefined;
-    
-    const updatedRecord = { ...record, ...update };
-    this.vehicleMaintenanceRecords.set(id, updatedRecord);
-    return updatedRecord;
-  }
-
-  async deleteVehicleMaintenanceRecord(id: string): Promise<void> {
-    this.vehicleMaintenanceRecords.delete(id);
-  }
-
-  // Vehicle Usage
-  async getVehicleUsageRecords(vehicleId?: string): Promise<VehicleUsage[]> {
-    const records = Array.from(this.vehicleUsageRecords.values());
-    if (vehicleId) {
-      return records.filter(r => r.vehicleId === vehicleId);
-    }
-    return records;
-  }
-
-  async createVehicleUsageRecord(insertRecord: InsertVehicleUsage): Promise<VehicleUsage> {
-    const id = randomUUID();
-    const record: VehicleUsage = {
-      ...insertRecord,
-      id,
-      createdAt: new Date(),
-      scheduleId: insertRecord.scheduleId || null
-    };
-    this.vehicleUsageRecords.set(id, record);
-
-    // Update vehicle's current mileage
-    const vehicle = await this.getVehicle(insertRecord.vehicleId);
-    if (vehicle) {
-      await this.updateVehicle(insertRecord.vehicleId, {
-        currentMileage: insertRecord.endMileage
-      });
-    }
-
-    return record;
-  }
-
-  // Vehicle Alerts
-  async getVehicleAlerts(): Promise<VehicleAlert[]> {
-    const alerts: VehicleAlert[] = [];
-    const vehicles = await this.getVehicles();
-    const now = new Date();
-
-    for (const vehicle of vehicles) {
-      const maintenanceRecords = await this.getVehicleMaintenanceRecords(vehicle.id);
-      
-      // Find latest oil change
-      const latestOilChange = maintenanceRecords
-        .filter(r => r.maintenanceType === 'oil_change')
-        .sort((a, b) => new Date(b.serviceDate).getTime() - new Date(a.serviceDate).getTime())[0];
-
-      if (latestOilChange) {
-        // Check if oil change is due (typically every 5000 km or 3 months)
-        const kmSinceOilChange = vehicle.currentMileage - latestOilChange.mileageAtService;
-        const daysSinceOilChange = Math.floor((now.getTime() - new Date(latestOilChange.serviceDate).getTime()) / (1000 * 60 * 60 * 24));
-        
-        if (kmSinceOilChange >= 4500 || daysSinceOilChange >= 80) {
-          alerts.push({
-            vehicleId: vehicle.id,
-            plateNumber: vehicle.plateNumber,
-            alertType: 'oil_change_due',
-            severity: kmSinceOilChange >= 5000 || daysSinceOilChange >= 90 ? 'high' : 'medium',
-            message: `Oil change due. ${kmSinceOilChange.toFixed(0)} km since last change.`,
-            dueMileage: latestOilChange.mileageAtService + 5000
-          });
-        }
-      }
-
-      // Find latest tire change
-      const latestTireChange = maintenanceRecords
-        .filter(r => r.maintenanceType === 'tire_change')
-        .sort((a, b) => new Date(b.serviceDate).getTime() - new Date(a.serviceDate).getTime())[0];
-
-      if (latestTireChange) {
-        const kmSinceTireChange = vehicle.currentMileage - latestTireChange.mileageAtService;
-        
-        if (kmSinceTireChange >= 35000) {
-          alerts.push({
-            vehicleId: vehicle.id,
-            plateNumber: vehicle.plateNumber,
-            alertType: 'tire_change_due',
-            severity: kmSinceTireChange >= 40000 ? 'high' : 'medium',
-            message: `Tire inspection recommended. ${kmSinceTireChange.toFixed(0)} km since last change.`,
-            dueMileage: latestTireChange.mileageAtService + 40000
-          });
-        }
-      }
-
-      // Find latest general service
-      const latestService = maintenanceRecords
-        .filter(r => r.maintenanceType === 'service')
-        .sort((a, b) => new Date(b.serviceDate).getTime() - new Date(a.serviceDate).getTime())[0];
-
-      if (latestService && latestService.nextServiceDate) {
-        const daysUntilService = Math.floor((new Date(latestService.nextServiceDate).getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-        
-        if (daysUntilService <= 14) {
-          alerts.push({
-            vehicleId: vehicle.id,
-            plateNumber: vehicle.plateNumber,
-            alertType: 'service_due',
-            severity: daysUntilService <= 0 ? 'high' : daysUntilService <= 7 ? 'medium' : 'low',
-            message: daysUntilService <= 0 
-              ? `Service overdue by ${Math.abs(daysUntilService)} days` 
-              : `Service due in ${daysUntilService} days`,
-            dueDate: new Date(latestService.nextServiceDate)
-          });
-        }
-      }
-
-      // High mileage alert
-      if (vehicle.currentMileage >= 150000) {
-        alerts.push({
-          vehicleId: vehicle.id,
-          plateNumber: vehicle.plateNumber,
-          alertType: 'high_mileage',
-          severity: vehicle.currentMileage >= 200000 ? 'high' : 'medium',
-          message: `High mileage vehicle: ${vehicle.currentMileage.toFixed(0)} km`,
-          dueMileage: vehicle.currentMileage
-        });
-      }
-    }
-
-    return alerts;
-  }
-
   // Analytics
   async getDashboardMetrics(): Promise<DashboardMetrics> {
     const outlets = await this.getOutlets();
@@ -876,405 +559,6 @@ export class MemStorage implements IStorage {
       vf2,
       vf4,
       recommendedReps
-    };
-  }
-
-  // Maintenance Policies
-  async getMaintenancePolicies(): Promise<MaintenancePolicy[]> {
-    return Array.from(this.maintenancePolicies.values());
-  }
-
-  async getMaintenancePolicy(id: string): Promise<MaintenancePolicy | undefined> {
-    return this.maintenancePolicies.get(id);
-  }
-
-  async createMaintenancePolicy(insertPolicy: InsertMaintenancePolicy): Promise<MaintenancePolicy> {
-    const id = randomUUID();
-    const policy: MaintenancePolicy = {
-      ...insertPolicy,
-      id,
-      createdAt: new Date(),
-      intervalDays: insertPolicy.intervalDays || null,
-      warningThresholdDays: insertPolicy.warningThresholdDays || null,
-      isActive: insertPolicy.isActive ?? true
-    };
-    this.maintenancePolicies.set(id, policy);
-    return policy;
-  }
-
-  async updateMaintenancePolicy(id: string, update: Partial<InsertMaintenancePolicy>): Promise<MaintenancePolicy | undefined> {
-    const policy = this.maintenancePolicies.get(id);
-    if (!policy) return undefined;
-    
-    const updatedPolicy = { ...policy, ...update };
-    this.maintenancePolicies.set(id, updatedPolicy);
-    return updatedPolicy;
-  }
-
-  async deleteMaintenancePolicy(id: string): Promise<void> {
-    this.maintenancePolicies.delete(id);
-  }
-
-  // Maintenance Forecasts
-  async getMaintenanceForecasts(vehicleId?: string): Promise<MaintenanceForecast[]> {
-    const forecasts = Array.from(this.maintenanceForecasts.values());
-    if (vehicleId) {
-      return forecasts.filter(f => f.vehicleId === vehicleId);
-    }
-    return forecasts;
-  }
-
-  async createMaintenanceForecast(insertForecast: InsertMaintenanceForecast): Promise<MaintenanceForecast> {
-    const id = randomUUID();
-    const forecast: MaintenanceForecast = {
-      ...insertForecast,
-      id,
-      createdAt: new Date(),
-      lastCalculatedAt: new Date(),
-      policyId: insertForecast.policyId || null,
-      estimatedDueDate: insertForecast.estimatedDueDate || null,
-      remainingDays: insertForecast.remainingDays || null,
-      severity: insertForecast.severity || 'low',
-      status: insertForecast.status || 'upcoming',
-      recommendation: insertForecast.recommendation || null
-    };
-    this.maintenanceForecasts.set(id, forecast);
-    return forecast;
-  }
-
-  async updateMaintenanceForecast(id: string, update: Partial<InsertMaintenanceForecast>): Promise<MaintenanceForecast | undefined> {
-    const forecast = this.maintenanceForecasts.get(id);
-    if (!forecast) return undefined;
-    
-    const updatedForecast = { ...forecast, ...update, lastCalculatedAt: new Date() };
-    this.maintenanceForecasts.set(id, updatedForecast);
-    return updatedForecast;
-  }
-
-  async deleteMaintenanceForecastsByVehicle(vehicleId: string): Promise<void> {
-    const entries = Array.from(this.maintenanceForecasts.entries());
-    for (const [id, forecast] of entries) {
-      if (forecast.vehicleId === vehicleId) {
-        this.maintenanceForecasts.delete(id);
-      }
-    }
-  }
-
-  // Mileage Snapshots
-  async getVehicleMileageSnapshots(vehicleId: string): Promise<VehicleMileageSnapshot[]> {
-    return Array.from(this.vehicleMileageSnapshots.values())
-      .filter(s => s.vehicleId === vehicleId)
-      .sort((a, b) => new Date(b.snapshotDate).getTime() - new Date(a.snapshotDate).getTime());
-  }
-
-  async createVehicleMileageSnapshot(insertSnapshot: InsertVehicleMileageSnapshot): Promise<VehicleMileageSnapshot> {
-    const id = randomUUID();
-    const snapshot: VehicleMileageSnapshot = {
-      ...insertSnapshot,
-      id,
-      createdAt: new Date(),
-      dailyKm: insertSnapshot.dailyKm || 0,
-      weeklyKm: insertSnapshot.weeklyKm || 0,
-      monthlyKm: insertSnapshot.monthlyKm || 0,
-      annualKm: insertSnapshot.annualKm || 0,
-      lifetimeKm: insertSnapshot.lifetimeKm || 0,
-      avgDailyKm: insertSnapshot.avgDailyKm || 0,
-      routeIntensity: insertSnapshot.routeIntensity || 'light'
-    };
-    this.vehicleMileageSnapshots.set(id, snapshot);
-    return snapshot;
-  }
-
-  async getLatestMileageSnapshot(vehicleId: string): Promise<VehicleMileageSnapshot | undefined> {
-    const snapshots = await this.getVehicleMileageSnapshots(vehicleId);
-    return snapshots[0];
-  }
-
-  // Vehicle Dashboard - comprehensive data for vehicle detail page
-  async getVehicleDashboard(vehicleId: string): Promise<VehicleFullDashboard | undefined> {
-    const vehicle = await this.getVehicle(vehicleId);
-    if (!vehicle) return undefined;
-
-    const reps = await this.getReps();
-    const assignedRep = vehicle.assignedRepId ? reps.find(r => r.id === vehicle.assignedRepId) : null;
-    const usageRecords = await this.getVehicleUsageRecords(vehicleId);
-    const maintenanceRecords = await this.getVehicleMaintenanceRecords(vehicleId);
-    const forecasts = await this.getMaintenanceForecasts(vehicleId);
-    const snapshots = await this.getVehicleMileageSnapshots(vehicleId);
-    const allVehicles = await this.getVehicles();
-    const allOutlets = await this.getOutlets();
-
-    // Calculate projected monthly KM from rep's scheduled routes
-    let projectedMonthlyKmFromRoutes = 0;
-    if (assignedRep) {
-      const repSchedules = await this.getSchedulesByRepId(assignedRep.id);
-      const weeklyKmByWeek: Record<number, number> = {};
-      
-      for (const schedule of repSchedules) {
-        const outletIds = schedule.outletIds as string[];
-        const scheduleOutlets = outletIds
-          .map(id => allOutlets.find(o => o.id === id))
-          .filter(Boolean);
-
-        let routeDistance = 0;
-        for (let i = 0; i < scheduleOutlets.length - 1; i++) {
-          const from = scheduleOutlets[i];
-          const to = scheduleOutlets[i + 1];
-          if (from?.latitude && from?.longitude && to?.latitude && to?.longitude) {
-            routeDistance += this.haversineDistance(
-              from.latitude, from.longitude,
-              to.latitude, to.longitude
-            );
-          }
-        }
-        weeklyKmByWeek[schedule.week] = (weeklyKmByWeek[schedule.week] || 0) + routeDistance;
-      }
-
-      // Calculate average weekly KM across all scheduled weeks
-      const weeks = Object.keys(weeklyKmByWeek);
-      const avgWeeklyKm = weeks.length > 0 
-        ? Object.values(weeklyKmByWeek).reduce((sum, km) => sum + km, 0) / weeks.length 
-        : 0;
-      projectedMonthlyKmFromRoutes = avgWeeklyKm * 4;
-    }
-
-    // Calculate lifetime KM
-    const lifetimeKm = vehicle.currentMileage - vehicle.startingMileage;
-
-    const now = new Date();
-    
-    // Calculate "Actual This Month" based on schedule: 
-    // How many working days have passed this month * daily avg from schedule
-    const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const dayOfMonth = now.getDate();
-    const workingDaysThisMonth = Math.round(dayOfMonth * 5 / 7); // Approx working days elapsed
-    const avgWeeklyKmFromSchedule = projectedMonthlyKmFromRoutes / 4;
-    const avgDailyKmFromSchedule = avgWeeklyKmFromSchedule / 5; // 5 working days
-    const actualThisMonthKm = Math.round(workingDaysThisMonth * avgDailyKmFromSchedule);
-    
-    // Quarterly = 3 months of projected schedule KM (approximation based on schedule)
-    const quarterlyKm = Math.round(projectedMonthlyKmFromRoutes * 3);
-
-    // Calculate usage metrics based on schedule
-    const avgDailyKm = avgDailyKmFromSchedule;
-    
-    // Calculate fleet average: use this vehicle's schedule average as baseline
-    // For simplicity, use 50 km/day as fleet default if no schedule data
-    const fleetAvgDailyKm = avgDailyKm > 0 ? avgDailyKm : 50;
-
-    // Determine route intensity based on schedule-derived KM
-    let routeIntensity: 'light' | 'medium' | 'heavy' = 'light';
-    if (avgDailyKm > 150) routeIntensity = 'heavy';
-    else if (avgDailyKm > 75) routeIntensity = 'medium';
-
-    // Determine comparison to fleet
-    let comparedToFleet: 'below' | 'average' | 'above' = 'average';
-    if (avgDailyKm < fleetAvgDailyKm * 0.8) comparedToFleet = 'below';
-    else if (avgDailyKm > fleetAvgDailyKm * 1.2) comparedToFleet = 'above';
-
-    // Get daily and weekly KM history
-    const dailyKmHistory = snapshots.slice(0, 30).map(s => ({
-      date: s.snapshotDate,
-      km: s.dailyKm
-    }));
-
-    const weeklyKmHistory = snapshots.filter((_, i) => i % 7 === 0).slice(0, 12).map(s => ({
-      week: s.snapshotDate,
-      km: s.weeklyKm
-    }));
-
-    // Get maintenance status
-    const sortedMaintenance = [...maintenanceRecords].sort((a, b) => 
-      new Date(b.serviceDate).getTime() - new Date(a.serviceDate).getTime()
-    );
-    const lastMaintenance = sortedMaintenance[0];
-
-    const upcomingMaintenance = forecasts.filter(f => f.status === 'upcoming' || f.status === 'due');
-    const overdueItems = forecasts.filter(f => f.status === 'overdue');
-
-    // Calculate days/km to next service
-    let daysToNextService: number | null = null;
-    let kmToNextService: number | null = null;
-    if (upcomingMaintenance.length > 0) {
-      const nextItem = upcomingMaintenance.sort((a, b) => a.remainingKm - b.remainingKm)[0];
-      kmToNextService = nextItem.remainingKm;
-      daysToNextService = nextItem.remainingDays;
-    }
-
-    // Generate recommendations
-    const recommendations = forecasts.map(f => ({
-      id: f.id,
-      maintenanceType: f.maintenanceType,
-      priority: f.severity as 'low' | 'medium' | 'high' | 'critical',
-      recommendation: f.recommendation || `Schedule ${f.maintenanceType.replace('_', ' ')}`,
-      estimatedDueDate: f.estimatedDueDate,
-      estimatedDueKm: f.dueMileage,
-      reason: `${f.remainingKm.toFixed(0)} km remaining until service`
-    }));
-
-    // Generate alerts
-    const alerts = [];
-    
-    for (const forecast of overdueItems) {
-      alerts.push({
-        id: randomUUID(),
-        type: 'maintenance_overdue' as const,
-        severity: 'critical' as const,
-        title: `${forecast.maintenanceType.replace('_', ' ')} Overdue`,
-        message: `Service was due ${Math.abs(forecast.remainingKm).toFixed(0)} km ago`,
-        createdAt: new Date(),
-        isRead: false
-      });
-    }
-
-    for (const forecast of upcomingMaintenance) {
-      if (forecast.remainingKm < 500 || (forecast.remainingDays && forecast.remainingDays < 7)) {
-        alerts.push({
-          id: randomUUID(),
-          type: 'maintenance_approaching' as const,
-          severity: 'warning' as const,
-          title: `${forecast.maintenanceType.replace('_', ' ')} Due Soon`,
-          message: `Only ${forecast.remainingKm.toFixed(0)} km remaining`,
-          createdAt: new Date(),
-          isRead: false
-        });
-      }
-    }
-
-    if (avgDailyKm > fleetAvgDailyKm * 1.5) {
-      alerts.push({
-        id: randomUUID(),
-        type: 'usage_anomaly' as const,
-        severity: 'info' as const,
-        title: 'High Usage Detected',
-        message: `Vehicle usage is ${((avgDailyKm / fleetAvgDailyKm) * 100 - 100).toFixed(0)}% above fleet average`,
-        createdAt: new Date(),
-        isRead: false
-      });
-    }
-
-    // Calculate health score (0-100)
-    const vehicleAge = now.getFullYear() - vehicle.year;
-    const maxExpectedMileage = 200000; // Expected max lifetime mileage
-    const mileageHealth = Math.max(0, 100 - (vehicle.currentMileage / maxExpectedMileage * 100));
-    
-    // Maintenance compliance - based on overdue items
-    const maintenanceCompliance = overdueItems.length === 0 ? 100 : 
-      Math.max(0, 100 - (overdueItems.length * 20));
-    
-    // Usage pattern score - penalize heavy usage
-    const usagePattern = routeIntensity === 'heavy' ? 60 : 
-      routeIntensity === 'medium' ? 80 : 100;
-    
-    // Age condition
-    const ageCondition = Math.max(0, 100 - (vehicleAge * 10));
-    
-    // Weighted health score
-    const healthScore = Math.round(
-      mileageHealth * 0.3 + 
-      maintenanceCompliance * 0.35 + 
-      usagePattern * 0.15 + 
-      ageCondition * 0.2
-    );
-
-    // Calculate wear acceleration factor
-    const wearAccelerationFactor = routeIntensity === 'heavy' ? 1.5 : 
-      routeIntensity === 'medium' ? 1.2 : 1.0;
-
-    // Calculate breakdown probability
-    const breakdownProbability = Math.max(0, Math.min(100, 
-      (100 - healthScore) * 0.5 + 
-      overdueItems.length * 10 + 
-      (vehicleAge > 5 ? (vehicleAge - 5) * 5 : 0)
-    ));
-
-    // Determine risk level
-    let riskLevel: 'low' | 'medium' | 'high' | 'critical' = 'low';
-    if (breakdownProbability > 60 || overdueItems.length > 2) riskLevel = 'critical';
-    else if (breakdownProbability > 40 || overdueItems.length > 1) riskLevel = 'high';
-    else if (breakdownProbability > 20 || overdueItems.length > 0) riskLevel = 'medium';
-
-    // Usage intensity classification
-    const usageIntensity: 'light' | 'normal' | 'heavy' = 
-      routeIntensity === 'heavy' ? 'heavy' : 
-      routeIntensity === 'medium' ? 'normal' : 'light';
-
-    const healthScoreData = {
-      healthScore,
-      wearAccelerationFactor,
-      breakdownProbability,
-      riskLevel,
-      usageIntensity,
-      healthFactors: {
-        mileageHealth: Math.round(mileageHealth),
-        maintenanceCompliance,
-        usagePattern,
-        ageCondition
-      }
-    };
-
-    // Generate monthly maintenance plan (simplified - next month projection)
-    const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-    const safeAvgDailyKm = avgDailyKm > 0 ? avgDailyKm : 50; // Default to 50 km/day if no usage data
-    const projectedMonthlyKm = safeAvgDailyKm * 22; // 22 working days
-    const scheduledItems = forecasts
-      .filter(f => f.remainingKm < projectedMonthlyKm)
-      .map(f => {
-        const daysUntilDue = safeAvgDailyKm > 0 ? Math.max(0, f.remainingKm / safeAvgDailyKm) : 30;
-        return {
-          maintenanceType: f.maintenanceType,
-          estimatedDate: f.estimatedDueDate || new Date(now.getTime() + daysUntilDue * 24 * 60 * 60 * 1000),
-          estimatedCost: f.maintenanceType === 'oil_change' ? 50 : 
-            f.maintenanceType === 'tire_replacement' ? 400 : 
-            f.maintenanceType === 'brake_service' ? 200 : 100,
-          priority: f.severity
-        };
-      });
-
-    const monthlyPlan = {
-      month: nextMonth.toISOString().slice(0, 7),
-      projectedKm: projectedMonthlyKm,
-      estimatedCost: scheduledItems.reduce((sum, item) => sum + item.estimatedCost, 0),
-      scheduledItems,
-      status: 'planned' as const
-    };
-
-    return {
-      overview: {
-        vehicleId: vehicle.id,
-        plateNumber: vehicle.plateNumber,
-        model: vehicle.model,
-        year: vehicle.year,
-        assignedRepId: vehicle.assignedRepId,
-        assignedRepName: assignedRep?.name || null,
-        currentMileage: vehicle.currentMileage,
-        lifetimeKm,
-        monthlyKm: actualThisMonthKm,
-        quarterlyKm,
-        projectedMonthlyKm: Math.round(projectedMonthlyKmFromRoutes),
-        status: vehicle.status
-      },
-      usage: {
-        avgDailyKm,
-        routeIntensity,
-        fleetAvgDailyKm,
-        comparedToFleet,
-        dailyKmHistory,
-        weeklyKmHistory
-      },
-      maintenance: {
-        lastMaintenanceDate: lastMaintenance?.serviceDate || null,
-        lastMaintenanceType: lastMaintenance?.maintenanceType || null,
-        lastMaintenanceKm: lastMaintenance?.mileageAtService || null,
-        upcomingMaintenance,
-        overdueItems,
-        daysToNextService,
-        kmToNextService
-      },
-      healthScore: healthScoreData,
-      recommendations,
-      alerts,
-      monthlyPlan: scheduledItems.length > 0 ? monthlyPlan : null
     };
   }
 
@@ -1412,7 +696,6 @@ export class MemStorage implements IStorage {
       id,
       status: data.status || 'active',
       outletLimit: data.outletLimit ?? 100,
-      vehicleLimit: data.vehicleLimit ?? 2,
       startDate: data.startDate || now,
       endDate: data.endDate || null,
       consentGiven: data.consentGiven ?? false,
@@ -1465,7 +748,6 @@ export class MemStorage implements IStorage {
       id,
       trialId,
       outletCount: 0,
-      vehicleCount: 0,
       optimizationRuns: 0,
       lastActivityAt: now,
       createdAt: now,
@@ -1493,20 +775,6 @@ export class MemStorage implements IStorage {
     return updated;
   }
 
-  async incrementVehicleCount(trialId: string, count: number = 1): Promise<TrialUsage | undefined> {
-    const usage = this.trialUsages.get(trialId);
-    if (!usage) return undefined;
-    
-    const updated: TrialUsage = {
-      ...usage,
-      vehicleCount: usage.vehicleCount + count,
-      lastActivityAt: new Date(),
-      updatedAt: new Date()
-    };
-    this.trialUsages.set(trialId, updated);
-    return updated;
-  }
-
   async decrementOutletCount(trialId: string, count: number = 1): Promise<TrialUsage | undefined> {
     const usage = this.trialUsages.get(trialId);
     if (!usage) return undefined;
@@ -1521,20 +789,6 @@ export class MemStorage implements IStorage {
     return updated;
   }
 
-  async decrementVehicleCount(trialId: string, count: number = 1): Promise<TrialUsage | undefined> {
-    const usage = this.trialUsages.get(trialId);
-    if (!usage) return undefined;
-    
-    const updated: TrialUsage = {
-      ...usage,
-      vehicleCount: Math.max(0, usage.vehicleCount - count),
-      lastActivityAt: new Date(),
-      updatedAt: new Date()
-    };
-    this.trialUsages.set(trialId, updated);
-    return updated;
-  }
-
   async setOutletCount(trialId: string, count: number): Promise<TrialUsage | undefined> {
     const usage = this.trialUsages.get(trialId);
     if (!usage) return undefined;
@@ -1542,20 +796,6 @@ export class MemStorage implements IStorage {
     const updated: TrialUsage = {
       ...usage,
       outletCount: count,
-      lastActivityAt: new Date(),
-      updatedAt: new Date()
-    };
-    this.trialUsages.set(trialId, updated);
-    return updated;
-  }
-
-  async setVehicleCount(trialId: string, count: number): Promise<TrialUsage | undefined> {
-    const usage = this.trialUsages.get(trialId);
-    if (!usage) return undefined;
-    
-    const updated: TrialUsage = {
-      ...usage,
-      vehicleCount: count,
       lastActivityAt: new Date(),
       updatedAt: new Date()
     };
@@ -1741,13 +981,11 @@ export class MemStorage implements IStorage {
   }
 
   async clearAll(): Promise<void> {
-    // Clear optimization-related data only, preserve trial and vehicle data
+    // Clear optimization-related data only, preserve trial data
     this.outlets.clear();
     this.reps.clear();
     this.schedules.clear();
     this.optimizationRuns.clear();
-    this.maintenanceForecasts.clear();
-    this.vehicleMileageSnapshots.clear();
     this.roleHierarchies.clear();
     this.roleSchedules.clear();
     // DO NOT clear trial-related data - preserve user's trial session

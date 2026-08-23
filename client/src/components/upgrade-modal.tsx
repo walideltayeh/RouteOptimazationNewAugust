@@ -12,8 +12,7 @@ import {
   AlertCircle, 
   Check, 
   Sparkles, 
-  Store, 
-  Car, 
+  Store,  
   Zap,
   BarChart3,
   Users,
@@ -23,7 +22,7 @@ import {
 interface UpgradeModalProps {
   isOpen: boolean;
   onClose: () => void;
-  limitType: 'outlet' | 'vehicle';
+  limitType?: 'outlet';
   currentCount: number;
   maxCount: number;
 }
@@ -35,13 +34,11 @@ export default function UpgradeModal({
   currentCount,
   maxCount,
 }: UpgradeModalProps) {
-  const limitIcon = limitType === 'outlet' ? Store : Car;
-  const LimitIcon = limitIcon;
-  const limitLabel = limitType === 'outlet' ? 'outlets' : 'vehicles';
+  const LimitIcon = Store;
+  const limitLabel = 'outlets';
 
   const benefits = [
     { icon: Store, label: "Unlimited outlets" },
-    { icon: Car, label: "Unlimited vehicles" },
     { icon: Users, label: "Unlimited sales reps" },
     { icon: BarChart3, label: "Advanced analytics" },
     { icon: Zap, label: "Priority optimization" },
@@ -63,7 +60,7 @@ export default function UpgradeModal({
             <Badge variant="destructive">Limit Reached</Badge>
           </div>
           <DialogTitle className="text-xl">
-            {limitType === 'outlet' ? 'Outlet' : 'Vehicle'} Limit Reached
+            Outlet Limit Reached
           </DialogTitle>
           <DialogDescription className="text-base">
             You've used <span className="font-semibold">{currentCount}</span> of{" "}

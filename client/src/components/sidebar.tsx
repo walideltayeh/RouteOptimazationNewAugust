@@ -12,7 +12,6 @@ import {
   Route,
   CalendarDays,
   FlaskConical,
-  Car,
   Users,
   LogIn,
   LogOut,
@@ -28,7 +27,6 @@ const navigation = [
   { name: "Rep Map", href: "/rep-map", icon: Route },
   { name: "Schedules", href: "/schedules", icon: CalendarDays },
   { name: "Scenarios", href: "/scenarios", icon: FlaskConical },
-  { name: "Vehicles", href: "/vehicles", icon: Car },
 ];
 
 interface AuthStatus {

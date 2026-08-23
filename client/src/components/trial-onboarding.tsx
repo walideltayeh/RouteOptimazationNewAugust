@@ -185,16 +185,6 @@ export default function TrialOnboarding({ open, onComplete, onClose, skipWelcome
               </div>
               
               <div className="flex items-start gap-3">
-                <Truck className="h-5 w-5 text-[#1d1d1f] dark:text-white mt-0.5 shrink-0" />
-                <div>
-                  <h4 className="font-medium text-[#1d1d1f] dark:text-white">Vehicle Intelligence</h4>
-                  <p className="text-sm text-[#86868b]">
-                    Track vehicles and predict maintenance needs
-                  </p>
-                </div>
-              </div>
-              
-              <div className="flex items-start gap-3">
                 <BarChart3 className="h-5 w-5 text-[#1d1d1f] dark:text-white mt-0.5 shrink-0" />
                 <div>
                   <h4 className="font-medium text-[#1d1d1f] dark:text-white">Analytics & Insights</h4>
@@ -350,10 +340,6 @@ export default function TrialOnboarding({ open, onComplete, onClose, skipWelcome
                   </li>
                   <li className="flex items-center gap-2">
                     <CheckCircle2 className="h-4 w-4 text-[#34c759]" />
-                    Up to 2 vehicles
-                  </li>
-                  <li className="flex items-center gap-2">
-                    <CheckCircle2 className="h-4 w-4 text-[#34c759]" />
                     14-day trial period
                   </li>
                 </ul>
@@ -457,10 +443,6 @@ export default function TrialOnboarding({ open, onComplete, onClose, skipWelcome
                 <div className="rounded-xl border border-[#e5e5e5] dark:border-[#38383a] p-3">
                   <div className="text-2xl font-bold text-[#1d1d1f] dark:text-white">100</div>
                   <div className="text-sm text-[#86868b]">Outlets Available</div>
-                </div>
-                <div className="rounded-xl border border-[#e5e5e5] dark:border-[#38383a] p-3">
-                  <div className="text-2xl font-bold text-[#1d1d1f] dark:text-white">2</div>
-                  <div className="text-sm text-[#86868b]">Vehicles Available</div>
                 </div>
               </div>
             </div>

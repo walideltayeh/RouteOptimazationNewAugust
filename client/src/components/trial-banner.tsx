@@ -32,10 +32,9 @@ export default function TrialBanner({ onUpgradeClick }: TrialBannerProps) {
   }
 
   const outletUsagePercent = (trialStatus.outletCount / trialStatus.outletLimit) * 100;
-  const vehicleUsagePercent = (trialStatus.vehicleCount / trialStatus.vehicleLimit) * 100;
+  const isWarning = outletUsagePercent >= 80;
+  const isLimitReached = outletUsagePercent >= 100;
 
-  const isWarning = outletUsagePercent >= 80 || vehicleUsagePercent >= 80;
-  const isLimitReached = outletUsagePercent >= 100 || vehicleUsagePercent >= 100;
   const isExpired = trialStatus.isExpired;
   const isBlocked = trialStatus.isBlocked;
 
@@ -108,12 +107,9 @@ export default function TrialBanner({ onUpgradeClick }: TrialBannerProps) {
                 <div className="flex items-center gap-2">
                   <Car className="h-4 w-4 text-gray-500" />
                   <span className="text-sm text-gray-600">
-                    {trialStatus.vehicleCount}/{trialStatus.vehicleLimit} vehicles
                   </span>
                   <div className="w-20 h-2 bg-gray-200 rounded-full overflow-hidden">
                     <div 
-                      className={`h-full ${getProgressColor(vehicleUsagePercent)} transition-all`}
-                      style={{ width: `${Math.min(vehicleUsagePercent, 100)}%` }}
                     />
                   </div>
                 </div>

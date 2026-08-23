@@ -103,7 +103,7 @@ interface TrialUsageIndicatorProps {
 export default function TrialUsageIndicator({ compact = false }: TrialUsageIndicatorProps) {
   const [upgradeModal, setUpgradeModal] = useState<{
     isOpen: boolean;
-    limitType: 'outlet' | 'vehicle';
+    limitType: 'outlet';
   }>({
     isOpen: false,
     limitType: 'outlet',
@@ -118,8 +118,7 @@ export default function TrialUsageIndicator({ compact = false }: TrialUsageIndic
   }
 
   const outletPercent = (trialStatus.outletCount / trialStatus.outletLimit) * 100;
-  const vehiclePercent = (trialStatus.vehicleCount / trialStatus.vehicleLimit) * 100;
-  const showUpgrade = outletPercent >= 80 || vehiclePercent >= 80 || trialStatus.upgradeRequired;
+  const showUpgrade = outletPercent >= 80 || trialStatus.upgradeRequired;
 
   const handleOutletClick = () => {
     if (outletPercent >= 100) {
@@ -127,50 +126,19 @@ export default function TrialUsageIndicator({ compact = false }: TrialUsageIndic
     }
   };
 
-  const handleVehicleClick = () => {
-    if (vehiclePercent >= 100) {
-      setUpgradeModal({ isOpen: true, limitType: 'vehicle' });
-    }
-  };
 
   if (compact) {
     return (
       <>
         <div className="flex items-center gap-2 p-2 bg-gray-50 rounded-lg">
-          <CircularProgress
-            value={trialStatus.outletCount}
-            max={trialStatus.outletLimit}
-            size={32}
-            strokeWidth={3}
-            icon={<Store className="h-3 w-3 text-gray-600" />}
-            label="Outlets"
-            onClick={handleOutletClick}
-          />
-          <CircularProgress
-            value={trialStatus.vehicleCount}
-            max={trialStatus.vehicleLimit}
-            size={32}
-            strokeWidth={3}
-            icon={<Car className="h-3 w-3 text-gray-600" />}
-            label="Vehicles"
-            onClick={handleVehicleClick}
-          />
         </div>
 
         <UpgradeModal
           isOpen={upgradeModal.isOpen}
           onClose={() => setUpgradeModal({ ...upgradeModal, isOpen: false })}
           limitType={upgradeModal.limitType}
-          currentCount={
-            upgradeModal.limitType === 'outlet'
-              ? trialStatus.outletCount
-              : trialStatus.vehicleCount
-          }
-          maxCount={
-            upgradeModal.limitType === 'outlet'
-              ? trialStatus.outletLimit
-              : trialStatus.vehicleLimit
-          }
+          currentCount={trialStatus.outletCount}
+          maxCount={trialStatus.outletLimit}
         />
       </>
     );
@@ -204,29 +172,6 @@ export default function TrialUsageIndicator({ compact = false }: TrialUsageIndic
 
         <div className="flex items-center justify-center gap-4">
           <div className="flex flex-col items-center gap-1">
-            <CircularProgress
-              value={trialStatus.outletCount}
-              max={trialStatus.outletLimit}
-              size={48}
-              strokeWidth={4}
-              icon={<Store className="h-4 w-4 text-gray-600" />}
-              label="Outlets"
-              onClick={handleOutletClick}
-            />
-            <span className="text-xs text-gray-500">Outlets</span>
-          </div>
-
-          <div className="flex flex-col items-center gap-1">
-            <CircularProgress
-              value={trialStatus.vehicleCount}
-              max={trialStatus.vehicleLimit}
-              size={48}
-              strokeWidth={4}
-              icon={<Car className="h-4 w-4 text-gray-600" />}
-              label="Vehicles"
-              onClick={handleVehicleClick}
-            />
-            <span className="text-xs text-gray-500">Vehicles</span>
           </div>
         </div>
 
@@ -244,16 +189,8 @@ export default function TrialUsageIndicator({ compact = false }: TrialUsageIndic
         isOpen={upgradeModal.isOpen}
         onClose={() => setUpgradeModal({ ...upgradeModal, isOpen: false })}
         limitType={upgradeModal.limitType}
-        currentCount={
-          upgradeModal.limitType === 'outlet'
-            ? trialStatus.outletCount
-            : trialStatus.vehicleCount
-        }
-        maxCount={
-          upgradeModal.limitType === 'outlet'
-            ? trialStatus.outletLimit
-            : trialStatus.vehicleLimit
-        }
+        currentCount={trialStatus.outletCount}
+        maxCount={trialStatus.outletLimit}
       />
     </>
   );

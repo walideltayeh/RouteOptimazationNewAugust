@@ -7,8 +7,6 @@ import {
   insertOutletSchema, 
   insertRepSchema, 
   insertScheduleSchema, 
-  insertVehicleSchema,
-  insertVehicleMaintenanceSchema,
   insertRoleHierarchySchema,
   ROLE_PRESETS,
   TRIAL_LIMITS,
@@ -3085,7 +3083,7 @@ function generateWeeklySchedules(rep: Rep, outlets: Outlet[]): InsertSchedule[] 
   return schedules;
 }
 
-import { generateScheduleExcel, generateVehicleSummaryExcel } from './export';
+import { generateScheduleExcel } from './export';
 
 interface TrialContext {
   ipAddress: string;
@@ -3167,11 +3165,8 @@ async function getTrialStatus(trialId: string): Promise<TrialStatus> {
       trialId: null,
       status: 'inactive',
       outletLimit: 0,
-      vehicleLimit: 0,
       outletCount: 0,
-      vehicleCount: 0,
       outletsRemaining: 0,
-      vehiclesRemaining: 0,
       daysRemaining: 0,
       isExpired: true,
       isBlocked: false,
@@ -3186,23 +3181,19 @@ async function getTrialStatus(trialId: string): Promise<TrialStatus> {
   const isBlocked = trial.status === TRIAL_STATUS.BLOCKED;
   
   const outletCount = usage?.outletCount || 0;
-  const vehicleCount = usage?.vehicleCount || 0;
   
   return {
     isTrialMode: true,
     trialId: trial.id,
     status: trial.status,
     outletLimit: trial.outletLimit,
-    vehicleLimit: trial.vehicleLimit,
     outletCount,
-    vehicleCount,
     outletsRemaining: Math.max(0, trial.outletLimit - outletCount),
-    vehiclesRemaining: Math.max(0, trial.vehicleLimit - vehicleCount),
     daysRemaining,
     isExpired,
     isBlocked,
     blockReason: isBlocked ? 'Account has been blocked due to suspicious activity' : undefined,
-    upgradeRequired: isExpired || outletCount >= trial.outletLimit || vehicleCount >= trial.vehicleLimit
+    upgradeRequired: isExpired || outletCount >= trial.outletLimit,
   };
 }
 
@@ -3395,7 +3386,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         companyName: companyName || null,
         status: TRIAL_STATUS.ACTIVE,
         outletLimit: TRIAL_LIMITS.MAX_OUTLETS,
-        vehicleLimit: TRIAL_LIMITS.MAX_VEHICLES,
         startDate: new Date(),
         endDate,
         consentGiven: true,
@@ -3636,11 +3626,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           trialId: null,
           status: 'inactive',
           outletLimit: 0,
-          vehicleLimit: 0,
           outletCount: 0,
-          vehicleCount: 0,
           outletsRemaining: 0,
-          vehiclesRemaining: 0,
           daysRemaining: 0,
           isExpired: false,
           isBlocked: false,
@@ -3664,7 +3651,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.json({ allowed: true });
       }
       
-      const { operation, count = 1 } = req.body as { operation: 'add_outlet' | 'add_vehicle'; count?: number };
+      const { operation, count = 1 } = req.body as { operation: 'add_outlet'; count?: number };
       
       if (!operation) {
         return res.status(400).json({ message: "Operation type is required" });
@@ -3699,18 +3686,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
             reason: `Outlet limit reached (${usage.outletCount}/${trial.outletLimit}). Upgrade to add more outlets.`,
             currentCount: usage.outletCount,
             limit: trial.outletLimit
-          });
-        }
-      }
-      
-      if (operation === 'add_vehicle') {
-        const newCount = usage.vehicleCount + count;
-        if (newCount > trial.vehicleLimit) {
-          return res.json({ 
-            allowed: false, 
-            reason: `Vehicle limit reached (${usage.vehicleCount}/${trial.vehicleLimit}). Upgrade to add more vehicles.`,
-            currentCount: usage.vehicleCount,
-            limit: trial.vehicleLimit
           });
         }
       }
@@ -5740,171 +5715,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({ message: "Failed to export routes" });
     }
   });
-
-  // ============= VEHICLE MANAGEMENT ROUTES =============
-
-  // Get all vehicles
-  app.get("/api/vehicles", async (_req, res) => {
-    try {
-      const vehicles = await storage.getVehicles();
-      res.json(vehicles);
-    } catch (error) {
-      res.status(500).json({ message: "Failed to fetch vehicles" });
-    }
-  });
-
-  // Get single vehicle
-  app.get("/api/vehicles/:id", async (req, res) => {
-    try {
-      const vehicle = await storage.getVehicle(req.params.id);
-      if (!vehicle) {
-        return res.status(404).json({ message: "Vehicle not found" });
-      }
-      res.json(vehicle);
-    } catch (error) {
-      res.status(500).json({ message: "Failed to fetch vehicle" });
-    }
-  });
-
-  // Create vehicle
-  app.post("/api/vehicles", async (req: Request, res: Response) => {
-    try {
-      const trialId = req.trialContext?.trialId || req.cookies?.trial_session;
-      
-      if (trialId) {
-        const trial = await storage.getTrialAccount(trialId);
-        const usage = await storage.getTrialUsage(trialId);
-        
-        if (trial && usage) {
-          if (trial.status === TRIAL_STATUS.BLOCKED) {
-            return res.status(402).json({ 
-              message: "Trial account has been blocked. Please contact support.",
-              upgradeRequired: true
-            });
-          }
-          
-          if (trial.status === TRIAL_STATUS.EXPIRED || (trial.endDate && new Date(trial.endDate) < new Date())) {
-            return res.status(402).json({ 
-              message: "Trial period has expired. Please upgrade to continue.",
-              upgradeRequired: true
-            });
-          }
-          
-          if (usage.vehicleCount >= trial.vehicleLimit) {
-            return res.status(402).json({ 
-              message: `Vehicle limit reached (${usage.vehicleCount}/${trial.vehicleLimit}). Upgrade to add more vehicles.`,
-              upgradeRequired: true,
-              currentCount: usage.vehicleCount,
-              limit: trial.vehicleLimit
-            });
-          }
-        }
-      }
-      
-      const parsed = insertVehicleSchema.safeParse(req.body);
-      if (!parsed.success) {
-        return res.status(400).json({ message: "Invalid vehicle data", errors: parsed.error.errors });
-      }
-      
-      const vehicle = await storage.createVehicle(parsed.data);
-      
-      if (trialId) {
-        await storage.incrementVehicleCount(trialId, 1);
-      }
-      
-      res.status(201).json(vehicle);
-    } catch (error) {
-      console.error("Error creating vehicle:", error);
-      res.status(500).json({ message: "Failed to create vehicle" });
-    }
-  });
-
-  // Update vehicle
-  app.patch("/api/vehicles/:id", async (req, res) => {
-    try {
-      const vehicle = await storage.updateVehicle(req.params.id, req.body);
-      if (!vehicle) {
-        return res.status(404).json({ message: "Vehicle not found" });
-      }
-      res.json(vehicle);
-    } catch (error) {
-      res.status(500).json({ message: "Failed to update vehicle" });
-    }
-  });
-
-  // Delete vehicle
-  app.delete("/api/vehicles/:id", async (req, res) => {
-    try {
-      await storage.deleteVehicle(req.params.id);
-      res.json({ success: true });
-    } catch (error) {
-      res.status(500).json({ message: "Failed to delete vehicle" });
-    }
-  });
-
-  // Get vehicle maintenance records
-  app.get("/api/vehicles/:id/maintenance", async (req, res) => {
-    try {
-      const records = await storage.getVehicleMaintenanceRecords(req.params.id);
-      res.json(records);
-    } catch (error) {
-      res.status(500).json({ message: "Failed to fetch maintenance records" });
-    }
-  });
-
-  // Get all maintenance records
-  app.get("/api/vehicle-maintenance", async (_req, res) => {
-    try {
-      const records = await storage.getVehicleMaintenanceRecords();
-      res.json(records);
-    } catch (error) {
-      res.status(500).json({ message: "Failed to fetch maintenance records" });
-    }
-  });
-
-  // Create maintenance record
-  app.post("/api/vehicle-maintenance", async (req, res) => {
-    try {
-      const parsed = insertVehicleMaintenanceSchema.safeParse(req.body);
-      if (!parsed.success) {
-        return res.status(400).json({ message: "Invalid maintenance data", errors: parsed.error.errors });
-      }
-      const record = await storage.createVehicleMaintenanceRecord(parsed.data);
-      res.status(201).json(record);
-    } catch (error) {
-      res.status(500).json({ message: "Failed to create maintenance record" });
-    }
-  });
-
-  // Get vehicle alerts
-  app.get("/api/vehicle-alerts", async (_req, res) => {
-    try {
-      const alerts = await storage.getVehicleAlerts();
-      res.json(alerts);
-    } catch (error) {
-      res.status(500).json({ message: "Failed to fetch vehicle alerts" });
-    }
-  });
-
-  // Get vehicle usage records
-  app.get("/api/vehicles/:id/usage", async (req, res) => {
-    try {
-      const records = await storage.getVehicleUsageRecords(req.params.id);
-      res.json(records);
-    } catch (error) {
-      res.status(500).json({ message: "Failed to fetch usage records" });
-    }
-  });
-
-  // ============= RE-OPTIMIZATION ROUTES =============
-
-  // Re-assign outlet to a different zone/territory
-  // Rebuild the schedules (and role schedules) of just the given reps from
-  // their currently-owned outlets (linkage: outlet.repId). Outlets are
-  // grouped by their zone label so the geographic tightness of the original
-  // optimization survives; outlets moved in from another rep form their own
-  // group, which the day-builder merges into the nearest day. Untouched reps
-  // keep their schedules exactly as they were.
   async function regenerateSchedulesForReps(repIds: string[]) {
     const uniqueRepIds = Array.from(new Set(repIds.filter(Boolean)));
     const allReps = await storage.getReps();
@@ -6401,358 +6211,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // ============= VEHICLE DASHBOARD & MAINTENANCE FORECASTING =============
-
-  // Get vehicle dashboard with all analytics
-  app.get("/api/vehicles/:id/dashboard", async (req, res) => {
-    try {
-      const dashboard = await storage.getVehicleDashboard(req.params.id);
-      if (!dashboard) {
-        return res.status(404).json({ message: "Vehicle not found" });
-      }
-      res.json(dashboard);
-    } catch (error) {
-      console.error("Vehicle dashboard error:", error);
-      res.status(500).json({ message: "Failed to fetch vehicle dashboard" });
-    }
-  });
-
-  // Calculate and update maintenance forecasts for a vehicle
-  app.post("/api/vehicles/:id/calculate-forecasts", async (req, res) => {
-    try {
-      const vehicleId = req.params.id;
-      const vehicle = await storage.getVehicle(vehicleId);
-      if (!vehicle) {
-        return res.status(404).json({ message: "Vehicle not found" });
-      }
-
-      // Get maintenance policies and history
-      const policies = await storage.getMaintenancePolicies();
-      const maintenanceRecords = await storage.getVehicleMaintenanceRecords(vehicleId);
-      const usageRecords = await storage.getVehicleUsageRecords(vehicleId);
-
-      // Clear existing forecasts
-      await storage.deleteMaintenanceForecastsByVehicle(vehicleId);
-
-      // Calculate average daily KM from usage records
-      let avgDailyKm = 50; // Default estimate
-      if (usageRecords.length > 0) {
-        const totalKm = usageRecords.reduce((sum, r) => sum + r.distance, 0);
-        const days = Math.ceil((Date.now() - new Date(usageRecords[0].tripDate).getTime()) / (24 * 60 * 60 * 1000));
-        avgDailyKm = totalKm / Math.max(days, 1);
-      }
-
-      const forecasts = [];
-
-      for (const policy of policies.filter(p => p.isActive)) {
-        // Find last maintenance of this type
-        const lastMaintenance = maintenanceRecords
-          .filter(r => r.maintenanceType === policy.maintenanceType)
-          .sort((a, b) => new Date(b.serviceDate).getTime() - new Date(a.serviceDate).getTime())[0];
-
-        let dueMileage: number;
-        let kmSinceLastService: number;
-
-        if (lastMaintenance) {
-          dueMileage = lastMaintenance.mileageAtService + policy.intervalKm;
-          kmSinceLastService = vehicle.currentMileage - lastMaintenance.mileageAtService;
-        } else {
-          // No record - assume due based on starting mileage
-          dueMileage = vehicle.startingMileage + policy.intervalKm;
-          kmSinceLastService = vehicle.currentMileage - vehicle.startingMileage;
-        }
-
-        const remainingKm = dueMileage - vehicle.currentMileage;
-        const remainingDays = avgDailyKm > 0 ? Math.ceil(remainingKm / avgDailyKm) : null;
-        const estimatedDueDate = remainingDays ? new Date(Date.now() + remainingDays * 24 * 60 * 60 * 1000) : null;
-
-        // Determine severity and status
-        let severity: string;
-        let status: string;
-
-        if (remainingKm < 0) {
-          status = 'overdue';
-          severity = Math.abs(remainingKm) >= policy.criticalThresholdKm ? 'critical' : 'high';
-        } else if (remainingKm <= policy.warningThresholdKm) {
-          status = 'due';
-          severity = remainingKm <= policy.warningThresholdKm / 2 ? 'high' : 'medium';
-        } else {
-          status = 'upcoming';
-          severity = 'low';
-        }
-
-        // Generate recommendation
-        const recommendation = remainingKm < 0
-          ? `URGENT: ${policy.name} is overdue by ${Math.abs(remainingKm).toFixed(0)} km. Schedule immediately.`
-          : remainingKm <= policy.warningThresholdKm
-          ? `${policy.name} due soon. ${remainingKm.toFixed(0)} km remaining.`
-          : `${policy.name} scheduled in ${remainingKm.toFixed(0)} km (approx. ${remainingDays || '?'} days).`;
-
-        const forecast = await storage.createMaintenanceForecast({
-          vehicleId,
-          policyId: policy.id,
-          maintenanceType: policy.maintenanceType,
-          currentMileage: vehicle.currentMileage,
-          dueMileage,
-          estimatedDueDate,
-          remainingKm,
-          remainingDays,
-          severity,
-          status,
-          recommendation
-        });
-
-        forecasts.push(forecast);
-      }
-
-      res.json({
-        success: true,
-        vehicleId,
-        forecastsGenerated: forecasts.length,
-        forecasts
-      });
-    } catch (error) {
-      console.error("Forecast calculation error:", error);
-      res.status(500).json({ message: "Failed to calculate maintenance forecasts" });
-    }
-  });
 
   // Get maintenance policies
-  app.get("/api/maintenance-policies", async (_req, res) => {
-    try {
-      const policies = await storage.getMaintenancePolicies();
-      res.json(policies);
-    } catch (error) {
-      res.status(500).json({ message: "Failed to fetch maintenance policies" });
-    }
-  });
-
   // Update maintenance policy
-  app.patch("/api/maintenance-policies/:id", async (req, res) => {
-    try {
-      const policy = await storage.updateMaintenancePolicy(req.params.id, req.body);
-      if (!policy) {
-        return res.status(404).json({ message: "Policy not found" });
-      }
-      res.json(policy);
-    } catch (error) {
-      res.status(500).json({ message: "Failed to update maintenance policy" });
-    }
-  });
-
-  // Get vehicle forecasts
-  app.get("/api/vehicles/:id/forecasts", async (req, res) => {
-    try {
-      const forecasts = await storage.getMaintenanceForecasts(req.params.id);
-      res.json(forecasts);
-    } catch (error) {
-      res.status(500).json({ message: "Failed to fetch forecasts" });
-    }
-  });
-
-  // Export vehicle summary to Excel
-  app.get("/api/vehicles/:id/export", async (req, res) => {
-    try {
-      const vehicleId = req.params.id;
-      const vehicle = await storage.getVehicle(vehicleId);
-      if (!vehicle) {
-        return res.status(404).json({ message: "Vehicle not found" });
-      }
-
-      const reps = await storage.getReps();
-      const assignedRep = reps.find(r => r.id === vehicle.assignedRepId);
-      const forecasts = await storage.getMaintenanceForecasts(vehicleId);
-      const maintenanceHistory = await storage.getVehicleMaintenanceRecords(vehicleId);
-      const mileageSnapshots = await storage.getVehicleMileageSnapshots(vehicleId);
-
-      const latestSnapshot = mileageSnapshots.sort((a, b) => 
-        new Date(b.snapshotDate).getTime() - new Date(a.snapshotDate).getTime()
-      )[0];
-
-      const exportData = {
-        vehicle: {
-          plateNumber: vehicle.plateNumber,
-          model: vehicle.model,
-          year: vehicle.year,
-          currentMileage: vehicle.currentMileage,
-          startingMileage: vehicle.startingMileage,
-          status: vehicle.status,
-          assignedRepName: assignedRep?.name
-        },
-        usage: {
-          dailyKm: latestSnapshot?.dailyKm || 0,
-          weeklyKm: latestSnapshot?.weeklyKm || 0,
-          monthlyKm: latestSnapshot?.monthlyKm || 0,
-          lifetimeKm: latestSnapshot?.lifetimeKm || vehicle.currentMileage - vehicle.startingMileage,
-          avgDailyKm: latestSnapshot?.avgDailyKm || 0,
-          routeIntensity: latestSnapshot?.routeIntensity || 'light'
-        },
-        forecasts: forecasts.map(f => ({
-          maintenanceType: f.maintenanceType,
-          dueMileage: f.dueMileage,
-          remainingKm: f.remainingKm,
-          status: f.status,
-          severity: f.severity,
-          recommendation: f.recommendation || ''
-        })),
-        maintenanceHistory: maintenanceHistory.map(h => ({
-          serviceDate: h.serviceDate.toISOString(),
-          maintenanceType: h.maintenanceType,
-          mileageAtService: h.mileageAtService,
-          cost: h.cost || undefined,
-          notes: h.notes || undefined
-        }))
-      };
-
-      const buffer = generateVehicleSummaryExcel(exportData);
-      
-      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-      res.setHeader('Content-Disposition', `attachment; filename="vehicle_${vehicle.plateNumber}_summary.xlsx"`);
-      res.send(buffer);
-    } catch (error) {
-      console.error("Vehicle export error:", error);
-      res.status(500).json({ message: "Failed to export vehicle summary" });
-    }
-  });
-
   // Record route usage (KM accumulation from rep routes)
-  app.post("/api/vehicles/:id/record-usage", async (req, res) => {
-    try {
-      const vehicleId = req.params.id;
-      const { repId, scheduleId, distance, tripDate } = req.body;
-
-      const vehicle = await storage.getVehicle(vehicleId);
-      if (!vehicle) {
-        return res.status(404).json({ message: "Vehicle not found" });
-      }
-
-      const startMileage = vehicle.currentMileage;
-      const endMileage = startMileage + distance;
-
-      // Create usage record
-      const usageRecord = await storage.createVehicleUsageRecord({
-        vehicleId,
-        repId,
-        scheduleId: scheduleId || null,
-        tripDate: new Date(tripDate || Date.now()),
-        startMileage,
-        endMileage,
-        distance
-      });
-
-      // Update vehicle mileage (already done in createVehicleUsageRecord)
-      
-      // Create daily mileage snapshot
-      const today = new Date().toISOString().split('T')[0];
-      const existingSnapshots = await storage.getVehicleMileageSnapshots(vehicleId);
-      const todaySnapshot = existingSnapshots.find(s => s.snapshotDate === today);
-      
-      if (!todaySnapshot) {
-        // Calculate aggregated values
-        const usageRecords = await storage.getVehicleUsageRecords(vehicleId);
-        const now = new Date();
-        const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-        const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-
-        const dailyKm = distance;
-        const weeklyKm = usageRecords
-          .filter(r => new Date(r.tripDate) >= weekAgo)
-          .reduce((sum, r) => sum + r.distance, 0);
-        const monthlyKm = usageRecords
-          .filter(r => new Date(r.tripDate) >= monthAgo)
-          .reduce((sum, r) => sum + r.distance, 0);
-        const lifetimeKm = endMileage - vehicle.startingMileage;
-        const avgDailyKm = monthlyKm / 30;
-
-        let routeIntensity: 'light' | 'medium' | 'heavy' = 'light';
-        if (avgDailyKm > 150) routeIntensity = 'heavy';
-        else if (avgDailyKm > 75) routeIntensity = 'medium';
-
-        await storage.createVehicleMileageSnapshot({
-          vehicleId,
-          snapshotDate: today,
-          dailyKm,
-          weeklyKm,
-          monthlyKm,
-          lifetimeKm,
-          avgDailyKm,
-          routeIntensity
-        });
-      }
-
-      res.json({
-        success: true,
-        usageRecord,
-        newMileage: endMileage
-      });
-    } catch (error) {
-      console.error("Usage recording error:", error);
-      res.status(500).json({ message: "Failed to record vehicle usage" });
-    }
-  });
-
-  // Assign rep to vehicle (triggers KM accumulation link)
-  app.post("/api/vehicles/:id/assign-rep", async (req, res) => {
-    try {
-      const { repId } = req.body;
-      const vehicleId = req.params.id;
-
-      // Update vehicle with assigned rep
-      const vehicle = await storage.updateVehicle(vehicleId, { assignedRepId: repId });
-      if (!vehicle) {
-        return res.status(404).json({ message: "Vehicle not found" });
-      }
-
-      // Update rep with vehicle assignment
-      if (repId) {
-        await storage.updateRep(repId, { vehicleId });
-      }
-
-      // Trigger initial forecast calculation
-      const policies = await storage.getMaintenancePolicies();
-      const maintenanceRecords = await storage.getVehicleMaintenanceRecords(vehicleId);
-
-      // Clear existing forecasts
-      await storage.deleteMaintenanceForecastsByVehicle(vehicleId);
-
-      // Generate initial forecasts
-      for (const policy of policies.filter(p => p.isActive)) {
-        const lastMaintenance = maintenanceRecords
-          .filter(r => r.maintenanceType === policy.maintenanceType)
-          .sort((a, b) => new Date(b.serviceDate).getTime() - new Date(a.serviceDate).getTime())[0];
-
-        const dueMileage = lastMaintenance 
-          ? lastMaintenance.mileageAtService + policy.intervalKm
-          : vehicle.startingMileage + policy.intervalKm;
-
-        const remainingKm = dueMileage - vehicle.currentMileage;
-        const severity = remainingKm < 0 ? 'critical' : remainingKm < policy.warningThresholdKm ? 'medium' : 'low';
-        const status = remainingKm < 0 ? 'overdue' : remainingKm < policy.warningThresholdKm ? 'due' : 'upcoming';
-
-        await storage.createMaintenanceForecast({
-          vehicleId,
-          policyId: policy.id,
-          maintenanceType: policy.maintenanceType,
-          currentMileage: vehicle.currentMileage,
-          dueMileage,
-          remainingKm,
-          severity,
-          status,
-          recommendation: `${policy.name}: ${remainingKm.toFixed(0)} km until next service`
-        });
-      }
-
-      res.json({
-        success: true,
-        vehicle,
-        message: `Rep assigned to vehicle. Maintenance forecasts generated.`
-      });
-    } catch (error) {
-      console.error("Rep assignment error:", error);
-      res.status(500).json({ message: "Failed to assign rep to vehicle" });
-    }
-  });
-
   // Calculate route KM for a rep from their schedule
   app.get("/api/reps/:id/route-km", async (req, res) => {
     try {
@@ -6828,169 +6290,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Vehicle reassignment impact analysis
-  app.post("/api/vehicles/:id/reassignment-impact", async (req, res) => {
-    try {
-      const vehicleId = req.params.id;
-      const { toRepId } = req.body;
-
-      const vehicle = await storage.getVehicle(vehicleId);
-      if (!vehicle) {
-        return res.status(404).json({ message: "Vehicle not found" });
-      }
-
-      const reps = await storage.getReps();
-      const fromRep = vehicle.assignedRepId ? reps.find(r => r.id === vehicle.assignedRepId) : null;
-      const toRep = reps.find(r => r.id === toRepId);
-
-      if (!toRep) {
-        return res.status(404).json({ message: "Target rep not found" });
-      }
-
-      // Get current vehicle usage
-      const usageRecords = await storage.getVehicleUsageRecords(vehicleId);
-      const now = new Date();
-      const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-      const recentUsage = usageRecords.filter(r => new Date(r.tripDate) >= monthAgo);
-      const currentAvgDailyKm = recentUsage.length > 0 
-        ? recentUsage.reduce((sum, r) => sum + r.distance, 0) / 30 
-        : 0;
-
-      // Calculate projected KM for new rep's routes
-      const schedules = await storage.getSchedulesByRepId(toRepId);
-      const outlets = await storage.getOutlets();
-      const weeklyKmByWeek: Record<number, number> = {};
-
-      for (const schedule of schedules) {
-        const outletIds = schedule.outletIds as string[];
-        const scheduleOutlets = outletIds
-          .map(id => outlets.find(o => o.id === id))
-          .filter(Boolean) as typeof outlets;
-
-        let routeDistance = 0;
-        for (let i = 0; i < scheduleOutlets.length - 1; i++) {
-          const from = scheduleOutlets[i];
-          const to = scheduleOutlets[i + 1];
-          if (from.latitude && from.longitude && to.latitude && to.longitude) {
-            routeDistance += haversineDistance(
-              from.latitude, from.longitude,
-              to.latitude, to.longitude
-            );
-          }
-        }
-
-        weeklyKmByWeek[schedule.week] = (weeklyKmByWeek[schedule.week] || 0) + routeDistance;
-      }
-
-      // Calculate average weekly KM across all weeks
-      const weeks = Object.keys(weeklyKmByWeek);
-      const projectedWeeklyKm = weeks.length > 0 
-        ? Object.values(weeklyKmByWeek).reduce((sum, km) => sum + km, 0) / weeks.length 
-        : 0;
-
-      const workingDays = toRep.workingDaysPerWeek || 5;
-      const projectedAvgDailyKm = workingDays > 0 ? projectedWeeklyKm / workingDays : 0;
-      const kmChangePercent = currentAvgDailyKm > 0 
-        ? ((projectedAvgDailyKm - currentAvgDailyKm) / currentAvgDailyKm) * 100 
-        : 0;
-
-      // Determine maintenance impact
-      let maintenanceImpact: 'accelerated' | 'normal' | 'delayed' = 'normal';
-      if (kmChangePercent > 20) maintenanceImpact = 'accelerated';
-      else if (kmChangePercent < -20) maintenanceImpact = 'delayed';
-
-      // Get affected maintenance items
-      const forecasts = await storage.getMaintenanceForecasts(vehicleId);
-      const affectedMaintenanceItems = forecasts.map(f => {
-        const currentDaysRemaining = currentAvgDailyKm > 0 ? f.remainingKm / currentAvgDailyKm : null;
-        const projectedDaysRemaining = projectedAvgDailyKm > 0 ? f.remainingKm / projectedAvgDailyKm : null;
-        
-        return {
-          maintenanceType: f.maintenanceType,
-          currentDueDate: currentDaysRemaining ? new Date(now.getTime() + currentDaysRemaining * 24 * 60 * 60 * 1000) : null,
-          projectedDueDate: projectedDaysRemaining ? new Date(now.getTime() + projectedDaysRemaining * 24 * 60 * 60 * 1000) : null,
-          daysDifference: (currentDaysRemaining && projectedDaysRemaining) 
-            ? Math.round(currentDaysRemaining - projectedDaysRemaining) 
-            : 0
-        };
-      });
-
-      // Risk assessment
-      let riskLevel: 'low' | 'medium' | 'high' = 'low';
-      let riskReason = 'Reassignment has minimal impact on vehicle maintenance schedule.';
-      
-      if (Math.abs(kmChangePercent) > 50) {
-        riskLevel = 'high';
-        riskReason = `Significant KM change (${kmChangePercent > 0 ? '+' : ''}${kmChangePercent.toFixed(0)}%) may significantly impact maintenance schedules.`;
-      } else if (Math.abs(kmChangePercent) > 20) {
-        riskLevel = 'medium';
-        riskReason = `Moderate KM change (${kmChangePercent > 0 ? '+' : ''}${kmChangePercent.toFixed(0)}%) will adjust maintenance timing.`;
-      }
-
-      res.json({
-        fromRepId: vehicle.assignedRepId,
-        toRepId,
-        fromRepName: fromRep?.name || null,
-        toRepName: toRep.name,
-        currentAvgDailyKm,
-        projectedAvgDailyKm,
-        kmChangePercent,
-        maintenanceImpact,
-        affectedMaintenanceItems,
-        riskAssessment: {
-          level: riskLevel,
-          reason: riskReason
-        }
-      });
-    } catch (error) {
-      console.error("Reassignment impact analysis error:", error);
-      res.status(500).json({ message: "Failed to analyze reassignment impact" });
-    }
-  });
-
   // Adjust odometer with audit logging
-  app.post("/api/vehicles/:id/adjust-odometer", async (req, res) => {
-    try {
-      const vehicleId = req.params.id;
-      const { newMileage, reason, adjustedBy, notes } = req.body;
-
-      const vehicle = await storage.getVehicle(vehicleId);
-      if (!vehicle) {
-        return res.status(404).json({ message: "Vehicle not found" });
-      }
-
-      const previousMileage = vehicle.currentMileage;
-
-      // Update vehicle mileage
-      await storage.updateVehicle(vehicleId, { currentMileage: newMileage });
-
-      // Create audit trail record as a special usage record
-      await storage.createVehicleUsageRecord({
-        vehicleId,
-        repId: adjustedBy || 'system',
-        scheduleId: null,
-        tripDate: new Date(),
-        startMileage: previousMileage,
-        endMileage: newMileage,
-        distance: newMileage - previousMileage
-      });
-      
-      res.json({
-        success: true,
-        previousMileage,
-        newMileage,
-        adjustmentReason: reason,
-        adjustedBy,
-        notes,
-        timestamp: new Date(),
-        auditTrailCreated: true
-      });
-    } catch (error) {
-      console.error("Odometer adjustment error:", error);
-      res.status(500).json({ message: "Failed to adjust odometer" });
-    }
-  });
-
   // ============================================
   // ROLE HIERARCHY MANAGEMENT
   // ============================================
