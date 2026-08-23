@@ -4902,6 +4902,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json({ success: true });
   });
 
+  // Full reset: wipe every trace of the current project so the next optimization
+  // starts from a blank dashboard. Lives here (not next to /api/clear) because it
+  // needs closure access to the scenario index.
+  // Saved scenarios are kept unless the caller explicitly asks for them to go, so
+  // a fresh upload can still be compared against what came before.
+  app.post("/api/reset", async (req, res) => {
+    try {
+      const includeScenarios = req.body?.includeScenarios === true;
+      let scenariosRemoved = 0;
+
+      await storage.clearAll();
+
+      if (includeScenarios) {
+        scenariosRemoved = scenarioIndex.length;
+        for (const scenario of scenarioIndex) deleteScenarioSnapshot(scenario.id);
+        scenarioIndex = [];
+        saveScenarioIndex();
+      }
+
+      console.log(`[reset] Cleared all plan data${includeScenarios ? ` and ${scenariosRemoved} scenario(s)` : ""}`);
+      res.json({ success: true, scenariosRemoved });
+    } catch (error) {
+      console.error("Failed to reset:", error);
+      res.status(500).json({ message: "Failed to reset" });
+    }
+  });
+
   app.get("/api/optimization-runs", async (_req, res) => {
     try {
       const runs = await storage.getOptimizationRuns();

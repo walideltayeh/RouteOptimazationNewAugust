@@ -15,8 +15,9 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { ArrowUp, Store, Users, CalendarCheck, TrendingUp, Download, Play, Plus, Brain, Trash2, Map, Edit3, ChevronDown, ChevronRight, UserCog, ArrowDown, Save } from "lucide-react";
+import { ArrowUp, Store, Users, CalendarCheck, TrendingUp, Download, Plus, Brain, Trash2, Map, Edit3, ChevronDown, ChevronRight, UserCog, ArrowDown, Save, RotateCcw, GitCompare } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import type { DashboardMetrics, Rep, Outlet, Schedule, RoleHierarchy } from "@shared/schema";
@@ -50,7 +51,11 @@ export default function Dashboard() {
   const [roleHierarchyExpanded, setRoleHierarchyExpanded] = useState(false);
   const [roles, setRoles] = useState<RoleConfig[]>(DEFAULT_ROLES);
   const [hierarchySaved, setHierarchySaved] = useState(false);
-  const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [resetScenariosToo, setResetScenariosToo] = useState(false);
+  // Bumped on a full reset so <FileUpload /> remounts and drops its own
+  // "last upload" state along with the server data.
+  const [resetNonce, setResetNonce] = useState(0);
   const [, setLocation] = useLocation();
   const [offsetMode, setOffsetMode] = useState<OffsetMode>('global');
   const [selectedRepIds, setSelectedRepIds] = useState<string[]>([]);
@@ -142,34 +147,57 @@ export default function Dashboard() {
     });
   };
 
-  const clearAllMutation = useMutation({
-    mutationFn: () => fetch("/api/clear", { method: "DELETE" }).then(res => res.json()),
-    onSuccess: () => {
-      // Invalidate all queries to refresh the data
+  // Full reset: clears outlets, reps, schedules and role hierarchies on the
+  // server, then puts the dashboard back to its first-run state so the next
+  // optimization genuinely starts from scratch.
+  const resetAllMutation = useMutation({
+    mutationFn: async (includeScenarios: boolean) => {
+      const response = await apiRequest("POST", "/api/reset", { includeScenarios });
+      return response.json() as Promise<{ success: boolean; scenariosRemoved: number }>;
+    },
+    onSuccess: (data) => {
+      // Reset every piece of dashboard-local wizard state too, otherwise the
+      // page keeps showing role config and territory panels from the old plan.
+      setCurrentStep(1);
+      setRoles(DEFAULT_ROLES);
+      setHierarchySaved(false);
+      setShowTerritoryCustomization(false);
+      setSelectedRepIds([]);
+      setOffsetMode('global');
+      setRoleHierarchyExpanded(false);
+      setResetNonce(n => n + 1);
+
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard/metrics"] });
       queryClient.invalidateQueries({ queryKey: ["/api/reps"] });
       queryClient.invalidateQueries({ queryKey: ["/api/outlets"] });
       queryClient.invalidateQueries({ queryKey: ["/api/schedules"] });
       queryClient.invalidateQueries({ queryKey: ["/api/analysis"] });
-      
+      queryClient.invalidateQueries({ queryKey: ["/api/role-hierarchies"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/plan/kpis"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/scenarios"] });
+
+      window.scrollTo({ top: 0, behavior: "smooth" });
+
       toast({
-        title: "Success!",
-        description: "All data cleared successfully. Ready for new optimization.",
+        title: "Ready for a new optimization",
+        description: data.scenariosRemoved > 0
+          ? `Everything cleared, including ${data.scenariosRemoved} saved scenario${data.scenariosRemoved === 1 ? "" : "s"}. Upload a file to begin.`
+          : "Everything cleared. Upload a file to begin. Saved scenarios were kept.",
       });
     },
     onError: () => {
       toast({
         title: "Error",
-        description: "Failed to clear data. Please try again.",
+        description: "Failed to reset. Please try again.",
         variant: "destructive",
       });
     },
   });
 
-  // Run new optimizations on the Scenarios page: it keeps the previous plan
-  // alongside the new one and shows the KPI differences, instead of silently
-  // replacing what you already have. (Every run is captured either way.)
-  const handleNewOptimization = () => {
+  // Re-running on the same data belongs on the Scenarios page: it keeps the
+  // previous plan alongside the new one and shows the KPI differences, instead
+  // of silently replacing what you already have. (Every run is captured either way.)
+  const handleCompareScenarios = () => {
     setLocation("/scenarios");
   };
 
@@ -195,26 +223,24 @@ export default function Dashboard() {
               <p className="text-sm text-[#86868b] mt-1">Manage your sales rep territories and optimize routes</p>
             </div>
             <div className="flex items-center space-x-4">
-              {authStatus?.isSuperuser && hasOutlets && (
-                <Button onClick={handleNewOptimization} data-testid="button-new-optimization">
-                  <Play className="mr-2 h-4 w-4" />
-                  New Optimization
-                </Button>
-              )}
               {authStatus?.isSuperuser && (hasOutlets || hasOptimization) && (
                 <Button
-                  variant="outline"
-                  className="text-red-600 border-red-200 hover:bg-red-50 hover:text-red-700"
-                  onClick={() => setShowClearConfirm(true)}
-                  disabled={clearAllMutation.isPending}
-                  data-testid="button-clear-data"
+                  onClick={() => { setResetScenariosToo(false); setShowResetConfirm(true); }}
+                  disabled={resetAllMutation.isPending}
+                  data-testid="button-new-optimization"
                 >
-                  {clearAllMutation.isPending ? (
-                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-red-600 mr-2"></div>
+                  {resetAllMutation.isPending ? (
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
                   ) : (
-                    <Trash2 className="mr-2 h-4 w-4" />
+                    <RotateCcw className="mr-2 h-4 w-4" />
                   )}
-                  Clear All Data
+                  Start New Optimization
+                </Button>
+              )}
+              {authStatus?.isSuperuser && hasOutlets && (
+                <Button variant="outline" onClick={handleCompareScenarios} data-testid="button-compare-scenarios">
+                  <GitCompare className="mr-2 h-4 w-4" />
+                  Re-run &amp; Compare
                 </Button>
               )}
               {hasOptimization && (
@@ -338,7 +364,7 @@ export default function Dashboard() {
         {/* Step-by-step process */}
         <div className="space-y-6">
           {/* Step 1: File Upload */}
-          <FileUpload />
+          <FileUpload key={resetNonce} />
 
           {/* File Analysis Summary (shown after upload) */}
           {hasOutlets && (
@@ -755,24 +781,44 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <Dialog open={showClearConfirm} onOpenChange={setShowClearConfirm}>
+      <Dialog open={showResetConfirm} onOpenChange={setShowResetConfirm}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Clear all data?</DialogTitle>
+            <DialogTitle>Start a new optimization from scratch?</DialogTitle>
             <DialogDescription>
               This permanently deletes {outlets.length.toLocaleString()} outlet{outlets.length === 1 ? "" : "s"}
-              {hasOptimization ? `, ${reps.length} rep${reps.length === 1 ? "" : "s"} and every schedule` : ""}.
-              You will need to upload your file again. This cannot be undone.
+              {hasOptimization ? `, ${reps.length} rep${reps.length === 1 ? "" : "s"}, every schedule and the role hierarchy` : ""}, and
+              returns the dashboard to Step 1 so you can upload a new file. This cannot be undone.
             </DialogDescription>
           </DialogHeader>
+
+          <div className="flex items-start space-x-3 rounded-lg border border-[#e5e5e5] dark:border-[#38383a] p-3">
+            <Checkbox
+              id="reset-scenarios"
+              checked={resetScenariosToo}
+              onCheckedChange={(checked) => setResetScenariosToo(checked === true)}
+              data-testid="checkbox-reset-scenarios"
+            />
+            <div className="space-y-1">
+              <Label htmlFor="reset-scenarios" className="text-sm font-medium cursor-pointer">
+                Also delete saved scenarios
+              </Label>
+              <p className="text-xs text-[#86868b]">
+                Leave this off to keep your saved runs on the Scenarios page, so you can still
+                compare the new plan against the old KPIs.
+              </p>
+            </div>
+          </div>
+
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowClearConfirm(false)}>Cancel</Button>
+            <Button variant="outline" onClick={() => setShowResetConfirm(false)}>Cancel</Button>
             <Button
               className="bg-red-600 hover:bg-red-700 text-white"
-              onClick={() => { setShowClearConfirm(false); clearAllMutation.mutate(); }}
-              data-testid="button-confirm-clear"
+              onClick={() => { setShowResetConfirm(false); resetAllMutation.mutate(resetScenariosToo); }}
+              data-testid="button-confirm-reset"
             >
-              Yes, delete everything
+              <Trash2 className="mr-2 h-4 w-4" />
+              Yes, start from scratch
             </Button>
           </DialogFooter>
         </DialogContent>
