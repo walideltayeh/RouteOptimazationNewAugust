@@ -4,7 +4,6 @@ import { ArrowRight, LogIn } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 interface LandingPageProps {
-  onStartTrial: () => void;
   onAdminLogin: () => void;
 }
 
@@ -544,7 +543,7 @@ function AnimatedTitle({ text, className }: { text: string; className?: string }
   );
 }
 
-export default function LandingPage({ onStartTrial, onAdminLogin }: LandingPageProps) {
+export default function LandingPage({ onAdminLogin }: LandingPageProps) {
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
@@ -681,31 +680,16 @@ export default function LandingPage({ onStartTrial, onAdminLogin }: LandingPageP
                   transition={{ type: 'spring', stiffness: 400, damping: 17 }}
                 >
                   <Button
-                    onClick={onStartTrial}
+                    onClick={onAdminLogin}
                     size="lg"
                     className="bg-[#8B0000] hover:bg-[#6B0000] text-white px-10 py-6 text-lg rounded-full min-w-[220px] group transition-all duration-300"
                     style={{
                       boxShadow: '0 4px 24px rgba(139, 0, 0, 0.3)',
                     }}
                   >
-                    Start Free Trial
-                    <ArrowRight className="ml-2 h-5 w-5 group-hover:translate-x-1.5 transition-transform duration-300" />
-                  </Button>
-                </motion.div>
-
-                <motion.div
-                  whileHover={{ scale: 1.05, y: -2 }}
-                  whileTap={{ scale: 0.97 }}
-                  transition={{ type: 'spring', stiffness: 400, damping: 17 }}
-                >
-                  <Button
-                    onClick={onAdminLogin}
-                    variant="outline"
-                    size="lg"
-                    className="border-[#1d1d1f]/20 text-[#1d1d1f] hover:bg-[#1d1d1f] hover:text-white hover:border-[#1d1d1f] px-10 py-6 text-lg rounded-full min-w-[220px] transition-all duration-300"
-                  >
                     <LogIn className="mr-2 h-5 w-5" />
-                    Admin / Super User Login
+                    Sign In
+                    <ArrowRight className="ml-2 h-5 w-5 group-hover:translate-x-1.5 transition-transform duration-300" />
                   </Button>
                 </motion.div>
               </motion.div>

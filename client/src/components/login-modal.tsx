@@ -34,7 +34,6 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
           description: "Welcome! You now have full access.",
         });
         queryClient.invalidateQueries({ queryKey: ["/api/auth/status"] });
-        queryClient.invalidateQueries({ queryKey: ["/api/trial/status"] });
         onLoginSuccess();
         onClose();
       }

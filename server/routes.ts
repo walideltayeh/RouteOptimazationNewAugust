@@ -1,5 +1,7 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
+import * as fs from "fs";
+import * as path from "path";
 import { createHash, randomUUID } from "crypto";
 import { storage } from "./storage";
 import { 
@@ -9,16 +11,11 @@ import {
   insertScheduleSchema, 
   insertRoleHierarchySchema,
   ROLE_PRESETS,
-  TRIAL_LIMITS,
-  TRIAL_STATUS,
-  RISK_LEVELS,
   type InsertSchedule, 
   type InsertRoleSchedule,
   type Rep, 
   type Outlet,
-  type Schedule,
-  type FingerprintSignals,
-  type TrialStatus
+  type Schedule
 } from "@shared/schema";
 import multer from "multer";
 import * as XLSX from "xlsx";
@@ -28,15 +25,6 @@ import { promisify } from "util";
 import { performAdvancedClustering as performAdvancedClusteringJS } from "./clustering-algorithms";
 import { geoDist, setDistanceMode, prefetchRoadMatrix, clearRoadMatrix, haversineKm, type DistanceMode } from "./road-distance";
 import { generateAdvancedSchedule, reoptimizeSchedules, validateSchedule } from "./advanced-scheduling";
-import { 
-  shouldBlockTrial, 
-  generateOrgKey, 
-  extractIpSubnet, 
-  extractEmailDomain,
-  detectSharedFingerprints,
-  assessOrgRisk,
-  calculateFingerprintSimilarity
-} from "./trial-detection";
 
 const execAsync = promisify(exec);
 
@@ -3085,17 +3073,10 @@ function generateWeeklySchedules(rep: Rep, outlets: Outlet[]): InsertSchedule[] 
 
 import { generateScheduleExcel } from './export';
 
-interface TrialContext {
-  ipAddress: string;
-  ipSubnet: string;
-  trialId: string | null;
-  isTrialMode: boolean;
-}
 
 declare global {
   namespace Express {
     interface Request {
-      trialContext?: TrialContext;
     }
   }
 }
@@ -3109,93 +3090,11 @@ function extractIpAddress(req: Request): string {
   return req.socket?.remoteAddress || '127.0.0.1';
 }
 
-
-function generateFingerprintHashServerSide(signals: FingerprintSignals): string {
-  const components = [
-    String(signals.screenWidth ?? ''),
-    String(signals.screenHeight ?? ''),
-    String(signals.screenColorDepth ?? ''),
-    String(signals.devicePixelRatio ?? ''),
-    String(signals.hardwareConcurrency ?? ''),
-    String(signals.deviceMemory ?? ''),
-    String(signals.maxTouchPoints ?? ''),
-    signals.timezone ?? '',
-    String(signals.timezoneOffset ?? ''),
-    signals.platform ?? '',
-    signals.language ?? '',
-    signals.webglVendor ?? '',
-    signals.webglRenderer ?? '',
-    signals.webglHash ?? '',
-    signals.canvasHash ?? '',
-    signals.audioHash ?? '',
-    signals.fontsHash ?? '',
-    signals.userAgent ?? ''
-  ];
-  return createHash('sha256').update(components.join('|')).digest('hex');
-}
-
-async function getAllFingerprintsForOrg(orgKey: string): Promise<import("@shared/schema").DeviceFingerprint[]> {
-  const orgProfile = await storage.getOrgRiskProfileByKey(orgKey);
-  if (!orgProfile) return [];
-  
-  const linkedTrialIds = (orgProfile.linkedTrialIds as string[] | null) || [];
-  const allFingerprints: import("@shared/schema").DeviceFingerprint[] = [];
-  
-  for (const trialId of linkedTrialIds) {
-    const fingerprints = await storage.getDeviceFingerprintsByTrialId(trialId);
-    allFingerprints.push(...fingerprints);
-  }
-  
-  return allFingerprints;
-}
-
 function validateEmail(email: string): boolean {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   return emailRegex.test(email);
 }
 
-
-async function getTrialStatus(trialId: string): Promise<TrialStatus> {
-  const trial = await storage.getTrialAccount(trialId);
-  const usage = await storage.getTrialUsage(trialId);
-  
-  if (!trial) {
-    return {
-      isTrialMode: false,
-      trialId: null,
-      status: 'inactive',
-      outletLimit: 0,
-      outletCount: 0,
-      outletsRemaining: 0,
-      daysRemaining: 0,
-      isExpired: true,
-      isBlocked: false,
-      upgradeRequired: true
-    };
-  }
-  
-  const now = new Date();
-  const endDate = trial.endDate ? new Date(trial.endDate) : null;
-  const daysRemaining = endDate ? Math.max(0, Math.ceil((endDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))) : 0;
-  const isExpired = trial.status === TRIAL_STATUS.EXPIRED || (endDate ? endDate < now : false);
-  const isBlocked = trial.status === TRIAL_STATUS.BLOCKED;
-  
-  const outletCount = usage?.outletCount || 0;
-  
-  return {
-    isTrialMode: true,
-    trialId: trial.id,
-    status: trial.status,
-    outletLimit: trial.outletLimit,
-    outletCount,
-    outletsRemaining: Math.max(0, trial.outletLimit - outletCount),
-    daysRemaining,
-    isExpired,
-    isBlocked,
-    blockReason: isBlocked ? 'Account has been blocked due to suspicious activity' : undefined,
-    upgradeRequired: isExpired || outletCount >= trial.outletLimit,
-  };
-}
 
 // Superuser credentials come from environment variables ONLY. This repo is
 // public, so no fallback credentials may live in the code (the previous
@@ -3226,21 +3125,11 @@ function isValidSuperuserSession(token: string | null): boolean {
 export async function registerRoutes(app: Express): Promise<Server> {
   
   app.use((req: Request, _res: Response, next: NextFunction) => {
-    const ipAddress = extractIpAddress(req);
-    const ipSubnet = extractIpSubnet(ipAddress);
-    const trialCookie = req.cookies?.trial_session || null;
     const superuserCookie = req.cookies?.superuser_session || null;
-    
+
     // Validate superuser session server-side
     const isSuperuserValid = isValidSuperuserSession(superuserCookie);
-    
-    req.trialContext = {
-      ipAddress,
-      ipSubnet,
-      trialId: trialCookie,
-      isTrialMode: !!trialCookie && !isSuperuserValid
-    };
-    
+
     // Add superuser flag to request (only if token is valid)
     (req as any).isSuperuser = isSuperuserValid;
     
@@ -3268,9 +3157,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
           sameSite: 'lax'
         });
         
-        // Clear trial session if present
-        res.clearCookie('trial_session');
-        
         return res.json({
           success: true,
           message: "Login successful",
@@ -3294,442 +3180,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
       activeSuperuserSessions.delete(sessionToken);
     }
     res.clearCookie('superuser_session');
-    res.clearCookie('trial_session');
     res.json({ success: true, message: "Logged out" });
   });
 
   // Check auth status
   app.get("/api/auth/status", async (req: Request, res: Response) => {
     const isSuperuser = !!(req as any).isSuperuser;
-    const trialId = req.trialContext?.trialId || req.cookies?.trial_session;
-    const isTrialMode = !!trialId && !isSuperuser;
     
     res.json({
       isAuthenticated: isSuperuser,
-      isSuperuser,
-      isTrialMode
+      isSuperuser
     });
-  });
-
-  app.post("/api/trial/start", async (req: Request, res: Response) => {
-    try {
-      const { email, companyName, consentGiven } = req.body;
-      
-      if (!email || !validateEmail(email)) {
-        return res.status(400).json({ message: "Invalid email format" });
-      }
-      
-      if (!consentGiven) {
-        return res.status(400).json({ message: "Consent is required to start a trial" });
-      }
-      
-      // Check if trial already exists for this email
-      const existingTrial = await storage.getTrialAccountByEmail(email);
-      if (existingTrial) {
-        // Check if the existing trial is still valid
-        const now = new Date();
-        const endDate = existingTrial.endDate ? new Date(existingTrial.endDate) : null;
-        const isExpired = existingTrial.status === TRIAL_STATUS.EXPIRED || (endDate ? endDate < now : false);
-        const isBlocked = existingTrial.status === TRIAL_STATUS.BLOCKED;
-        
-        if (isBlocked) {
-          return res.status(403).json({
-            message: "This email has been blocked. Please contact support or upgrade.",
-            blocked: true,
-            upgradeRequired: true
-          });
-        }
-        
-        if (isExpired) {
-          return res.status(402).json({
-            message: "Your trial has expired. Please upgrade to continue.",
-            upgradeRequired: true
-          });
-        }
-        
-        // Return the existing trial instead of creating a new one
-        res.cookie('trial_session', existingTrial.id, {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          maxAge: TRIAL_LIMITS.TRIAL_DURATION_DAYS * 24 * 60 * 60 * 1000,
-          sameSite: 'lax'
-        });
-        
-        const status = await getTrialStatus(existingTrial.id);
-        return res.status(200).json({
-          ...status,
-          message: "Welcome back! Your existing trial has been restored."
-        });
-      }
-      
-      const ipAddress = req.trialContext?.ipAddress || extractIpAddress(req);
-      const ipSubnet = extractIpSubnet(ipAddress);
-      const emailDomain = extractEmailDomain(email);
-      const orgKey = generateOrgKey(ipSubnet, emailDomain);
-      
-      const blockDecision = await shouldBlockTrial(email, orgKey, null, storage);
-      if (blockDecision.blocked) {
-        return res.status(403).json({ 
-          message: blockDecision.reason || "Unable to create trial. Please contact support.",
-          blocked: true,
-          reason: blockDecision.reason,
-          riskLevel: blockDecision.riskLevel,
-          upgradeRequired: blockDecision.upgradeRequired
-        });
-      }
-      
-      const endDate = new Date();
-      endDate.setDate(endDate.getDate() + TRIAL_LIMITS.TRIAL_DURATION_DAYS);
-      
-      const trial = await storage.createTrialAccount({
-        email,
-        companyName: companyName || null,
-        status: TRIAL_STATUS.ACTIVE,
-        outletLimit: TRIAL_LIMITS.MAX_OUTLETS,
-        startDate: new Date(),
-        endDate,
-        consentGiven: true,
-        consentTimestamp: new Date(),
-        ipAddress,
-        ipSubnet,
-        emailDomain,
-        orgKey,
-        metadata: { source: 'web' }
-      });
-      
-      await storage.createTrialUsage(trial.id);
-      
-      const existingOrgProfile = await storage.getOrgRiskProfileByKey(orgKey);
-      if (!existingOrgProfile) {
-        await storage.createOrgRiskProfile({
-          orgKey,
-          ipSubnet,
-          emailDomain,
-          trialCount: 1,
-          activeTrialCount: 1,
-          riskLevel: RISK_LEVELS.LOW,
-          riskScore: 0,
-          linkedTrialIds: [trial.id]
-        });
-      } else {
-        await storage.incrementOrgTrialCount(orgKey);
-      }
-      
-      res.cookie('trial_session', trial.id, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        maxAge: TRIAL_LIMITS.TRIAL_DURATION_DAYS * 24 * 60 * 60 * 1000,
-        sameSite: 'lax'
-      });
-      
-      const status = await getTrialStatus(trial.id);
-      res.status(201).json(status);
-    } catch (error) {
-      console.error("Error starting trial:", error);
-      res.status(500).json({ message: "Failed to start trial" });
-    }
-  });
-
-  app.post("/api/trial/fingerprint", async (req: Request, res: Response) => {
-    try {
-      const trialId = req.trialContext?.trialId || req.cookies?.trial_session;
-      if (!trialId) {
-        return res.status(401).json({ message: "No active trial session" });
-      }
-      
-      const signals = req.body as FingerprintSignals;
-      const fingerprintHash = generateFingerprintHashServerSide(signals);
-      const ipAddress = req.trialContext?.ipAddress || extractIpAddress(req);
-      const ipSubnet = extractIpSubnet(ipAddress);
-      
-      const trial = await storage.getTrialAccount(trialId);
-      if (!trial) {
-        return res.status(404).json({ message: "Trial account not found" });
-      }
-      
-      const orgKey = trial.orgKey;
-      let orgProfile = orgKey ? await storage.getOrgRiskProfileByKey(orgKey) : null;
-      
-      const existingFingerprints = await storage.getDeviceFingerprintsByTrialId(trialId);
-      const allFingerprints = orgKey ? await getAllFingerprintsForOrg(orgKey) : [];
-      
-      const sharedDetection = detectSharedFingerprints(fingerprintHash, allFingerprints.filter(fp => fp.trialId !== trialId));
-      
-      if (sharedDetection.isShared) {
-        if (orgProfile && orgKey) {
-          const currentSharedSignals = (orgProfile.sharedSignals as { fingerprintMatches?: number } | null) || {};
-          const newSharedSignals = {
-            ...currentSharedSignals,
-            fingerprintMatches: (currentSharedSignals.fingerprintMatches || 0) + 1,
-            lastMatchedTrials: sharedDetection.matchingTrialIds,
-            signalTypes: sharedDetection.signalTypes
-          };
-          
-          const currentLinkedFingerprints = (orgProfile.linkedFingerprints as string[] | null) || [];
-          const newLinkedFingerprints = Array.from(new Set([...currentLinkedFingerprints, fingerprintHash]));
-          
-          const currentRiskFactors = (orgProfile.riskFactors as { velocity?: number; lastTrialTime?: string } | null) || {};
-          const now = new Date();
-          let velocity = currentRiskFactors.velocity || 0;
-          if (currentRiskFactors.lastTrialTime) {
-            const lastTime = new Date(currentRiskFactors.lastTrialTime);
-            const hoursSinceLastTrial = (now.getTime() - lastTime.getTime()) / (1000 * 60 * 60);
-            if (hoursSinceLastTrial < 24) {
-              velocity = Math.min(1, velocity + 0.2);
-            }
-          }
-          
-          await storage.updateOrgRiskProfile(orgProfile.id, {
-            sharedSignals: newSharedSignals,
-            linkedFingerprints: newLinkedFingerprints,
-            riskFactors: {
-              ...currentRiskFactors,
-              fingerprintMatch: true,
-              matchedTrialIds: sharedDetection.matchingTrialIds,
-              velocity,
-              lastTrialTime: now.toISOString()
-            }
-          });
-          
-          orgProfile = await storage.getOrgRiskProfileByKey(orgKey);
-          if (orgProfile) {
-            const riskAssessment = assessOrgRisk(orgProfile);
-            
-            let riskLevel: typeof RISK_LEVELS[keyof typeof RISK_LEVELS] = RISK_LEVELS.LOW;
-            if (riskAssessment.level === 'blocked') {
-              riskLevel = RISK_LEVELS.BLOCKED;
-            } else if (riskAssessment.level === 'high') {
-              riskLevel = RISK_LEVELS.HIGH;
-            } else if (riskAssessment.level === 'medium') {
-              riskLevel = RISK_LEVELS.MEDIUM;
-            }
-            
-            await storage.updateOrgRiskProfile(orgProfile.id, {
-              riskScore: riskAssessment.score,
-              riskLevel
-            });
-            
-            if (riskAssessment.level === 'blocked') {
-              await storage.updateTrialAccount(trialId, {
-                status: TRIAL_STATUS.BLOCKED
-              });
-              
-              await storage.createFingerprintEvent({
-                fingerprintId: sharedDetection.matchingTrialIds[0] || fingerprintHash,
-                trialId,
-                eventType: 'blocked',
-                metadata: { 
-                  reason: 'high_risk_fingerprint_sharing',
-                  riskScore: riskAssessment.score,
-                  factors: riskAssessment.factors
-                },
-                ipAddress
-              });
-              
-              return res.status(403).json({ 
-                success: false, 
-                blocked: true,
-                reason: "Account blocked due to suspicious activity. Please contact support.",
-                riskLevel: 'blocked'
-              });
-            }
-          }
-        }
-        
-        const existingMatch = await storage.getDeviceFingerprintByHash(fingerprintHash);
-        if (existingMatch) {
-          await storage.createFingerprintEvent({
-            fingerprintId: existingMatch.id,
-            trialId,
-            eventType: 'suspicious',
-            metadata: { 
-              reason: 'fingerprint_reuse', 
-              originalTrialId: existingMatch.trialId,
-              matchingTrials: sharedDetection.matchingTrialIds
-            },
-            ipAddress
-          });
-          
-          return res.status(200).json({ 
-            success: true, 
-            warning: 'Device has been seen before',
-            fingerprintId: existingMatch.id
-          });
-        }
-      }
-      
-      const fingerprint = await storage.createDeviceFingerprint({
-        trialId,
-        fingerprintHash,
-        userAgent: signals.userAgent,
-        platform: signals.platform,
-        language: signals.language,
-        languages: signals.languages,
-        timezone: signals.timezone,
-        timezoneOffset: signals.timezoneOffset,
-        screenWidth: signals.screenWidth,
-        screenHeight: signals.screenHeight,
-        screenColorDepth: signals.screenColorDepth,
-        devicePixelRatio: signals.devicePixelRatio,
-        hardwareConcurrency: signals.hardwareConcurrency,
-        deviceMemory: signals.deviceMemory,
-        maxTouchPoints: signals.maxTouchPoints,
-        canvasHash: signals.canvasHash,
-        webglVendor: signals.webglVendor,
-        webglRenderer: signals.webglRenderer,
-        webglHash: signals.webglHash,
-        audioHash: signals.audioHash,
-        fontsHash: signals.fontsHash,
-        ipAddress,
-        ipSubnet,
-        connectionType: signals.connectionType,
-        localStorageId: signals.localStorageId,
-        sessionStorageId: signals.sessionStorageId,
-        cookieId: signals.cookieId,
-        trustScore: 100
-      });
-      
-      if (orgProfile && orgKey) {
-        const currentLinkedFingerprints = (orgProfile.linkedFingerprints as string[] | null) || [];
-        if (!currentLinkedFingerprints.includes(fingerprintHash)) {
-          await storage.updateOrgRiskProfile(orgProfile.id, {
-            linkedFingerprints: [...currentLinkedFingerprints, fingerprintHash]
-          });
-        }
-      }
-      
-      await storage.createFingerprintEvent({
-        fingerprintId: fingerprint.id,
-        trialId,
-        eventType: 'created',
-        metadata: { source: 'trial_registration' },
-        ipAddress
-      });
-      
-      res.status(201).json({ 
-        success: true, 
-        fingerprintId: fingerprint.id 
-      });
-    } catch (error) {
-      console.error("Error processing fingerprint:", error);
-      res.status(500).json({ message: "Failed to process fingerprint" });
-    }
-  });
-
-  app.get("/api/trial/status", async (req: Request, res: Response) => {
-    try {
-      const trialId = req.trialContext?.trialId || req.cookies?.trial_session;
-      
-      if (!trialId) {
-        return res.json({
-          isTrialMode: false,
-          trialId: null,
-          status: 'inactive',
-          outletLimit: 0,
-          outletCount: 0,
-          outletsRemaining: 0,
-          daysRemaining: 0,
-          isExpired: false,
-          isBlocked: false,
-          upgradeRequired: false
-        } as TrialStatus);
-      }
-      
-      const status = await getTrialStatus(trialId);
-      res.json(status);
-    } catch (error) {
-      console.error("Error fetching trial status:", error);
-      res.status(500).json({ message: "Failed to fetch trial status" });
-    }
-  });
-
-  app.post("/api/trial/check-limits", async (req: Request, res: Response) => {
-    try {
-      const trialId = req.trialContext?.trialId || req.cookies?.trial_session;
-      
-      if (!trialId) {
-        return res.json({ allowed: true });
-      }
-      
-      const { operation, count = 1 } = req.body as { operation: 'add_outlet'; count?: number };
-      
-      if (!operation) {
-        return res.status(400).json({ message: "Operation type is required" });
-      }
-      
-      const trial = await storage.getTrialAccount(trialId);
-      const usage = await storage.getTrialUsage(trialId);
-      
-      if (!trial || !usage) {
-        return res.json({ allowed: true });
-      }
-      
-      if (trial.status === TRIAL_STATUS.BLOCKED) {
-        return res.json({ 
-          allowed: false, 
-          reason: "Trial account has been blocked" 
-        });
-      }
-      
-      if (trial.status === TRIAL_STATUS.EXPIRED || (trial.endDate && new Date(trial.endDate) < new Date())) {
-        return res.json({ 
-          allowed: false, 
-          reason: "Trial period has expired. Please upgrade to continue." 
-        });
-      }
-      
-      if (operation === 'add_outlet') {
-        const newCount = usage.outletCount + count;
-        if (newCount > trial.outletLimit) {
-          return res.json({ 
-            allowed: false, 
-            reason: `Outlet limit reached (${usage.outletCount}/${trial.outletLimit}). Upgrade to add more outlets.`,
-            currentCount: usage.outletCount,
-            limit: trial.outletLimit
-          });
-        }
-      }
-      
-      res.json({ allowed: true });
-    } catch (error) {
-      console.error("Error checking trial limits:", error);
-      res.status(500).json({ message: "Failed to check trial limits" });
-    }
   });
 
   app.post("/api/outlets", async (req: Request, res: Response) => {
     try {
-      const trialId = req.trialContext?.trialId || req.cookies?.trial_session;
-      
-      if (trialId) {
-        const trial = await storage.getTrialAccount(trialId);
-        const usage = await storage.getTrialUsage(trialId);
-        
-        if (trial && usage) {
-          if (trial.status === TRIAL_STATUS.BLOCKED) {
-            return res.status(402).json({ 
-              message: "Trial account has been blocked. Please contact support.",
-              upgradeRequired: true
-            });
-          }
-          
-          if (trial.status === TRIAL_STATUS.EXPIRED || (trial.endDate && new Date(trial.endDate) < new Date())) {
-            return res.status(402).json({ 
-              message: "Trial period has expired. Please upgrade to continue.",
-              upgradeRequired: true
-            });
-          }
-          
-          if (usage.outletCount >= trial.outletLimit) {
-            return res.status(402).json({ 
-              message: `Outlet limit reached (${usage.outletCount}/${trial.outletLimit}). Upgrade to add more outlets.`,
-              upgradeRequired: true,
-              currentCount: usage.outletCount,
-              limit: trial.outletLimit
-            });
-          }
-        }
-      }
       
       const parsed = insertOutletSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -3737,11 +3202,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       
       const outlet = await storage.createOutlet(parsed.data);
-      
-      if (trialId) {
-        await storage.incrementOutletCount(trialId, 1);
-      }
-      
+
       res.status(201).json(outlet);
     } catch (error) {
       console.error("Error creating outlet:", error);
@@ -3830,38 +3291,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       if (data.length === 0) {
         return res.status(400).json({ message: "File is empty or could not be parsed" });
-      }
-
-      // Check trial limits before processing
-      const trialId = req.trialContext?.trialId || req.cookies?.trial_session;
-      if (trialId) {
-        const trial = await storage.getTrialAccount(trialId);
-        if (trial) {
-          // Check if trial is blocked or expired
-          if (trial.status === TRIAL_STATUS.BLOCKED) {
-            return res.status(402).json({
-              message: "Your trial has been blocked. Please upgrade to continue.",
-              upgradeRequired: true
-            });
-          }
-          if (trial.status === TRIAL_STATUS.EXPIRED || (trial.endDate && new Date(trial.endDate) < new Date())) {
-            return res.status(402).json({
-              message: "Your trial has expired. Please upgrade to continue.",
-              upgradeRequired: true
-            });
-          }
-
-          // Check outlet limit
-          const outletLimit = trial.outletLimit || TRIAL_LIMITS.MAX_OUTLETS;
-          if (data.length > outletLimit) {
-            return res.status(402).json({
-              message: `Your trial is limited to ${outletLimit} outlets. This file contains ${data.length} outlets. Please upgrade to process more outlets.`,
-              upgradeRequired: true,
-              fileOutlets: data.length,
-              outletLimit: outletLimit
-            });
-          }
-        }
       }
 
       // Clear existing outlets
@@ -4040,12 +3469,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
           scheduling: null
         }
       });
-
-      // Update trial usage if in trial mode
-      const uploadTrialId = req.trialContext?.trialId || req.cookies?.trial_session;
-      if (uploadTrialId) {
-        await storage.setOutletCount(uploadTrialId, outlets.length);
-      }
 
       res.json({
         success: true,
@@ -4806,21 +4229,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Route optimization
   app.post("/api/optimize", async (req, res) => {
-    // Check trial restrictions - trial users can run 1 optimization only
-    const isSuperuser = !!(req as any).isSuperuser;
-    const trialId = req.trialContext?.trialId || req.cookies?.trial_session;
-    
-    if (trialId && !isSuperuser) {
-      const trialUsage = await storage.getTrialUsage(trialId);
-      if (trialUsage && trialUsage.optimizationRuns >= 1) {
-        return res.status(402).json({
-          message: "You have reached the optimization limit for your trial (1 run). Please upgrade to run more optimizations.",
-          upgradeRequired: true,
-          feature: 'optimization'
-        });
-      }
-    }
-    
     const progressId = req.body.progressId || '';
     
     // Helper to yield to event loop so SSE can flush
@@ -5161,11 +4569,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       if (progressId) progressManager.complete(progressId);
 
-      // Increment trial optimization run count if in trial mode
-      if (trialId && !isSuperuser) {
-        await storage.incrementOptimizationRuns(trialId);
-      }
-
       res.json({
         success: true,
         requiredReps: finalRequiredReps,
@@ -5228,7 +4631,57 @@ export async function registerRoutes(app: Express): Promise<Server> {
     kpis: Record<string, number>;
     snapshot: ScenarioSnapshot;
   }
-  const scenarios: Scenario[] = [];
+  // Scenarios persist across restarts, but NOT inside the main storage
+  // snapshot: that file is rewritten in full on every change, and a single
+  // scenario snapshot of a 7,878-outlet plan is ~2.5MB - ten of them would
+  // turn a 4MB write into a 29MB write on every edit. Instead the index
+  // (name, params, KPIs - a couple of KB) lives in one small file, and each
+  // scenario's heavy snapshot sits in its own file, written once at capture
+  // and read only when the user applies it.
+  const SCENARIO_DIR = path.join(process.env.DATA_DIR || path.join(process.cwd(), "data"), "scenarios");
+  const SCENARIO_INDEX = path.join(SCENARIO_DIR, "index.json");
+  type ScenarioSummary = Omit<Scenario, "snapshot">;
+  let scenarioIndex: ScenarioSummary[] = [];
+
+  const loadScenarioIndex = () => {
+    try {
+      if (fs.existsSync(SCENARIO_INDEX)) {
+        scenarioIndex = JSON.parse(fs.readFileSync(SCENARIO_INDEX, "utf-8"));
+        console.log(`[scenarios] Restored ${scenarioIndex.length} scenario(s)`);
+      }
+    } catch (err) {
+      console.error("[scenarios] Failed to read index:", (err as Error).message);
+      scenarioIndex = [];
+    }
+  };
+  const saveScenarioIndex = () => {
+    try {
+      fs.mkdirSync(SCENARIO_DIR, { recursive: true });
+      const tmp = SCENARIO_INDEX + ".tmp";
+      fs.writeFileSync(tmp, JSON.stringify(scenarioIndex));
+      fs.renameSync(tmp, SCENARIO_INDEX);
+    } catch (err) {
+      console.error("[scenarios] Failed to write index:", (err as Error).message);
+    }
+  };
+  const scenarioFile = (id: string) => path.join(SCENARIO_DIR, `${id}.json`);
+  const readScenarioSnapshot = (id: string): ScenarioSnapshot | null => {
+    try {
+      return JSON.parse(fs.readFileSync(scenarioFile(id), "utf-8"));
+    } catch {
+      return null;
+    }
+  };
+  const writeScenarioSnapshot = (id: string, snapshot: ScenarioSnapshot) => {
+    fs.mkdirSync(SCENARIO_DIR, { recursive: true });
+    const tmp = scenarioFile(id) + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify(snapshot));
+    fs.renameSync(tmp, scenarioFile(id));
+  };
+  const deleteScenarioSnapshot = (id: string) => {
+    try { fs.unlinkSync(scenarioFile(id)); } catch { /* already gone */ }
+  };
+  loadScenarioIndex();
 
   // Solution-quality KPIs for the plan currently in storage. These are the
   // numbers a planner actually judges a route plan by.
@@ -5310,7 +4763,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   app.get("/api/scenarios", async (_req, res) => {
-    res.json(scenarios.map(({ snapshot, ...rest }) => rest));
+    res.json(scenarioIndex);
   });
 
   // Capture the plan currently in memory as a named scenario.
@@ -5322,22 +4775,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "No plan to capture - run an optimization first." });
       }
       const allOutlets = await storage.getOutlets();
-      const scenario: Scenario = {
-        id: randomUUID(),
-        name: (name || `Scenario ${scenarios.length + 1}`).slice(0, 80),
+      const id = randomUUID();
+      const summary: ScenarioSummary = {
+        id,
+        name: (name || `Scenario ${scenarioIndex.length + 1}`).slice(0, 80),
         createdAt: new Date().toISOString(),
         params: params || {},
         kpis: await computePlanKPIs(),
-        snapshot: {
-          outlets: allOutlets.map(o => ({ id: o.id, repId: o.repId, territory: o.territory, cluster: o.cluster })),
-          reps: await storage.getReps(),
-          schedules: allSchedules,
-        },
       };
-      scenarios.push(scenario);
-      // Keep memory bounded - the oldest scenario drops off.
-      while (scenarios.length > 10) scenarios.shift();
-      const { snapshot, ...summary } = scenario;
+      writeScenarioSnapshot(id, {
+        outlets: allOutlets.map(o => ({ id: o.id, repId: o.repId, territory: o.territory, cluster: o.cluster })),
+        reps: await storage.getReps(),
+        schedules: allSchedules,
+      });
+      scenarioIndex.push(summary);
+      // Keep it bounded - the oldest scenario and its snapshot drop off.
+      while (scenarioIndex.length > 10) {
+        const dropped = scenarioIndex.shift();
+        if (dropped) deleteScenarioSnapshot(dropped.id);
+      }
+      saveScenarioIndex();
       res.status(201).json(summary);
     } catch (error) {
       console.error("Scenario capture error:", error);
@@ -5348,19 +4805,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Restore a captured scenario as the live plan.
   app.post("/api/scenarios/:id/apply", async (req, res) => {
     try {
-      const scenario = scenarios.find(s => s.id === req.params.id);
+      const scenario = scenarioIndex.find(s => s.id === req.params.id);
       if (!scenario) return res.status(404).json({ message: "Scenario not found" });
+      const snapshot = readScenarioSnapshot(scenario.id);
+      if (!snapshot) return res.status(410).json({ message: "Scenario snapshot is no longer available" });
 
       for (const rep of await storage.getReps()) await storage.deleteRep(rep.id);
       await storage.clearSchedules();
 
-      for (const rep of scenario.snapshot.reps) {
+      for (const rep of snapshot.reps) {
         await storage.createRepWithId(rep);
       }
-      for (const o of scenario.snapshot.outlets) {
+      for (const o of snapshot.outlets) {
         await storage.updateOutlet(o.id, { repId: o.repId, territory: o.territory, cluster: o.cluster });
       }
-      await storage.createSchedules(scenario.snapshot.schedules.map(s => ({
+      await storage.createSchedules(snapshot.schedules.map(s => ({
         repId: s.repId, week: s.week, dayOfWeek: s.dayOfWeek,
         outletIds: s.outletIds as string[], routeOrder: s.routeOrder as string[],
         totalDistance: s.totalDistance ?? undefined, estimatedDuration: s.estimatedDuration ?? undefined,
@@ -5374,9 +4833,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   app.delete("/api/scenarios/:id", async (req, res) => {
-    const idx = scenarios.findIndex(s => s.id === req.params.id);
+    const idx = scenarioIndex.findIndex(s => s.id === req.params.id);
     if (idx < 0) return res.status(404).json({ message: "Scenario not found" });
-    scenarios.splice(idx, 1);
+    scenarioIndex.splice(idx, 1);
+    deleteScenarioSnapshot(req.params.id);
+    saveScenarioIndex();
     res.json({ success: true });
   });
 

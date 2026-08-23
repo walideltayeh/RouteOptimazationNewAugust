@@ -32,7 +32,6 @@ const navigation = [
 interface AuthStatus {
   isAuthenticated: boolean;
   isSuperuser: boolean;
-  isTrialMode: boolean;
 }
 
 export default function Sidebar() {
@@ -49,7 +48,6 @@ export default function Sidebar() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/auth/status"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/trial/status"] });
       window.location.reload();
     }
   });

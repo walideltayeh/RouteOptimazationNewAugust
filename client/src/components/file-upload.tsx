@@ -7,10 +7,8 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
-import { useTrial } from "@/hooks/use-trial";
 import { Upload, CloudUpload, AlertTriangle, Download, FileText, X, CheckCircle2, BarChart3 } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
-import UpgradeModal from "@/components/upgrade-modal";
 import type { FileAnalysis } from "@shared/schema";
 
 interface UploadReport {
@@ -66,14 +64,12 @@ function downloadTemplate() {
 
 export default function FileUpload() {
   const [isDragOver, setIsDragOver] = useState(false);
-  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   const [pendingFile, setPendingFile] = useState<PendingFileInfo | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadStage, setUploadStage] = useState<string>("");
   const [uploadResult, setUploadResult] = useState<UploadReport | null>(null);
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const { status, canAddOutlet } = useTrial();
 
   const { data: analysis } = useQuery<FileAnalysis>({
     queryKey: ["/api/analysis"],
@@ -106,11 +102,6 @@ export default function FileUpload() {
         };
 
         xhr.onload = () => {
-          if (xhr.status === 402) {
-            setShowUpgradeModal(true);
-            reject(new Error("Upgrade required to add more outlets"));
-            return;
-          }
           if (xhr.status >= 400) {
             try {
               const error = JSON.parse(xhr.responseText);
@@ -149,12 +140,11 @@ export default function FileUpload() {
       queryClient.invalidateQueries({ queryKey: ["/api/analysis"] });
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard/metrics"] });
       queryClient.invalidateQueries({ queryKey: ["/api/outlets"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/trial/status"] });
     },
     onError: (error: Error) => {
       setUploadStage("");
       setUploadProgress(0);
-      if (!error.message.includes("Upgrade required")) {
+      if (true) {
         toast({
           title: "Upload failed",
           description: error.message,
@@ -184,11 +174,6 @@ export default function FileUpload() {
 
   const prepareFile = useCallback(async (file: File) => {
     if (!file) return;
-
-    if (!canAddOutlet) {
-      setShowUpgradeModal(true);
-      return;
-    }
 
     const validTypes = [
       "text/csv",
@@ -232,7 +217,7 @@ export default function FileUpload() {
     setUploadResult(null);
     setUploadStage("");
     setUploadProgress(0);
-  }, [canAddOutlet, toast, estimateRowCount]);
+  }, [toast, estimateRowCount]);
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -273,23 +258,6 @@ export default function FileUpload() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-6">
-          {status?.isTrialMode && status.outletsRemaining <= 10 && status.outletsRemaining > 0 && (
-            <Alert className="border-amber-200 bg-amber-50">
-              <AlertTriangle className="h-4 w-4 text-amber-600" />
-              <AlertDescription className="text-amber-800">
-                Only {status.outletsRemaining} outlet{status.outletsRemaining !== 1 ? "s" : ""} remaining in your trial. Upgrade to add unlimited outlets.
-              </AlertDescription>
-            </Alert>
-          )}
-          {status?.isTrialMode && status.outletsRemaining <= 0 && (
-            <Alert className="border-red-200 bg-red-50">
-              <AlertTriangle className="h-4 w-4 text-red-600" />
-              <AlertDescription className="text-red-800">
-                You've reached your outlet limit. Upgrade to add more outlets.
-              </AlertDescription>
-            </Alert>
-          )}
-
           {/* File Upload Area */}
           {!pendingFile && !uploadMutation.isPending && (
             <div
@@ -447,14 +415,6 @@ export default function FileUpload() {
           )}
         </CardContent>
       </Card>
-
-      <UpgradeModal
-        isOpen={showUpgradeModal}
-        onClose={() => setShowUpgradeModal(false)}
-        limitType="outlet"
-        currentCount={status?.outletCount ?? 0}
-        maxCount={status?.outletLimit ?? 100}
-      />
     </>
   );
 }
