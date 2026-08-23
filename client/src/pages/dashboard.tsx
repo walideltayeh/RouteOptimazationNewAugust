@@ -14,7 +14,8 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { ArrowUp, Store, Users, CalendarCheck, TrendingUp, Download, Plus, Brain, Trash2, Map, Edit3, ChevronDown, ChevronRight, UserCog, ArrowDown, Save } from "lucide-react";
+import { ArrowUp, Store, Users, CalendarCheck, TrendingUp, Download, Play, Plus, Brain, Trash2, Map, Edit3, ChevronDown, ChevronRight, UserCog, ArrowDown, Save } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import type { DashboardMetrics, Rep, Outlet, Schedule, RoleHierarchy } from "@shared/schema";
@@ -48,6 +49,7 @@ export default function Dashboard() {
   const [roleHierarchyExpanded, setRoleHierarchyExpanded] = useState(false);
   const [roles, setRoles] = useState<RoleConfig[]>(DEFAULT_ROLES);
   const [hierarchySaved, setHierarchySaved] = useState(false);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [offsetMode, setOffsetMode] = useState<OffsetMode>('global');
   const [selectedRepIds, setSelectedRepIds] = useState<string[]>([]);
 
@@ -162,8 +164,16 @@ export default function Dashboard() {
     },
   });
 
+  // "New Optimization" should take you to the optimizer, not destroy your
+  // data - previously this button cleared every outlet, rep and schedule on
+  // a single click with no confirmation, which is not what its label implied.
   const handleNewOptimization = () => {
-    clearAllMutation.mutate();
+    const el = document.getElementById("optimization-settings");
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+      el.classList.add("ring-2", "ring-primary", "ring-offset-2", "rounded-2xl");
+      setTimeout(() => el.classList.remove("ring-2", "ring-primary", "ring-offset-2", "rounded-2xl"), 2000);
+    }
   };
 
   if (isLoading) {
@@ -188,17 +198,26 @@ export default function Dashboard() {
               <p className="text-sm text-[#86868b] mt-1">Manage your sales rep territories and optimize routes</p>
             </div>
             <div className="flex items-center space-x-4">
-              {authStatus?.isSuperuser && (
-                <Button 
-                  onClick={handleNewOptimization}
+              {authStatus?.isSuperuser && hasOutlets && (
+                <Button onClick={handleNewOptimization} data-testid="button-new-optimization">
+                  <Play className="mr-2 h-4 w-4" />
+                  New Optimization
+                </Button>
+              )}
+              {authStatus?.isSuperuser && (hasOutlets || hasOptimization) && (
+                <Button
+                  variant="outline"
+                  className="text-red-600 border-red-200 hover:bg-red-50 hover:text-red-700"
+                  onClick={() => setShowClearConfirm(true)}
                   disabled={clearAllMutation.isPending}
+                  data-testid="button-clear-data"
                 >
                   {clearAllMutation.isPending ? (
-                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-red-600 mr-2"></div>
                   ) : (
-                    <Plus className="mr-2 h-4 w-4" />
+                    <Trash2 className="mr-2 h-4 w-4" />
                   )}
-                  New Optimization
+                  Clear All Data
                 </Button>
               )}
               {hasOptimization && (
@@ -362,7 +381,7 @@ export default function Dashboard() {
           )}
 
           {/* Step 2: Initial Optimization */}
-          <div className={`${!hasOutlets ? 'opacity-50 pointer-events-none' : 'animate-in fade-in slide-in-from-bottom-3 duration-500'}`}>
+          <div id="optimization-settings" className={`transition-all ${!hasOutlets ? 'opacity-50 pointer-events-none' : 'animate-in fade-in slide-in-from-bottom-3 duration-500'}`}>
             <OptimizationSettings disabled={!hasOutlets} />
           </div>
 
@@ -738,6 +757,29 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+
+      <Dialog open={showClearConfirm} onOpenChange={setShowClearConfirm}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Clear all data?</DialogTitle>
+            <DialogDescription>
+              This permanently deletes {outlets.length.toLocaleString()} outlet{outlets.length === 1 ? "" : "s"}
+              {hasOptimization ? `, ${reps.length} rep${reps.length === 1 ? "" : "s"} and every schedule` : ""}.
+              You will need to upload your file again. This cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowClearConfirm(false)}>Cancel</Button>
+            <Button
+              className="bg-red-600 hover:bg-red-700 text-white"
+              onClick={() => { setShowClearConfirm(false); clearAllMutation.mutate(); }}
+              data-testid="button-confirm-clear"
+            >
+              Yes, delete everything
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
