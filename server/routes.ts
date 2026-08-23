@@ -28,6 +28,7 @@ import Papa from "papaparse";
 import { exec } from "child_process";
 import { promisify } from "util";
 import { performAdvancedClustering as performAdvancedClusteringJS } from "./clustering-algorithms";
+import { geoDist, setDistanceMode, prefetchRoadMatrix, clearRoadMatrix, haversineKm, type DistanceMode } from "./road-distance";
 import { generateAdvancedSchedule, reoptimizeSchedules, validateSchedule } from "./advanced-scheduling";
 import { 
   shouldBlockTrial, 
@@ -1434,7 +1435,7 @@ function splitOversizedZones(clusters: GeographicCluster[], maxRadiusKm: number)
       const group = queue.shift()!;
       const centroid = computeOutletsCentroid(group);
       const radius = Math.max(...group.map(o =>
-        calculateHaversineDistance(o.latitude, o.longitude, centroid.lat, centroid.lng)
+        geoDist(o.latitude, o.longitude, centroid.lat, centroid.lng)
       ));
       if (radius <= maxRadiusKm || group.length < 2) {
         finished.push(group);
@@ -1569,7 +1570,7 @@ function assignZonesToRepsBalanced(
   if (clusters.length === 0 || repCount === 0) return assignments;
 
   const dist = (a: { lat: number; lng: number }, b: { lat: number; lng: number }) =>
-    calculateHaversineDistance(a.lat, a.lng, b.lat, b.lng);
+    geoDist(a.lat, a.lng, b.lat, b.lng);
 
   // --- 1. Farthest-point seeding ---
   const seedIdxs: number[] = [];
@@ -1658,7 +1659,55 @@ function assignZonesToRepsBalanced(
         }
       }
     }
-    if (!moved) break; // no geographically acceptable move left
+
+    // When one-way moves stall (every whole-zone move overshoots the band or
+    // fails the locality guard), try pairwise swaps: exchanging a larger
+    // zone from an overloaded rep for a smaller zone from an underloaded one
+    // transfers only the workload DIFFERENCE, a much finer correction.
+    if (!moved) {
+      let bestSwap: { o: number; u: number; oi: number; ui: number; improve: number } | null = null;
+      for (const o of over) {
+        const oCentroid = territoryCentroidOf(assignments[o]);
+        for (const u of under) {
+          const uCentroid = territoryCentroidOf(assignments[u]);
+          for (let oi = 0; oi < assignments[o].length; oi++) {
+            const zO = assignments[o][oi];
+            const wO = zoneMonthlyVisits(zO);
+            const dOtoU = dist(zO.centroid, uCentroid);
+            const dOtoO = dist(zO.centroid, oCentroid);
+            if (dOtoU > Math.max(15, 2 * dOtoO)) continue;
+            for (let ui = 0; ui < assignments[u].length; ui++) {
+              const zU = assignments[u][ui];
+              const wU = zoneMonthlyVisits(zU);
+              if (wO <= wU) continue; // swap must shift load from over to under
+              const dUtoO = dist(zU.centroid, oCentroid);
+              const dUtoU = dist(zU.centroid, uCentroid);
+              if (dUtoO > Math.max(15, 2 * dUtoU)) continue;
+              const delta = wO - wU;
+              const oldDev = Math.abs(loads[o] - target) + Math.abs(loads[u] - target);
+              const newDev = Math.abs(loads[o] - delta - target) + Math.abs(loads[u] + delta - target);
+              const improve = oldDev - newDev;
+              if (improve > 0 && (!bestSwap || improve > bestSwap.improve)) {
+                bestSwap = { o, u, oi, ui, improve };
+              }
+            }
+          }
+        }
+      }
+      if (bestSwap) {
+        const { o, u, oi, ui } = bestSwap;
+        const zO = assignments[o][oi];
+        const zU = assignments[u][ui];
+        assignments[o][oi] = zU;
+        assignments[u][ui] = zO;
+        const delta = zoneMonthlyVisits(zO) - zoneMonthlyVisits(zU);
+        loads[o] -= delta;
+        loads[u] += delta;
+        moved = true;
+      }
+    }
+
+    if (!moved) break; // no geographically acceptable move or swap left
   }
 
   // Order each rep's zones by nearest-neighbor chaining so that when the
@@ -1733,7 +1782,7 @@ function analyzeCoverageWorthiness(
     let isolationKm = Infinity;
     for (let j = 0; j < clusters.length; j++) {
       if (j === i) continue;
-      const d = calculateHaversineDistance(
+      const d = geoDist(
         z.centroid.lat, z.centroid.lng,
         clusters[j].centroid.lat, clusters[j].centroid.lng
       );
@@ -1792,6 +1841,47 @@ function analyzeCoverageWorthiness(
 
   suggestions.sort((a, b) => b.costPerVisitKm - a.costPerVisitKm);
   return { suggestions: suggestions.slice(0, 15), weightModeUsed };
+}
+
+export interface GeoOutlier {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+  distanceKm: number;
+}
+
+// Flags outlets located far outside the dataset's core coverage area (the
+// market plus its rural belt) - e.g. an outlet coded to Baghdad whose GPS
+// point sits in another governorate. The core center is the MEDIAN of all
+// coordinates, which the outliers themselves cannot drag (unlike a mean).
+// Always straight-line geometry, independent of the distance mode.
+// Highlight-only: nothing is removed - the user decides via the exclusion
+// flow after seeing the evidence.
+function detectGeoOutliers(
+  outlets: { id: string; name: string; latitude: number; longitude: number }[],
+  radiusKm: number = 60
+): GeoOutlier[] {
+  if (outlets.length < 10) return [];
+  const median = (arr: number[]) => {
+    const s = [...arr].sort((a, b) => a - b);
+    return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
+  };
+  const centerLat = median(outlets.map(o => o.latitude));
+  const centerLng = median(outlets.map(o => o.longitude));
+  const flagged: GeoOutlier[] = [];
+  for (const o of outlets) {
+    const d = haversineKm(o.latitude, o.longitude, centerLat, centerLng);
+    if (d > radiusKm) {
+      flagged.push({
+        id: o.id, name: o.name,
+        latitude: o.latitude, longitude: o.longitude,
+        distanceKm: Math.round(d * 10) / 10
+      });
+    }
+  }
+  flagged.sort((a, b) => b.distanceKm - a.distanceKm);
+  return flagged;
 }
 
 function generateZoneBasedSchedules(rep: Rep, zones: GeographicCluster[], allClusters: GeographicCluster[]): InsertSchedule[] {
@@ -2594,7 +2684,7 @@ function buildDailyClustersFromZones(zoneGroups: Outlet[][], numDays: number): O
       let bi = 0, bj = 1, bestD = Infinity;
       for (let i = 0; i < groups.length; i++) {
         for (let j = i + 1; j < groups.length; j++) {
-          const d = calculateHaversineDistance(cs[i].lat, cs[i].lng, cs[j].lat, cs[j].lng);
+          const d = geoDist(cs[i].lat, cs[i].lng, cs[j].lat, cs[j].lng);
           if (d < bestD) { bestD = d; bi = i; bj = j; }
         }
       }
@@ -3740,7 +3830,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Create outlets in storage
-      await storage.createOutlets(outlets);
+      const createdOutlets = await storage.createOutlets(outlets);
+
+      // Highlight outlets whose GPS point sits far outside the dataset's
+      // core coverage area (market + rural belt). Flag only - the user
+      // decides later whether to exclude them.
+      const geoOutlierRadiusKm = parseFloat(String(req.body?.geoOutlierRadiusKm ?? '')) || 60;
+      const geoOutliers = detectGeoOutliers(createdOutlets, geoOutlierRadiusKm);
+      for (const g of geoOutliers) {
+        await storage.updateOutlet(g.id, { geoStatus: 'offset' });
+      }
+      if (geoOutliers.length > 0) {
+        console.log(`Flagged ${geoOutliers.length} geographic outliers (> ${geoOutlierRadiusKm}km from core area)`);
+      }
 
       // Calculate analysis
       const vf1Count = outlets.filter(o => o.visitFrequency === 1).length;
@@ -3802,7 +3904,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           vf2Count,
           vf4Count,
           avgTimePerVisit,
-          recommendedReps
+          recommendedReps,
+          geoOutliers: geoOutliers.length,
+          geoOutlierDetails: geoOutliers.slice(0, 25)
         }
       });
 
@@ -4596,6 +4700,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Calculate total weekly visits required based on visit frequency
       const totalWeeklyVisits = outlets.reduce((sum, outlet) => sum + outlet.visitFrequency, 0);
 
+      // Distance model for all grouping decisions this run: straight-line
+      // (default) or road-aware (urban detour factor + river-crossing
+      // penalties, upgraded to true road distances for zone pairs when an
+      // OSRM_URL server is configured).
+      const distanceMode: DistanceMode = req.body.distanceMode === 'road' ? 'road' : 'haversine';
+      setDistanceMode(distanceMode);
+      clearRoadMatrix();
+
       // Set default values for rep constraints (use body params if provided)
       const workingDaysPerWeek = req.body.workingDaysPerWeek || 5; // Monday to Friday
       const calculationMode = req.body.calculationMode || 'manual'; // 'manual' or 'time-based'
@@ -4688,6 +4800,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const maxZoneRadiusKm = req.body.maxZoneRadiusKm || 15;
       const clusters = splitOversizedZones(rawClusters, maxZoneRadiusKm);
       const actualZoneCount = clusters.length;
+
+      // In road mode with an OSRM server configured, resolve zone-centroid
+      // pairs to true road distances before assignment decisions run.
+      if (distanceMode === 'road' && process.env.OSRM_URL) {
+        const filled = await prefetchRoadMatrix(clusters.map(c => ({ lat: c.centroid.lat, lng: c.centroid.lng })));
+        console.log(`OSRM road matrix: ${filled} zone pairs cached`);
+      }
 
       await emitProgress(45, 'Zones Created', `Created ${actualZoneCount} geographic zones`);
       console.log(`Created ${actualZoneCount} geographic zones (max ${maxZoneRadiusKm}km radius)`);
@@ -4884,6 +5003,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         req.body.weightMode === 'value' || req.body.weightMode === 'vf' ? req.body.weightMode : 'isolation';
       const coverage = analyzeCoverageWorthiness(clusters, weightMode);
 
+      // Geographic outliers: outlets far outside the core coverage area,
+      // highlighted for the user to review before deciding on removal.
+      const geoOutlierRadiusKm = req.body.geoOutlierRadiusKm || 60;
+      const geoOutliers = detectGeoOutliers(outlets, geoOutlierRadiusKm);
+      for (const g of geoOutliers) {
+        await storage.updateOutlet(g.id, { geoStatus: 'offset' });
+      }
+
       if (progressId) progressManager.complete(progressId);
 
       // Increment trial optimization run count if in trial mode
@@ -4910,6 +5037,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         },
         coverageSuggestions: coverage.suggestions,
         coverageWeightModeUsed: coverage.weightModeUsed,
+        geoOutliers,
+        geoOutlierRadiusKm,
+        distanceMode,
         calculation: {
           totalOutlets: outlets.length,
           totalWeeklyVisits,
@@ -5531,13 +5661,84 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
+      // Capacity-aware cascade: when the move overloads a rep, suggest which
+      // of that rep's outlets could move on to nearby reps with spare
+      // capacity to restore balance. Suggestions only - applying them is
+      // another call to this same endpoint.
+      const suggestedCascade: {
+        outletId: string; outletName: string; monthlyVisits: number;
+        fromRep: string; toRepId: string; toRepName: string; distanceKm: number;
+      }[] = [];
+      const overloaded = summary.filter(s => s.overCapacity);
+      if (overloaded.length > 0) {
+        const allRepsNow = await storage.getReps();
+        const allOutletsNow = await storage.getOutlets();
+        const justMoved = new Set(outletIds);
+
+        const repLoad = new Map<string, number>();
+        const repOutletsMap = new Map<string, Outlet[]>();
+        for (const r of allRepsNow) {
+          const os = allOutletsNow.filter(o => o.repId === r.id && o.territory !== 'Excluded');
+          repOutletsMap.set(r.id, os);
+          repLoad.set(r.id, os.reduce((s, o) => s + (o.visitFrequency ?? 1), 0));
+        }
+        const capacityOf = (r: Rep) => (r.workingDaysPerWeek || 5) * 4 * (r.maxDailyVisits || 25);
+        const centroidOf = (os: Outlet[]) => ({
+          lat: os.reduce((s, o) => s + o.latitude, 0) / os.length,
+          lng: os.reduce((s, o) => s + o.longitude, 0) / os.length,
+        });
+
+        for (const ov of overloaded) {
+          const rep = allRepsNow.find(r => r.id === ov.repId);
+          if (!rep) continue;
+          let excess = ov.monthlyVisits - capacityOf(rep);
+          if (excess <= 0) continue;
+
+          const receivers = allRepsNow
+            .filter(r => r.id !== rep.id && (repOutletsMap.get(r.id)?.length ?? 0) > 0)
+            .map(r => ({ rep: r, spare: capacityOf(r) - (repLoad.get(r.id) ?? 0), centroid: centroidOf(repOutletsMap.get(r.id)!) }))
+            .filter(r => r.spare > 0);
+          if (receivers.length === 0) continue;
+
+          // Rank this rep's outlets by how close they are to another rep's
+          // territory - boundary outlets cascade with the least disruption.
+          const candidates = (repOutletsMap.get(rep.id) ?? [])
+            .filter(o => !justMoved.has(o.id))
+            .map(o => {
+              let best = receivers[0], bestD = Infinity;
+              for (const rc of receivers) {
+                const d = geoDist(o.latitude, o.longitude, rc.centroid.lat, rc.centroid.lng);
+                if (d < bestD) { bestD = d; best = rc; }
+              }
+              return { o, toRep: best.rep, distanceKm: bestD };
+            })
+            .sort((a, b) => a.distanceKm - b.distanceKm);
+
+          for (const c of candidates) {
+            if (excess <= 0 || suggestedCascade.length >= 30) break;
+            const w = c.o.visitFrequency ?? 1;
+            suggestedCascade.push({
+              outletId: c.o.id,
+              outletName: c.o.name,
+              monthlyVisits: w,
+              fromRep: rep.name,
+              toRepId: c.toRep.id,
+              toRepName: c.toRep.name,
+              distanceKm: Math.round(c.distanceKm * 10) / 10,
+            });
+            excess -= w;
+          }
+        }
+      }
+
       res.json({
         success: true,
         movedOutlets: moved,
         toRep: { id: targetRep.id, name: targetRep.name },
         repsReworked: summary,
         warnings,
-        message: `Moved ${moved} outlet(s) to ${targetRep.name} and reworked schedules for ${summary.length} rep(s).`
+        suggestedCascade,
+        message: `Moved ${moved} outlet(s) to ${targetRep.name} and reworked schedules for ${summary.length} rep(s).${suggestedCascade.length > 0 ? ` ${suggestedCascade.length} cascade move(s) suggested to restore capacity.` : ''}`
       });
     } catch (error) {
       console.error("Reassign-outlets error:", error);

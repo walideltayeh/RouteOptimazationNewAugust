@@ -55,6 +55,14 @@ interface TerritoryBalance {
   perRep: { name: string; code: string; monthlyVisits: number; uniqueOutlets: number; deviationPct: number }[];
 }
 
+interface GeoOutlier {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+  distanceKm: number;
+}
+
 export default function OptimizationSettings({ disabled = false }: OptimizationSettingsProps) {
   const [calculationMode, setCalculationMode] = useState<CalculationMode>('manual');
 
@@ -64,10 +72,13 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
 
   // Coverage weighting for area-removal suggestions
   const [weightMode, setWeightMode] = useState<WeightMode>('isolation');
+  const [distanceMode, setDistanceMode] = useState<'haversine' | 'road'>('haversine');
   const [coverageSuggestions, setCoverageSuggestions] = useState<CoverageSuggestion[]>([]);
   const [territoryBalance, setTerritoryBalance] = useState<TerritoryBalance | null>(null);
   const [weightModeUsed, setWeightModeUsed] = useState<string>('');
   const [selectedExclusions, setSelectedExclusions] = useState<Set<string>>(new Set());
+  const [geoOutliers, setGeoOutliers] = useState<GeoOutlier[]>([]);
+  const [selectedGeoExclusions, setSelectedGeoExclusions] = useState<Set<string>>(new Set());
   const [activeExcludedIds, setActiveExcludedIds] = useState<string[]>([]);
   
   // Time-based mode settings
@@ -89,6 +100,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
     maxTimePerOutlet?: number;
     maxWorkingHoursPerDay?: number;
     weightMode: WeightMode;
+    distanceMode: 'haversine' | 'road';
     excludedOutletIds?: string[];
     progressId: string;
   } | null>(null);
@@ -165,6 +177,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       maxTimePerOutlet?: number;
       maxWorkingHoursPerDay?: number;
       weightMode?: WeightMode;
+      distanceMode?: 'haversine' | 'road';
       excludedOutletIds?: string[];
       progressId?: string;
     }) => {
@@ -175,7 +188,9 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       setCoverageSuggestions(data.coverageSuggestions || []);
       setTerritoryBalance(data.territoryBalance || null);
       setWeightModeUsed(data.coverageWeightModeUsed || '');
+      setGeoOutliers(data.geoOutliers || []);
       setSelectedExclusions(new Set());
+      setSelectedGeoExclusions(new Set());
       queryClient.invalidateQueries({ queryKey: ["/api/reps"] });
       queryClient.invalidateQueries({ queryKey: ["/api/outlets"] });
       queryClient.invalidateQueries({ queryKey: ["/api/schedules"] });
@@ -247,6 +262,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       maxTimePerOutlet: calculationMode === 'time-based' ? maxTimePerOutlet : undefined,
       maxWorkingHoursPerDay: calculationMode === 'time-based' ? maxWorkingHoursPerDay : undefined,
       weightMode,
+      distanceMode,
       excludedOutletIds: excludedOutletIds.length > 0 ? excludedOutletIds : undefined,
       progressId: newProgressId,
     };
@@ -255,12 +271,14 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
     setShowProgressModal(true);
   };
 
-  // Re-run without the areas the user ticked in the suggestions list.
+  // Re-run without the areas/outlets the user ticked in the suggestion and
+  // geo-outlier lists.
   const handleExcludeAndRerun = () => {
     const ids: string[] = [];
     for (const s of coverageSuggestions) {
       if (selectedExclusions.has(s.territory)) ids.push(...s.outletIds);
     }
+    ids.push(...Array.from(selectedGeoExclusions));
     const combined = Array.from(new Set([...activeExcludedIds, ...ids]));
     setActiveExcludedIds(combined);
     handleOptimization(combined);
@@ -274,6 +292,17 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       return next;
     });
   };
+
+  const toggleGeoExclusion = (outletId: string) => {
+    setSelectedGeoExclusions(prev => {
+      const next = new Set(prev);
+      if (next.has(outletId)) next.delete(outletId);
+      else next.add(outletId);
+      return next;
+    });
+  };
+
+  const totalSelectedExclusions = selectedExclusions.size + selectedGeoExclusions.size;
 
   return (
     <Card>
@@ -439,6 +468,26 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
           </p>
         </div>
 
+        <div>
+          <Label htmlFor="distanceMode">Distance Model</Label>
+          <Select
+            value={distanceMode}
+            onValueChange={(value) => setDistanceMode(value as 'haversine' | 'road')}
+            disabled={disabled}
+          >
+            <SelectTrigger className="mt-1" disabled={disabled} data-testid="select-distance-mode">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="haversine">Straight-line (fastest)</SelectItem>
+              <SelectItem value="road">Road-aware (urban detours + river crossings)</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-gray-500 mt-1">
+            Road-aware mode penalizes routes that cross major barriers (e.g. the Tigris) and approximates real driving distance; connects to an OSRM server for true road distances when configured.
+          </p>
+        </div>
+
         {feasibilityCheck.message && (
           <Alert className={feasibilityCheck.warning ? "border-red-200 bg-red-50" : "border-green-200 bg-green-50"}>
             <AlertCircle className={`h-4 w-4 ${feasibilityCheck.warning ? "text-red-600" : "text-green-600"}`} />
@@ -540,11 +589,48 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
             <Button
               variant="outline"
               className="w-full border-amber-400 text-amber-900"
-              disabled={disabled || optimizationMutation.isPending || selectedExclusions.size === 0}
+              disabled={disabled || optimizationMutation.isPending || totalSelectedExclusions === 0}
               onClick={handleExcludeAndRerun}
               data-testid="button-exclude-rerun"
             >
-              Re-optimize without {selectedExclusions.size} selected area{selectedExclusions.size === 1 ? '' : 's'}
+              Re-optimize without {totalSelectedExclusions} selected item{totalSelectedExclusions === 1 ? '' : 's'}
+            </Button>
+          </div>
+        )}
+
+        {geoOutliers.length > 0 && (
+          <div className="p-4 bg-red-50 rounded-lg border border-red-200 space-y-3" data-testid="geo-outliers">
+            <h4 className="font-semibold text-red-900">
+              Outlets outside the core coverage area ({geoOutliers.length})
+            </h4>
+            <p className="text-xs text-red-800">
+              These outlets sit far outside the market and its rural belt — usually wrong GPS data or outlets that belong to another region. Review them before deciding: tick the ones to exclude and re-run.
+            </p>
+            <div className="space-y-2 max-h-64 overflow-y-auto">
+              {geoOutliers.map((g) => (
+                <label key={g.id} className="flex items-start gap-2 text-sm text-red-900 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked={selectedGeoExclusions.has(g.id)}
+                    onChange={() => toggleGeoExclusion(g.id)}
+                    data-testid={`checkbox-geo-${g.id}`}
+                  />
+                  <span>
+                    <strong>{g.name}</strong> — {g.distanceKm}km from the core area
+                    <span className="block text-xs text-red-700">({g.latitude.toFixed(4)}, {g.longitude.toFixed(4)})</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+            <Button
+              variant="outline"
+              className="w-full border-red-400 text-red-900"
+              disabled={disabled || optimizationMutation.isPending || totalSelectedExclusions === 0}
+              onClick={handleExcludeAndRerun}
+              data-testid="button-geo-exclude-rerun"
+            >
+              Re-optimize without {totalSelectedExclusions} selected item{totalSelectedExclusions === 1 ? '' : 's'}
             </Button>
           </div>
         )}

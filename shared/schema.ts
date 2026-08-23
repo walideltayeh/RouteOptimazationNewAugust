@@ -12,6 +12,7 @@ export const outlets = pgTable("outlets", {
   visitFrequency: integer("visit_frequency").notNull(), // 1, 2, 3, or 4 (VF1=monthly, VF2=biweekly, VF3=3 of 4 weeks, VF4=weekly)
   timePerVisit: integer("time_per_visit").notNull().default(30), // minutes per visit
   value: real("value"), // commercial weight (VC / volume class / sales) when the source file provides one
+  geoStatus: text("geo_status"), // 'offset' = geographically far outside the dataset's core coverage area; null = normal
   territory: text("territory"),
   repId: varchar("rep_id"),
   cluster: integer("cluster"),
