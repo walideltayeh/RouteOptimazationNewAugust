@@ -1452,6 +1452,87 @@ function splitOversizedZones(clusters: GeographicCluster[], maxRadiusKm: number)
   return finished.map((outlets, id) => ({ id, centroid: computeOutletsCentroid(outlets), outlets }));
 }
 
+// Counterpart to splitOversizedZones: merges adjacent under-target zones back
+// up toward the day-size target, but ONLY while the merged zone still fits
+// under the radius cap. Splitting alone leaves a sparse market (where many
+// zones get split for spread) full of half-empty days - e.g. Erbil produced
+// 42 zones of ~27 outlets for a 40-50 target, so reps did ~13 visits/day
+// instead of 20-25 and the required-rep count inflated by ~75%. Merging
+// restores the day size wherever geography actually allows it; zones that
+// stay small are the ones that genuinely cannot grow without breaking
+// tightness.
+function mergeUndersizedZones(
+  clusters: GeographicCluster[],
+  targetMinOutlets: number,
+  targetMaxOutlets: number,
+  maxRadiusKm: number,
+  maxGapKm: number = 5
+): GeographicCluster[] {
+  const groups = clusters.map(c => [...c.outlets]);
+
+  const radiusOf = (g: Outlet[]) => {
+    const c = computeOutletsCentroid(g);
+    return Math.max(...g.map(o => geoDist(o.latitude, o.longitude, c.lat, c.lng)));
+  };
+
+  let merged = true;
+  while (merged) {
+    merged = false;
+    // Smallest zone first: it has the most to gain from a merge.
+    const order = groups
+      .map((g, i) => ({ i, n: g.length }))
+      .filter(x => x.n < targetMinOutlets)
+      .sort((a, b) => a.n - b.n);
+
+    for (const { i } of order) {
+      if (!groups[i] || groups[i].length === 0) continue;
+      // Flagged geographic outliers stay in their own zone - merging one
+      // into a neighbour stretches a real rep's day across the country.
+      if (groups[i].some(o => o.geoStatus === 'offset')) continue;
+      const ci = computeOutletsCentroid(groups[i]);
+
+      let bestJ = -1, bestD = Infinity;
+      for (let j = 0; j < groups.length; j++) {
+        if (j === i || groups[j].length === 0) continue;
+        if (groups[j].some(o => o.geoStatus === 'offset')) continue;
+        if (groups[i].length + groups[j].length > targetMaxOutlets) continue;
+        const cj = computeOutletsCentroid(groups[j]);
+        const d = geoDist(ci.lat, ci.lng, cj.lat, cj.lng);
+        if (d >= bestD) continue;
+        // Adjacency guard: the two zones must actually touch, i.e. their
+        // closest outlets are within maxGapKm. Without this the merge
+        // happily bridges empty countryside between two distant clusters -
+        // the zone stays under the radius cap on paper while the rep drives
+        // across a void mid-day.
+        let gap = Infinity;
+        for (const a of groups[i]) {
+          for (const b of groups[j]) {
+            const g = geoDist(a.latitude, a.longitude, b.latitude, b.longitude);
+            if (g < gap) gap = g;
+            if (gap <= maxGapKm) break;
+          }
+          if (gap <= maxGapKm) break;
+        }
+        if (gap > maxGapKm) continue;
+        // Only accept if the merged zone stays tight.
+        if (radiusOf([...groups[i], ...groups[j]]) > maxRadiusKm) continue;
+        bestD = d; bestJ = j;
+      }
+
+      if (bestJ >= 0) {
+        groups[bestJ] = [...groups[bestJ], ...groups[i]];
+        groups[i] = [];
+        merged = true;
+        break; // recompute the ordering after each merge
+      }
+    }
+  }
+
+  return groups
+    .filter(g => g.length > 0)
+    .map((outlets, id) => ({ id, centroid: computeOutletsCentroid(outlets), outlets }));
+}
+
 function assignClustersToReps(clusters: GeographicCluster[], repCount: number): GeographicCluster[] {
   // Keep each cluster as a separate territory (one cluster = one rep)
   // This ensures each territory has ~25 outlets and is geographically compact
@@ -2683,13 +2764,20 @@ function buildDailyClustersFromZones(zoneGroups: Outlet[][], numDays: number, ma
       lng: g.reduce((s, o) => s + o.longitude, 0) / g.length,
     });
     const weeklyLoad = (g: Outlet[]) => g.reduce((s, o) => s + (o.visitFrequency ?? 1), 0) / 4;
+    // A zone holding a flagged geographic outlier must never be merged into
+    // a neighbour: one mis-geocoded outlet 450km away would otherwise turn a
+    // normal day-route into a cross-country drive. It keeps its own (small)
+    // day until the user excludes or fixes it.
+    const hasOutlier = (g: Outlet[]) => g.some(o => o.geoStatus === 'offset');
     while (groups.length > numDays) {
       const cs = groups.map(centroidOf);
       const loads = groups.map(weeklyLoad);
       let bi = -1, bj = -1, bestD = Infinity;
-      let fi = 0, fj = 1, fallbackLoad = Infinity;
+      let fi = -1, fj = -1, fallbackLoad = Infinity;
       for (let i = 0; i < groups.length; i++) {
+        if (hasOutlier(groups[i])) continue;
         for (let j = i + 1; j < groups.length; j++) {
+          if (hasOutlier(groups[j])) continue;
           const d = geoDist(cs[i].lat, cs[i].lng, cs[j].lat, cs[j].lng);
           const combined = loads[i] + loads[j];
           if (maxWeeklyVisitsPerDay === undefined || combined <= maxWeeklyVisitsPerDay) {
@@ -2699,8 +2787,10 @@ function buildDailyClustersFromZones(zoneGroups: Outlet[][], numDays: number, ma
         }
       }
       // No pair fits under the cap -> merge the lightest pair (the day count
-      // must still come out to numDays).
+      // must still come out to numDays). If every remaining pair involves an
+      // outlier zone, stop merging: too many days beats a cross-country day.
       if (bi < 0) { bi = fi; bj = fj; }
+      if (bi < 0 || bj < 0) break;
       groups[bi] = [...groups[bi], ...groups[bj]];
       groups.splice(bj, 1);
     }
@@ -4799,8 +4889,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // matter how well its outlet count matches minVisitsPerDay/maxVisitsPerDay,
       // so oversized zones get split into tighter sub-zones here.
       const maxZoneRadiusKm = req.body.maxZoneRadiusKm || 15;
-      const clusters = splitOversizedZones(rawClusters, maxZoneRadiusKm);
+      const splitClusters = splitOversizedZones(rawClusters, maxZoneRadiusKm);
+      // Then merge the under-target zones splitting left behind, so days
+      // still carry the requested visit load wherever geography allows.
+      const clusters = mergeUndersizedZones(splitClusters, zoneMinOutlets, zoneMaxOutlets, maxZoneRadiusKm);
       const actualZoneCount = clusters.length;
+      console.log(`Zones: ${rawClusters.length} raw -> ${splitClusters.length} after split -> ${actualZoneCount} after merge`);
 
       // In road mode with an OSRM server configured, resolve zone-centroid
       // pairs to true road distances before assignment decisions run.

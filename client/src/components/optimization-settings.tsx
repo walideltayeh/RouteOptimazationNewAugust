@@ -67,6 +67,10 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
   // Coverage weighting for area-removal suggestions
   const [weightMode, setWeightMode] = useState<WeightMode>('isolation');
   const [distanceMode, setDistanceMode] = useState<'haversine' | 'road'>('haversine');
+  // Route compactness: the max radius a day-zone may span. Lower = tighter
+  // routes but fewer visits per day in sparse markets (more reps needed);
+  // higher = fuller days over more ground.
+  const [maxZoneRadiusKm, setMaxZoneRadiusKm] = useState(15);
   const [coverageSuggestions, setCoverageSuggestions] = useState<CoverageSuggestion[]>([]);
   const [territoryBalance, setTerritoryBalance] = useState<TerritoryBalance | null>(null);
   const [weightModeUsed, setWeightModeUsed] = useState<string>('');
@@ -88,6 +92,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
     workingDaysPerWeek: number;
     weightMode: WeightMode;
     distanceMode: 'haversine' | 'road';
+    maxZoneRadiusKm: number;
     excludedOutletIds?: string[];
     progressId: string;
   } | null>(null);
@@ -135,6 +140,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       workingDaysPerWeek: number;
       weightMode?: WeightMode;
       distanceMode?: 'haversine' | 'road';
+      maxZoneRadiusKm?: number;
       excludedOutletIds?: string[];
       progressId?: string;
     }) => {
@@ -217,6 +223,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       workingDaysPerWeek,
       weightMode,
       distanceMode,
+      maxZoneRadiusKm,
       excludedOutletIds: excludedOutletIds.length > 0 ? excludedOutletIds : undefined,
       progressId: newProgressId,
     };
@@ -358,6 +365,28 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
           </Select>
           <p className="text-xs text-gray-500 mt-1">
             Road-aware mode penalizes routes that cross major barriers (e.g. the Tigris) and approximates real driving distance; connects to an OSRM server for true road distances when configured.
+          </p>
+        </div>
+
+        <div>
+          <Label htmlFor="compactness">Route Compactness</Label>
+          <Select
+            value={String(maxZoneRadiusKm)}
+            onValueChange={(v) => setMaxZoneRadiusKm(parseInt(v))}
+            disabled={disabled}
+          >
+            <SelectTrigger className="mt-1" disabled={disabled} data-testid="select-compactness">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="5">Very tight — 5 km max zone radius</SelectItem>
+              <SelectItem value="10">Tight — 10 km</SelectItem>
+              <SelectItem value="15">Balanced — 15 km (default)</SelectItem>
+              <SelectItem value="25">Wide — 25 km</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-gray-500 mt-1">
+            In dense cities you can keep routes very tight and still fill each day. In sparse markets the two pull against each other: tighter routes mean fewer visits per day and more reps. Loosen this if days come out under target.
           </p>
         </div>
 
