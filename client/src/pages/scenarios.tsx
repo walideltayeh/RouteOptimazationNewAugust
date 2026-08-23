@@ -49,7 +49,15 @@ export default function ScenariosPage() {
 
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const { data: scenarios = [] } = useQuery<ScenarioSummary[]>({ queryKey: ["/api/scenarios"] });
+  // Always refetch on mount: the global query config caches with
+  // staleTime Infinity, so a list fetched before the first run (empty) would
+  // otherwise stay empty forever - including after optimizations started from
+  // the Dashboard, which cannot know to invalidate this page's query.
+  const { data: scenarios = [] } = useQuery<ScenarioSummary[]>({
+    queryKey: ["/api/scenarios"],
+    staleTime: 0,
+    refetchOnMount: "always",
+  });
 
   // Run the optimizer with these parameters, then capture the resulting plan
   // and its KPIs as a scenario. The live plan is left showing the last run.

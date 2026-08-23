@@ -154,6 +154,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       setGeoOutliers(data.geoOutliers || []);
       setSelectedExclusions(new Set());
       setSelectedGeoExclusions(new Set());
+      queryClient.invalidateQueries({ queryKey: ["/api/scenarios"] });
       queryClient.invalidateQueries({ queryKey: ["/api/reps"] });
       queryClient.invalidateQueries({ queryKey: ["/api/outlets"] });
       queryClient.invalidateQueries({ queryKey: ["/api/schedules"] });
