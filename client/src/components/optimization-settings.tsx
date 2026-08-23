@@ -140,8 +140,9 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
     
     if (totalOutlets === 0) return { feasible: true, message: "", warning: false };
     
-    // Calculate based on user's parameters
-    const totalWeeklyVisits = (analysis.vf1 || 0) + (analysis.vf2 * 2) + (analysis.vf4 * 4);
+    // Actual visits per week: vf is visits per 4-week cycle (VF4 weekly,
+    // VF2 biweekly, VF1 monthly), so weekly load is the monthly total / 4.
+    const totalWeeklyVisits = Math.ceil(((analysis.vf1 || 0) + (analysis.vf2 * 2) + (analysis.vf4 * 4)) / 4);
     
     let effectiveMax: number;
     let effectiveMin: number;

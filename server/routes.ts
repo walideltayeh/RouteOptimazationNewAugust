@@ -2660,7 +2660,7 @@ function buildAnchorAwareSchedules(rep: Rep, repOutlets: Outlet[]): InsertSchedu
 // and re-deriving daily groups from scratch (which was free to blend outlets
 // from distant, unrelated zones onto the same day). Falls back to merging or
 // splitting zones only when the zone count doesn't already match numDays.
-function buildDailyClustersFromZones(zoneGroups: Outlet[][], numDays: number): Outlet[][] {
+function buildDailyClustersFromZones(zoneGroups: Outlet[][], numDays: number, maxWeeklyVisitsPerDay?: number): Outlet[][] {
   const zones = zoneGroups.filter(z => z.length > 0).map(z => [...z]);
   if (zones.length === 0) return Array.from({ length: numDays }, () => []);
 
@@ -2673,21 +2673,34 @@ function buildDailyClustersFromZones(zoneGroups: Outlet[][], numDays: number): O
     // the two geographically closest groups until numDays remain. Unlike
     // quota-slicing along the chain, this never forces a distant zone into a
     // neighbor's day just to satisfy counts: an isolated zone simply stays
-    // its own (smaller) day, keeping every day-route tight.
+    // its own (smaller) day, keeping every day-route tight. Merging is also
+    // capacity-aware: pairs whose combined weekly visit load would exceed
+    // the rep's daily cap are avoided while any legal pair exists, so a
+    // merged day doesn't blow past maxDailyVisits.
     const groups: Outlet[][] = zones;
     const centroidOf = (g: Outlet[]) => ({
       lat: g.reduce((s, o) => s + o.latitude, 0) / g.length,
       lng: g.reduce((s, o) => s + o.longitude, 0) / g.length,
     });
+    const weeklyLoad = (g: Outlet[]) => g.reduce((s, o) => s + (o.visitFrequency ?? 1), 0) / 4;
     while (groups.length > numDays) {
       const cs = groups.map(centroidOf);
-      let bi = 0, bj = 1, bestD = Infinity;
+      const loads = groups.map(weeklyLoad);
+      let bi = -1, bj = -1, bestD = Infinity;
+      let fi = 0, fj = 1, fallbackLoad = Infinity;
       for (let i = 0; i < groups.length; i++) {
         for (let j = i + 1; j < groups.length; j++) {
           const d = geoDist(cs[i].lat, cs[i].lng, cs[j].lat, cs[j].lng);
-          if (d < bestD) { bestD = d; bi = i; bj = j; }
+          const combined = loads[i] + loads[j];
+          if (maxWeeklyVisitsPerDay === undefined || combined <= maxWeeklyVisitsPerDay) {
+            if (d < bestD) { bestD = d; bi = i; bj = j; }
+          }
+          if (combined < fallbackLoad) { fallbackLoad = combined; fi = i; fj = j; }
         }
       }
+      // No pair fits under the cap -> merge the lightest pair (the day count
+      // must still come out to numDays).
+      if (bi < 0) { bi = fi; bj = fj; }
       groups[bi] = [...groups[bi], ...groups[bj]];
       groups.splice(bj, 1);
     }
@@ -2719,7 +2732,7 @@ function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[][]): I
   const repOutlets = zoneGroups.flat();
   if (repOutlets.length === 0) return [];
 
-  const dailyClusters = buildDailyClustersFromZones(zoneGroups, numDays);
+  const dailyClusters = buildDailyClustersFromZones(zoneGroups, numDays, rep.maxDailyVisits || undefined);
   while (dailyClusters.length < numDays) dailyClusters.push([]);
 
   return scheduleFromDailyClusters(rep, dailyClusters, repOutlets);
@@ -4751,20 +4764,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       
       console.log(`Optimization using ${calculationMode} mode: min=${minVisitsPerDay}, max=${maxVisitsPerDay} visits/day`);
-      
+
+      // minVisitsPerDay/maxVisitsPerDay mean ACTUAL visits a rep makes each
+      // day. A day-zone is visited on its day-of-week every week, but only
+      // the outlets due that week show up (VF4 every week, VF2 alternating
+      // weeks, VF1 one week in four) - so a zone must hold MORE unique
+      // outlets than the daily target for the due share to hit it. Scale
+      // zone capacity by the dataset's average weekly-visit fraction
+      // (vf/4 per outlet: VF4=1.0, VF2=0.5, VF1=0.25). Example: all-VF2
+      // data with a 20-25 target -> zones of 40-50 outlets, whose
+      // alternating halves are 20-25 actual visits.
+      const totalMonthlyVisits = outlets.reduce((s, o) => s + (o.visitFrequency ?? 1), 0);
+      const avgWeeklyVisitFraction = Math.min(1, Math.max(0.25, totalMonthlyVisits / 4 / outlets.length));
+      const zoneMinOutlets = Math.max(1, Math.round(minVisitsPerDay / avgWeeklyVisitFraction));
+      const zoneMaxOutlets = Math.max(zoneMinOutlets + 1, Math.round(maxVisitsPerDay / avgWeeklyVisitFraction));
+      console.log(`Visit-frequency-aware zone sizing: avg weekly fraction ${avgWeeklyVisitFraction.toFixed(2)} -> zones of ${zoneMinOutlets}-${zoneMaxOutlets} outlets for ${minVisitsPerDay}-${maxVisitsPerDay} actual visits/day`);
+
       // Calculate required reps based on daily visit constraints
-      // Formula: Weekly visits / (working days * max visits per day)
+      // Formula: actual weekly visits / (working days * max visits per day)
+      const actualWeeklyVisits = Math.ceil(totalMonthlyVisits / 4);
       const maxWeeklyCapacityPerRep = workingDaysPerWeek * maxVisitsPerDay;
-      const requiredReps = Math.ceil(totalWeeklyVisits / maxWeeklyCapacityPerRep);
-      
+      const requiredReps = Math.ceil(actualWeeklyVisits / maxWeeklyCapacityPerRep);
+
       // Ensure we don't go below minimum daily visits requirement
       const minWeeklyCapacityPerRep = workingDaysPerWeek * minVisitsPerDay;
-      
+
       // Use the calculated required reps (initial estimate)
       let finalRequiredReps = Math.max(1, requiredReps); // At least 1 rep needed
 
       await emitProgress(10, 'Preparing', 'Clearing existing data...');
-      
+
       // Clear existing reps first
       const existingReps = await storage.getReps();
       for (const rep of existingReps) {
@@ -4772,22 +4801,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       await emitProgress(15, 'Clustering', `Analyzing ${outlets.length} outlets for geographic patterns...`);
-      
+
       // Create territories based on geographic clusters (each cluster = one zone)
       console.log(`Creating zones based on geographic clustering for ${outlets.length} outlets`);
-      
-      // Calculate target zones based on the required rep count and user's max visits per day
+
+      // Calculate target zones based on the required rep count and the
+      // VF-adjusted zone capacity
       const zonesPerRep = workingDaysPerWeek; // One zone per working day
       const targetZones = Math.max(
-        Math.ceil(outlets.length / maxVisitsPerDay), // At least one zone per maxVisitsPerDay outlets
+        Math.ceil(outlets.length / zoneMaxOutlets), // At least one zone per zoneMaxOutlets outlets
         finalRequiredReps * zonesPerRep // Or enough zones for all reps
       );
-      
+
       await emitProgress(20, 'Clustering', 'Running advanced geographic clustering algorithm...');
-      
+
       // Perform advanced clustering using JavaScript implementation (HDBSCAN + VRP + Capacitated K-Means)
       // Pass progress callback to allow SSE updates during long-running clustering
-      const advancedClusters = await performAdvancedClusteringJS(outlets, targetZones, minVisitsPerDay, maxVisitsPerDay, emitProgress);
+      const advancedClusters = await performAdvancedClusteringJS(outlets, targetZones, zoneMinOutlets, zoneMaxOutlets, emitProgress);
       const rawClusters = advancedClusters.map(cluster => ({
         id: cluster.id,
         centroid: cluster.centroid,
