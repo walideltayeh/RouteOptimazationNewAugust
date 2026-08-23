@@ -4766,11 +4766,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         
         if (repZones.length > 0) {
           console.log(`${rep.name} will cover zones: ${repZones.map(z => z.id + 1).join(', ')}`);
-          
+
+          // Record ownership: repId on the outlet is the source of truth
+          // that reassignment and targeted re-optimization rely on.
+          for (const zone of repZones) {
+            for (const outlet of zone.outlets) {
+              await storage.updateOutlet(outlet.id, { repId: rep.id });
+            }
+          }
+
           // Generate schedule where rep visits one complete zone per day
           const repSchedules = generateZoneBasedSchedules(rep, repZones, clusters);
           console.log(`Generated ${repSchedules.length} schedules for ${rep.name}`);
-          
+
           for (const schedule of repSchedules) {
             await storage.createSchedule(schedule);
           }
@@ -5415,14 +5423,141 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ============= RE-OPTIMIZATION ROUTES =============
 
   // Re-assign outlet to a different zone/territory
+  // Rebuild the schedules (and role schedules) of just the given reps from
+  // their currently-owned outlets (linkage: outlet.repId). Outlets are
+  // grouped by their zone label so the geographic tightness of the original
+  // optimization survives; outlets moved in from another rep form their own
+  // group, which the day-builder merges into the nearest day. Untouched reps
+  // keep their schedules exactly as they were.
+  async function regenerateSchedulesForReps(repIds: string[]) {
+    const uniqueRepIds = Array.from(new Set(repIds.filter(Boolean)));
+    const allReps = await storage.getReps();
+    const allOutlets = await storage.getOutlets();
+    const allHierarchies = await storage.getRoleHierarchies();
+    const summary: { repId: string; name: string; outlets: number; monthlyVisits: number; schedules: number; overCapacity: boolean }[] = [];
+
+    for (const repId of uniqueRepIds) {
+      const rep = allReps.find(r => r.id === repId);
+      if (!rep) continue;
+
+      await storage.deleteSchedulesByRepId(rep.id);
+      const repOutlets = allOutlets.filter(o => o.repId === rep.id && o.territory !== 'Excluded');
+
+      let created = 0;
+      if (repOutlets.length > 0) {
+        const byZone = new Map<string, Outlet[]>();
+        for (const o of repOutlets) {
+          const key = o.territory || 'unzoned';
+          if (!byZone.has(key)) byZone.set(key, []);
+          byZone.get(key)!.push(o);
+        }
+        const schedules = buildAnchorAwareSchedulesFromZones(rep, Array.from(byZone.values()));
+        for (const s of schedules) await storage.createSchedule(s);
+        created = schedules.length;
+
+        const repSchedules = await storage.getSchedulesByRepId(rep.id);
+        const repHierarchies = allHierarchies
+          .filter(h => h.repId === rep.id)
+          .filter(h => h.isActive && h.role !== 'rep' && h.role !== '_config');
+        if (repSchedules.length > 0 && repHierarchies.length > 0) {
+          await generateRoleSchedulesForRep(rep.id, repSchedules, repHierarchies);
+        }
+      } else {
+        await storage.deleteRoleSchedulesByRepId(rep.id);
+      }
+
+      const monthlyVisits = repOutlets.reduce((s, o) => s + (o.visitFrequency ?? 1), 0);
+      const monthlyCapacity = (rep.workingDaysPerWeek || 5) * 4 * (rep.maxDailyVisits || 25);
+      summary.push({
+        repId: rep.id,
+        name: rep.name,
+        outlets: repOutlets.length,
+        monthlyVisits,
+        schedules: created,
+        overCapacity: monthlyVisits > monthlyCapacity
+      });
+    }
+    return summary;
+  }
+
+  // Reps whose schedules currently reference any of these outlets, plus the
+  // reps the outlets are owned by - both sides of any move.
+  async function repsAffectedByOutlets(outletIds: string[]): Promise<string[]> {
+    const idSet = new Set(outletIds);
+    const affected = new Set<string>();
+    const allOutlets = await storage.getOutlets();
+    for (const o of allOutlets) {
+      if (idSet.has(o.id) && o.repId) affected.add(o.repId);
+    }
+    const allSchedules = await storage.getSchedules();
+    for (const s of allSchedules) {
+      if ((s.outletIds as string[]).some(id => idSet.has(id))) affected.add(s.repId);
+    }
+    return Array.from(affected);
+  }
+
+  // Move outlets from their current rep(s) to another rep, then rework the
+  // affected reps' schedules automatically - the "assign outlets to other
+  // reps and the app re-optimizes" flow.
+  app.post("/api/reps/reassign-outlets", async (req, res) => {
+    try {
+      const { outletIds, toRepId } = req.body as { outletIds: string[]; toRepId: string };
+      if (!Array.isArray(outletIds) || outletIds.length === 0) {
+        return res.status(400).json({ message: "outletIds must be a non-empty array" });
+      }
+      const targetRep = await storage.getRep(toRepId);
+      if (!targetRep) {
+        return res.status(404).json({ message: "Target rep not found" });
+      }
+
+      const affectedBefore = await repsAffectedByOutlets(outletIds);
+
+      let moved = 0;
+      for (const id of outletIds) {
+        const outlet = await storage.updateOutlet(id, { repId: toRepId });
+        if (outlet) moved++;
+      }
+      if (moved === 0) {
+        return res.status(404).json({ message: "No matching outlets found" });
+      }
+
+      const affectedRepIds = Array.from(new Set([...affectedBefore, toRepId]));
+      const summary = await regenerateSchedulesForReps(affectedRepIds);
+
+      const warnings: string[] = [];
+      for (const s of summary) {
+        if (s.overCapacity) {
+          warnings.push(`${s.name} is now over monthly capacity (${s.monthlyVisits} visits).`);
+        }
+      }
+
+      res.json({
+        success: true,
+        movedOutlets: moved,
+        toRep: { id: targetRep.id, name: targetRep.name },
+        repsReworked: summary,
+        warnings,
+        message: `Moved ${moved} outlet(s) to ${targetRep.name} and reworked schedules for ${summary.length} rep(s).`
+      });
+    } catch (error) {
+      console.error("Reassign-outlets error:", error);
+      res.status(500).json({ message: "Failed to reassign outlets" });
+    }
+  });
+
   app.post("/api/outlets/:id/reassign", async (req, res) => {
     try {
       const { territory, repId } = req.body;
+      const affectedBefore = await repsAffectedByOutlets([req.params.id]);
       const outlet = await storage.updateOutlet(req.params.id, { territory, repId });
       if (!outlet) {
         return res.status(404).json({ message: "Outlet not found" });
       }
-      res.json(outlet);
+      // Rework schedules for every rep touched by the move so the change is
+      // reflected in actual day-routes, not just the outlet record.
+      const affected = Array.from(new Set([...affectedBefore, ...(repId ? [repId] : [])]));
+      const repsReworked = await regenerateSchedulesForReps(affected);
+      res.json({ ...outlet, repsReworked });
     } catch (error) {
       res.status(500).json({ message: "Failed to reassign outlet" });
     }
@@ -5432,11 +5567,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/outlets/bulk-reassign", async (req, res) => {
     try {
       const { updates } = req.body; // Array of { id, territory, repId }
+      const ids = updates.map((u: any) => u.id);
+      const affectedBefore = await repsAffectedByOutlets(ids);
+      // A null/absent repId means "keep the current rep" - never strip
+      // ownership, or the outlet would silently vanish from all schedules.
       const results = await storage.updateOutlets(updates.map((u: any) => ({
         id: u.id,
-        data: { territory: u.territory, repId: u.repId }
+        data: {
+          ...(u.territory ? { territory: u.territory } : {}),
+          ...(u.repId ? { repId: u.repId } : {})
+        }
       })));
-      res.json({ success: true, updated: results.length });
+      const newRepIds = updates.map((u: any) => u.repId).filter(Boolean);
+      const affected = Array.from(new Set([...affectedBefore, ...newRepIds]));
+      const repsReworked = await regenerateSchedulesForReps(affected);
+      res.json({ success: true, updated: results.length, repsReworked });
     } catch (error) {
       res.status(500).json({ message: "Failed to bulk reassign outlets" });
     }
@@ -5458,15 +5603,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
       await storage.clearSchedules();
 
       // Generate new schedules using the anchor-aware VF1/VF2/VF3/VF4
-      // scheduler. Outlet→rep linkage uses the territory string here (this
-      // endpoint is the full bulk re-optimization).
+      // scheduler. Outlet→rep linkage is by repId (the ownership record the
+      // optimize and reassignment flows maintain); the old territory-string
+      // match compared outlet zones ("Zone N") to rep territories
+      // ("Territory N"), which never matched - wiping all schedules and
+      // rebuilding none. Territory match is kept only as a fallback for
+      // data created before repId ownership existed. Outlets are grouped by
+      // zone label so geographic tightness survives the rebuild.
+      const hasOwnership = outlets.some(o => o.repId);
       const schedules: InsertSchedule[] = [];
       for (const rep of reps) {
-        const repOutlets = outlets.filter(o => o.territory === rep.territory);
+        const repOutlets = hasOwnership
+          ? outlets.filter(o => o.repId === rep.id && o.territory !== 'Excluded')
+          : outlets.filter(o => o.territory === rep.territory);
         if (repOutlets.length === 0) continue;
-        const repSchedules = buildAnchorAwareSchedules(
+        const byZone = new Map<string, Outlet[]>();
+        for (const o of repOutlets) {
+          const key = o.territory || 'unzoned';
+          if (!byZone.has(key)) byZone.set(key, []);
+          byZone.get(key)!.push(o);
+        }
+        const repSchedules = buildAnchorAwareSchedulesFromZones(
           { ...rep, workingDaysPerWeek: rep.workingDaysPerWeek || workingDaysPerWeek } as Rep,
-          repOutlets
+          Array.from(byZone.values())
         );
         schedules.push(...repSchedules);
       }
