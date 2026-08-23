@@ -41,6 +41,30 @@ import {
   type InsertTrialConversion
 } from "@shared/schema";
 import { randomUUID } from "crypto";
+import * as fs from "fs";
+import * as path from "path";
+
+// --- File-backed persistence for the in-memory store ---
+// Every Map is wrapped so mutations bump a dirty counter; an autosave timer
+// snapshots the full state to disk (atomic tmp+rename) whenever it changed,
+// and the snapshot is restored on boot. Without this, every server restart
+// (deploys, Replit autoscale) silently wiped all outlets, reps and
+// schedules. Date fields come back as ISO strings after the JSON round
+// trip - identical over the API, which serialized them anyway.
+const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), "data");
+const SNAPSHOT_PATH = path.join(DATA_DIR, "storage-snapshot.json");
+const AUTOSAVE_INTERVAL_MS = 5000;
+
+function trackedMap<K, V>(onMutate: () => void): Map<K, V> {
+  const m = new Map<K, V>();
+  const origSet = m.set.bind(m);
+  const origDelete = m.delete.bind(m);
+  const origClear = m.clear.bind(m);
+  m.set = (k: K, v: V) => { onMutate(); return origSet(k, v); };
+  m.delete = (k: K) => { onMutate(); return origDelete(k); };
+  m.clear = () => { onMutate(); origClear(); };
+  return m;
+}
 
 export interface IStorage {
   // Outlets
@@ -198,28 +222,113 @@ export class MemStorage implements IStorage {
   private orgRiskProfiles: Map<string, OrgRiskProfile>;
   private trialConversions: Map<string, TrialConversion>;
 
+  private dirtyCount = 0;
+  private savedCount = 0;
+  private readonly markDirty = () => { this.dirtyCount++; };
+
+  // Every persisted Map, by its snapshot key. Adding a new Map field to the
+  // store means adding it here - nothing else.
+  private persistedMaps(): Record<string, Map<string, any>> {
+    return {
+      outlets: this.outlets,
+      reps: this.reps,
+      schedules: this.schedules,
+      roleHierarchies: this.roleHierarchies,
+      roleSchedules: this.roleSchedules,
+      optimizationRuns: this.optimizationRuns,
+      vehicles: this.vehicles,
+      vehicleMaintenanceRecords: this.vehicleMaintenanceRecords,
+      vehicleUsageRecords: this.vehicleUsageRecords,
+      maintenancePolicies: this.maintenancePolicies,
+      maintenanceForecasts: this.maintenanceForecasts,
+      vehicleMileageSnapshots: this.vehicleMileageSnapshots,
+      trialAccounts: this.trialAccounts,
+      trialUsages: this.trialUsages,
+      deviceFingerprints: this.deviceFingerprints,
+      fingerprintEvents: this.fingerprintEvents,
+      orgRiskProfiles: this.orgRiskProfiles,
+      trialConversions: this.trialConversions,
+    };
+  }
+
   constructor() {
-    this.outlets = new Map();
-    this.reps = new Map();
-    this.schedules = new Map();
-    this.roleHierarchies = new Map();
-    this.roleSchedules = new Map();
-    this.optimizationRuns = new Map();
-    this.vehicles = new Map();
-    this.vehicleMaintenanceRecords = new Map();
-    this.vehicleUsageRecords = new Map();
-    this.maintenancePolicies = new Map();
-    this.maintenanceForecasts = new Map();
-    this.vehicleMileageSnapshots = new Map();
-    this.trialAccounts = new Map();
-    this.trialUsages = new Map();
-    this.deviceFingerprints = new Map();
-    this.fingerprintEvents = new Map();
-    this.orgRiskProfiles = new Map();
-    this.trialConversions = new Map();
-    
-    // Initialize default maintenance policies
-    this.initializeDefaultPolicies();
+    this.outlets = trackedMap(this.markDirty);
+    this.reps = trackedMap(this.markDirty);
+    this.schedules = trackedMap(this.markDirty);
+    this.roleHierarchies = trackedMap(this.markDirty);
+    this.roleSchedules = trackedMap(this.markDirty);
+    this.optimizationRuns = trackedMap(this.markDirty);
+    this.vehicles = trackedMap(this.markDirty);
+    this.vehicleMaintenanceRecords = trackedMap(this.markDirty);
+    this.vehicleUsageRecords = trackedMap(this.markDirty);
+    this.maintenancePolicies = trackedMap(this.markDirty);
+    this.maintenanceForecasts = trackedMap(this.markDirty);
+    this.vehicleMileageSnapshots = trackedMap(this.markDirty);
+    this.trialAccounts = trackedMap(this.markDirty);
+    this.trialUsages = trackedMap(this.markDirty);
+    this.deviceFingerprints = trackedMap(this.markDirty);
+    this.fingerprintEvents = trackedMap(this.markDirty);
+    this.orgRiskProfiles = trackedMap(this.markDirty);
+    this.trialConversions = trackedMap(this.markDirty);
+
+    this.restoreFromDisk();
+
+    // Initialize default maintenance policies (only on a fresh store -
+    // restored snapshots already contain them)
+    if (this.maintenancePolicies.size === 0) {
+      this.initializeDefaultPolicies();
+    }
+
+    this.startAutosave();
+  }
+
+  private restoreFromDisk(): void {
+    try {
+      if (!fs.existsSync(SNAPSHOT_PATH)) return;
+      const raw = JSON.parse(fs.readFileSync(SNAPSHOT_PATH, "utf-8"));
+      const maps = this.persistedMaps();
+      let restored = 0;
+      for (const [key, map] of Object.entries(maps)) {
+        const entries = raw[key];
+        if (!Array.isArray(entries)) continue;
+        for (const [k, v] of entries) { map.set(k, v); restored++; }
+      }
+      this.savedCount = this.dirtyCount; // restoring is not a new change
+      console.log(`[storage] Restored ${restored} records from ${SNAPSHOT_PATH}`);
+    } catch (err) {
+      console.error("[storage] Failed to restore snapshot (starting empty):", (err as Error).message);
+    }
+  }
+
+  private saveToDisk(): void {
+    try {
+      const maps = this.persistedMaps();
+      const snapshot: Record<string, [string, any][]> = {};
+      for (const [key, map] of Object.entries(maps)) {
+        snapshot[key] = Array.from(map.entries());
+      }
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+      const tmp = SNAPSHOT_PATH + ".tmp";
+      fs.writeFileSync(tmp, JSON.stringify(snapshot));
+      fs.renameSync(tmp, SNAPSHOT_PATH);
+    } catch (err) {
+      console.error("[storage] Snapshot save failed:", (err as Error).message);
+    }
+  }
+
+  private startAutosave(): void {
+    const timer = setInterval(() => {
+      if (this.dirtyCount !== this.savedCount) {
+        const at = this.dirtyCount;
+        this.saveToDisk();
+        this.savedCount = at;
+      }
+    }, AUTOSAVE_INTERVAL_MS);
+    timer.unref(); // never keep the process alive just for autosave
+    const flush = () => { if (this.dirtyCount !== this.savedCount) this.saveToDisk(); };
+    process.on("SIGTERM", flush);
+    process.on("SIGINT", flush);
+    process.on("beforeExit", flush);
   }
 
   private async initializeDefaultPolicies(): Promise<void> {
