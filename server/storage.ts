@@ -706,23 +706,26 @@ export class MemStorage implements IStorage {
       avgDailyVisits = Math.round(totalVisits / schedules.length);
     }
     
-    // Calculate territory balance
-    const territories = new Set(outlets.map(o => o.territory).filter(t => t));
+    // Territory balance = how even the monthly-visit workload is across
+    // reps (the same metric the optimizer's ±tolerance band uses), not
+    // across zones - zones legitimately vary in size.
     let territoryBalance = 95;
-    if (territories.size > 1) {
-      const outletsByTerritory = new Map<string, number>();
-      outlets.forEach(o => {
-        if (o.territory) {
-          outletsByTerritory.set(o.territory, (outletsByTerritory.get(o.territory) || 0) + 1);
-        }
-      });
-      const counts = Array.from(outletsByTerritory.values());
-      const avgCount = counts.reduce((a, b) => a + b, 0) / counts.length;
-      const variance = counts.reduce((sum, c) => sum + Math.pow(c - avgCount, 2), 0) / counts.length;
-      const stdDev = Math.sqrt(variance);
-      territoryBalance = Math.max(50, Math.round(100 - (stdDev / avgCount) * 100));
+    const visitsByRep = new Map<string, number>();
+    outlets.forEach(o => {
+      if (o.repId && o.territory !== 'Excluded') {
+        visitsByRep.set(o.repId, (visitsByRep.get(o.repId) || 0) + (o.visitFrequency ?? 1));
+      }
+    });
+    if (visitsByRep.size > 1) {
+      const loads = Array.from(visitsByRep.values());
+      const avgLoad = loads.reduce((a, b) => a + b, 0) / loads.length;
+      const maxDeviationPct = Math.max(...loads.map(l => Math.abs(l - avgLoad) / avgLoad)) * 100;
+      territoryBalance = Math.max(0, Math.round(100 - maxDeviationPct));
     }
-    
+
+    // Real total route distance from the generated schedules (km per 4-week cycle)
+    const totalDistance = Math.round(schedules.reduce((sum, s) => sum + (s.totalDistance || 0), 0));
+
     return {
       totalOutlets,
       activeReps: activeReps.length,
@@ -730,7 +733,7 @@ export class MemStorage implements IStorage {
       avgDailyVisits,
       routeEfficiency: 87,
       territoryBalance,
-      totalDistance: 342,
+      totalDistance,
       avgTravelTime: 2.3,
       visitEfficiency: 94
     };

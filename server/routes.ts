@@ -3038,11 +3038,17 @@ async function getTrialStatus(trialId: string): Promise<TrialStatus> {
   };
 }
 
-// Superuser credentials from environment variables with fallback
+// Superuser credentials come from environment variables ONLY. This repo is
+// public, so no fallback credentials may live in the code (the previous
+// hardcoded pair is exposed in git history - rotate it, don't reuse it).
+// Without both variables set, admin login is disabled and says so.
 const SUPERUSER = {
-  email: process.env.SUPERUSER_EMAIL || 'walid@walid.com',
-  password: process.env.SUPERUSER_PASSWORD || 'Walid1981@'
+  email: process.env.SUPERUSER_EMAIL || '',
+  password: process.env.SUPERUSER_PASSWORD || ''
 };
+if (!SUPERUSER.email || !SUPERUSER.password) {
+  console.warn('[auth] SUPERUSER_EMAIL / SUPERUSER_PASSWORD not set - admin login is disabled. Set both (e.g. in Replit Secrets or a .env file) to enable it.');
+}
 
 // Server-side session storage for superuser tokens
 const activeSuperuserSessions = new Set<string>();
@@ -3087,6 +3093,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const { email, password } = req.body;
       
+      if (!SUPERUSER.email || !SUPERUSER.password) {
+        return res.status(503).json({ message: "Admin login is not configured. Set SUPERUSER_EMAIL and SUPERUSER_PASSWORD environment variables." });
+      }
+
       if (email === SUPERUSER.email && password === SUPERUSER.password) {
         // Generate a secure, random session token
         const sessionToken = generateSecureToken();
