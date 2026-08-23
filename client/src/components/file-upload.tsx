@@ -21,7 +21,6 @@ interface UploadReport {
   vf1Count: number;
   vf2Count: number;
   vf4Count: number;
-  avgTimePerVisit: number;
   recommendedReps: number;
 }
 
@@ -418,7 +417,6 @@ export default function FileUpload() {
                 )}
                 <Badge className="bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200">VF2: {uploadResult.vf2Count}</Badge>
                 <Badge className="bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200">VF4: {uploadResult.vf4Count}</Badge>
-                <Badge className="bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200">Avg Visit: {uploadResult.avgTimePerVisit} min</Badge>
               </div>
               {uploadResult.skippedRows > 0 && (
                 <div className="mt-2">

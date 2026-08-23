@@ -739,29 +739,23 @@ export class MemStorage implements IStorage {
     };
   }
 
-  async getFileAnalysis(): Promise<FileAnalysis & { avgTimePerVisit?: number }> {
+  async getFileAnalysis(): Promise<FileAnalysis> {
     const outlets = await this.getOutlets();
     const vf1 = outlets.filter(o => o.visitFrequency === 1).length;
     const vf2 = outlets.filter(o => o.visitFrequency === 2).length;
     const vf4 = outlets.filter(o => o.visitFrequency === 4).length;
-    
-    // Calculate average time per visit
-    const avgTimePerVisit = outlets.length > 0
-      ? Math.round(outlets.reduce((sum, o) => sum + (o.timePerVisit || 30), 0) / outlets.length)
-      : undefined;
-    
+
     // Total monthly visits
     const totalMonthlyVisits = (vf1 * 1) + (vf2 * 2) + (vf4 * 4);
     // Assuming 5 days/week * 4 weeks * 25 visits/day = 500 visits/month per rep
     const recommendedReps = Math.ceil(totalMonthlyVisits / (5 * 4 * 25));
-    
+
     return {
       outlets: outlets.length,
       vf1,
       vf2,
       vf4,
-      recommendedReps,
-      avgTimePerVisit
+      recommendedReps
     };
   }
 

@@ -3871,10 +3871,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const vf1Count = outlets.filter(o => o.visitFrequency === 1).length;
       const vf2Count = outlets.filter(o => o.visitFrequency === 2).length;
       const vf4Count = outlets.filter(o => o.visitFrequency === 4).length;
-      const avgTimePerVisit = Math.round(
-        outlets.reduce((sum, o) => sum + (o.timePerVisit || 30), 0) / outlets.length
-      );
-      
+
       // Initial rough estimate - will be refined after optimization
       // Assuming ~25 outlets per zone and 10 zones per rep
       const recommendedReps = Math.ceil(outlets.length / 250);
@@ -3915,7 +3912,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
           vf1: vf1Count,
           vf2: vf2Count,
           vf4: vf4Count,
-          avgTimePerVisit,
           recommendedReps
         },
         report: {
@@ -3926,7 +3922,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
           vf1Count,
           vf2Count,
           vf4Count,
-          avgTimePerVisit,
           recommendedReps,
           geoOutliers: geoOutliers.length,
           geoOutlierDetails: geoOutliers.slice(0, 25)
@@ -4733,45 +4728,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Set default values for rep constraints (use body params if provided)
       const workingDaysPerWeek = req.body.workingDaysPerWeek || 5; // Monday to Friday
-      const calculationMode = req.body.calculationMode || 'manual'; // 'manual' or 'time-based'
-      const maxTimePerOutlet = req.body.maxTimePerOutlet || 45; // minutes
-      const maxWorkingHoursPerDay = req.body.maxWorkingHoursPerDay || 8; // hours
-      
-      // Calculate min/max visits based on mode
-      let minVisitsPerDay: number;
-      let maxVisitsPerDay: number;
-      
-      if (calculationMode === 'time-based') {
-        // Calculate based on time constraints
-        const maxWorkingMinutes = maxWorkingHoursPerDay * 60;
-        
-        // Get average time per visit from outlets
-        const avgTimePerVisit = outlets.length > 0
-          ? outlets.reduce((sum, o) => sum + (o.timePerVisit || 30), 0) / outlets.length
-          : maxTimePerOutlet;
-        
-        // Estimate average travel time between outlets (assume ~10 min avg travel)
-        const avgTravelTime = 10;
-        
-        // Calculate max outlets: working hours / (time per outlet + travel time)
-        const effectiveTimePerOutlet = Math.min(avgTimePerVisit, maxTimePerOutlet) + avgTravelTime;
-        const calculatedMax = Math.floor(maxWorkingMinutes / effectiveTimePerOutlet);
-        
-        // Guard against zero or negative values - fall back to reasonable defaults
-        maxVisitsPerDay = Math.max(5, calculatedMax); // At least 5 outlets per day
-        minVisitsPerDay = Math.max(1, Math.floor(maxVisitsPerDay * 0.8));
-        
-        // Ensure min < max
-        if (minVisitsPerDay >= maxVisitsPerDay) {
-          minVisitsPerDay = Math.max(1, maxVisitsPerDay - 2);
-        }
-        
-        console.log(`Time-based calculation: ${maxWorkingMinutes} min / ${effectiveTimePerOutlet.toFixed(1)} min per outlet = ${maxVisitsPerDay} max outlets/day (min=${minVisitsPerDay})`);
-      } else {
-        // Manual mode - use provided values
-        minVisitsPerDay = Math.max(1, req.body.minVisitsPerDay || 25);
-        maxVisitsPerDay = Math.max(minVisitsPerDay + 1, req.body.maxVisitsPerDay || 27);
-      }
+      const calculationMode = 'manual'; // time-based mode removed: min/max visits per day IS the capacity input, time-per-visit was a redundant second way to express it
+
+      // Daily visit targets come directly from the user
+      const minVisitsPerDay = Math.max(1, req.body.minVisitsPerDay || 25);
+      const maxVisitsPerDay = Math.max(minVisitsPerDay + 1, req.body.maxVisitsPerDay || 27);
       
       console.log(`Optimization using ${calculationMode} mode: min=${minVisitsPerDay}, max=${maxVisitsPerDay} visits/day`);
 
