@@ -5630,6 +5630,97 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Move outlets from their current rep(s) to another rep, then rework the
   // affected reps' schedules automatically - the "assign outlets to other
   // reps and the app re-optimizes" flow.
+  // Misfit detection: outlets that are probably assigned to the wrong rep.
+  // The metric is LOCAL adjacency - how far is this outlet from its own
+  // rep's nearest outlets vs another rep's nearest outlets - NOT distance
+  // to territory centroids: a territory spans several day-zones, so its
+  // centroid is far from legitimate edge outlets and flags a third of the
+  // universe as "wrong". Using the 3rd-nearest same-rep outlet makes the
+  // own-side distance robust against a single co-located stray. Pure
+  // analysis; fixing anything goes through the normal reassignment flow.
+  app.get("/api/reps/misfit-outlets", async (_req, res) => {
+    try {
+      const allReps = await storage.getReps();
+      const repName = new Map(allReps.map(r => [r.id, r.name]));
+      const allOutlets = (await storage.getOutlets())
+        .filter(o => o.repId && o.territory !== 'Excluded' && o.geoStatus !== 'offset');
+
+      // Spatial grid (~2.2km cells) for neighbor lookups
+      const CELL = 0.02;
+      const grid = new Map<string, typeof allOutlets>();
+      const keyOf = (lat: number, lng: number) => `${Math.floor(lat / CELL)}:${Math.floor(lng / CELL)}`;
+      for (const o of allOutlets) {
+        const k = keyOf(o.latitude, o.longitude);
+        if (!grid.has(k)) grid.set(k, []);
+        grid.get(k)!.push(o);
+      }
+
+      const misfits: {
+        outletId: string; name: string; latitude: number; longitude: number;
+        currentRepId: string; currentRepName: string; distCurrentKm: number;
+        suggestedRepId: string; suggestedRepName: string; distSuggestedKm: number;
+        savingsKm: number;
+      }[] = [];
+
+      const MAX_RING = 5; // ~11km search radius
+      for (const o of allOutlets) {
+        const cy = Math.floor(o.latitude / CELL);
+        const cx = Math.floor(o.longitude / CELL);
+
+        const ownDists: number[] = [];
+        const bestOther = new Map<string, number>();
+        for (let ring = 0; ring <= MAX_RING; ring++) {
+          for (let dy = -ring; dy <= ring; dy++) {
+            for (let dx = -ring; dx <= ring; dx++) {
+              if (Math.max(Math.abs(dy), Math.abs(dx)) !== ring) continue; // ring shell only
+              const cell = grid.get(`${cy + dy}:${cx + dx}`);
+              if (!cell) continue;
+              for (const n of cell) {
+                if (n.id === o.id) continue;
+                const d = haversineKm(o.latitude, o.longitude, n.latitude, n.longitude);
+                if (n.repId === o.repId) ownDists.push(d);
+                else {
+                  const cur = bestOther.get(n.repId!);
+                  if (cur === undefined || d < cur) bestOther.set(n.repId!, d);
+                }
+              }
+            }
+          }
+          // Stop expanding once we have enough context on both sides
+          if (ownDists.length >= 3 && bestOther.size >= 1 && ring >= 1) break;
+        }
+
+        if (ownDists.length === 0 || bestOther.size === 0) continue;
+        ownDists.sort((a, b) => a - b);
+        const dOwn = ownDists[Math.min(2, ownDists.length - 1)]; // 3rd nearest (robust)
+
+        let suggestedRepId = '', dSuggested = Infinity;
+        for (const [rid, d] of Array.from(bestOther.entries())) {
+          if (d < dSuggested) { dSuggested = d; suggestedRepId = rid; }
+        }
+
+        // Flag when another rep's outlets are at most half as far AND the
+        // difference is operationally meaningful (>1km).
+        if (dSuggested < dOwn * 0.5 && dOwn - dSuggested > 1) {
+          misfits.push({
+            outletId: o.id, name: o.name, latitude: o.latitude, longitude: o.longitude,
+            currentRepId: o.repId!, currentRepName: repName.get(o.repId!) || '?',
+            distCurrentKm: Math.round(dOwn * 10) / 10,
+            suggestedRepId, suggestedRepName: repName.get(suggestedRepId) || '?',
+            distSuggestedKm: Math.round(dSuggested * 10) / 10,
+            savingsKm: Math.round((dOwn - dSuggested) * 10) / 10
+          });
+        }
+      }
+
+      misfits.sort((a, b) => b.savingsKm - a.savingsKm);
+      res.json({ misfits: misfits.slice(0, 100), total: misfits.length });
+    } catch (error) {
+      console.error("Misfit analysis error:", error);
+      res.status(500).json({ message: "Failed to analyze misfit outlets" });
+    }
+  });
+
   app.post("/api/reps/reassign-outlets", async (req, res) => {
     try {
       const { outletIds, toRepId } = req.body as { outletIds: string[]; toRepId: string };
