@@ -5232,6 +5232,179 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Optimization runs
+  // --- Scenarios: compare plans before committing to one ---
+  //
+  // An optimization run used to overwrite the previous plan with no way to
+  // compare them, so questions like "is 6 days better than 5?" or "what does
+  // tighter compactness actually cost?" could not be answered from the app.
+  // A scenario captures the plan currently in memory - its parameters, its
+  // quality KPIs, and a full snapshot of the assignment - so runs can be
+  // compared side by side and any one of them restored as the live plan.
+  interface ScenarioSnapshot {
+    outlets: { id: string; repId: string | null; territory: string | null; cluster: number | null }[];
+    reps: Rep[];
+    schedules: Schedule[];
+  }
+  interface Scenario {
+    id: string;
+    name: string;
+    createdAt: string;
+    params: Record<string, any>;
+    kpis: Record<string, number>;
+    snapshot: ScenarioSnapshot;
+  }
+  const scenarios: Scenario[] = [];
+
+  // Solution-quality KPIs for the plan currently in storage. These are the
+  // numbers a planner actually judges a route plan by.
+  async function computePlanKPIs() {
+    const allOutlets = await storage.getOutlets();
+    const allReps = await storage.getReps();
+    const allSchedules = await storage.getSchedules();
+    const byId = new Map(allOutlets.map(o => [o.id, o]));
+
+    const active = allOutlets.filter(o => o.territory !== 'Excluded');
+    const covered = new Set<string>();
+    for (const s of allSchedules) for (const id of (s.outletIds as string[])) covered.add(id);
+    const coveredActive = active.filter(o => covered.has(o.id)).length;
+
+    const daySizes: number[] = [];
+    const dayDiameters: number[] = [];
+    let totalDriveKm = 0;
+    for (const s of allSchedules) {
+      const pts = (s.outletIds as string[]).map(id => byId.get(id)).filter(Boolean) as Outlet[];
+      daySizes.push(pts.length);
+      totalDriveKm += s.totalDistance || 0;
+      if (pts.length >= 2) {
+        let maxD = 0;
+        for (let i = 0; i < pts.length; i++) {
+          for (let j = i + 1; j < pts.length; j++) {
+            const d = haversineKm(pts[i].latitude, pts[i].longitude, pts[j].latitude, pts[j].longitude);
+            if (d > maxD) maxD = d;
+          }
+        }
+        dayDiameters.push(maxD);
+      }
+    }
+    const median = (arr: number[]) => {
+      if (arr.length === 0) return 0;
+      const s = [...arr].sort((a, b) => a - b);
+      return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
+    };
+
+    // Workload balance across reps, by monthly visits
+    const loadByRep = new Map<string, number>();
+    for (const o of active) {
+      if (!o.repId) continue;
+      loadByRep.set(o.repId, (loadByRep.get(o.repId) || 0) + (o.visitFrequency ?? 1));
+    }
+    const loads = Array.from(loadByRep.values());
+    const avgLoad = loads.length > 0 ? loads.reduce((a, b) => a + b, 0) / loads.length : 0;
+    const maxDeviationPct = avgLoad > 0 ? Math.max(...loads.map(l => Math.abs(l - avgLoad) / avgLoad)) * 100 : 0;
+
+    const minTarget = allReps.length > 0 ? Math.min(...allReps.map(r => r.minDailyVisits)) : 0;
+    const maxTarget = allReps.length > 0 ? Math.max(...allReps.map(r => r.maxDailyVisits)) : 0;
+    const inBand = daySizes.filter(n => n >= minTarget && n <= maxTarget).length;
+
+    return {
+      outlets: allOutlets.length,
+      activeOutlets: active.length,
+      coveragePct: active.length > 0 ? Math.round((coveredActive / active.length) * 1000) / 10 : 0,
+      unscheduledOutlets: active.length - coveredActive,
+      reps: allReps.length,
+      dayRoutes: allSchedules.length,
+      medianVisitsPerDay: Math.round(median(daySizes)),
+      avgVisitsPerDay: daySizes.length > 0 ? Math.round((daySizes.reduce((a, b) => a + b, 0) / daySizes.length) * 10) / 10 : 0,
+      daysInTargetBandPct: daySizes.length > 0 ? Math.round((inBand / daySizes.length) * 1000) / 10 : 0,
+      medianRouteDiameterKm: Math.round(median(dayDiameters) * 100) / 100,
+      maxRouteDiameterKm: dayDiameters.length > 0 ? Math.round(Math.max(...dayDiameters) * 10) / 10 : 0,
+      routesOver15kmPct: dayDiameters.length > 0 ? Math.round((dayDiameters.filter(d => d > 15).length / dayDiameters.length) * 1000) / 10 : 0,
+      workloadDeviationPct: Math.round(maxDeviationPct * 10) / 10,
+      totalDriveKmPerCycle: Math.round(totalDriveKm),
+      excludedOutlets: allOutlets.length - active.length,
+    };
+  }
+
+  app.get("/api/plan/kpis", async (_req, res) => {
+    try {
+      res.json(await computePlanKPIs());
+    } catch (error) {
+      console.error("KPI computation error:", error);
+      res.status(500).json({ message: "Failed to compute plan KPIs" });
+    }
+  });
+
+  app.get("/api/scenarios", async (_req, res) => {
+    res.json(scenarios.map(({ snapshot, ...rest }) => rest));
+  });
+
+  // Capture the plan currently in memory as a named scenario.
+  app.post("/api/scenarios/capture", async (req, res) => {
+    try {
+      const { name, params } = req.body as { name?: string; params?: Record<string, any> };
+      const allSchedules = await storage.getSchedules();
+      if (allSchedules.length === 0) {
+        return res.status(400).json({ message: "No plan to capture - run an optimization first." });
+      }
+      const allOutlets = await storage.getOutlets();
+      const scenario: Scenario = {
+        id: randomUUID(),
+        name: (name || `Scenario ${scenarios.length + 1}`).slice(0, 80),
+        createdAt: new Date().toISOString(),
+        params: params || {},
+        kpis: await computePlanKPIs(),
+        snapshot: {
+          outlets: allOutlets.map(o => ({ id: o.id, repId: o.repId, territory: o.territory, cluster: o.cluster })),
+          reps: await storage.getReps(),
+          schedules: allSchedules,
+        },
+      };
+      scenarios.push(scenario);
+      // Keep memory bounded - the oldest scenario drops off.
+      while (scenarios.length > 10) scenarios.shift();
+      const { snapshot, ...summary } = scenario;
+      res.status(201).json(summary);
+    } catch (error) {
+      console.error("Scenario capture error:", error);
+      res.status(500).json({ message: "Failed to capture scenario" });
+    }
+  });
+
+  // Restore a captured scenario as the live plan.
+  app.post("/api/scenarios/:id/apply", async (req, res) => {
+    try {
+      const scenario = scenarios.find(s => s.id === req.params.id);
+      if (!scenario) return res.status(404).json({ message: "Scenario not found" });
+
+      for (const rep of await storage.getReps()) await storage.deleteRep(rep.id);
+      await storage.clearSchedules();
+
+      for (const rep of scenario.snapshot.reps) {
+        await storage.createRepWithId(rep);
+      }
+      for (const o of scenario.snapshot.outlets) {
+        await storage.updateOutlet(o.id, { repId: o.repId, territory: o.territory, cluster: o.cluster });
+      }
+      await storage.createSchedules(scenario.snapshot.schedules.map(s => ({
+        repId: s.repId, week: s.week, dayOfWeek: s.dayOfWeek,
+        outletIds: s.outletIds as string[], routeOrder: s.routeOrder as string[],
+        totalDistance: s.totalDistance ?? undefined, estimatedDuration: s.estimatedDuration ?? undefined,
+      })));
+
+      res.json({ success: true, applied: scenario.name, kpis: scenario.kpis });
+    } catch (error) {
+      console.error("Scenario apply error:", error);
+      res.status(500).json({ message: "Failed to apply scenario" });
+    }
+  });
+
+  app.delete("/api/scenarios/:id", async (req, res) => {
+    const idx = scenarios.findIndex(s => s.id === req.params.id);
+    if (idx < 0) return res.status(404).json({ message: "Scenario not found" });
+    scenarios.splice(idx, 1);
+    res.json({ success: true });
+  });
+
   app.get("/api/optimization-runs", async (_req, res) => {
     try {
       const runs = await storage.getOptimizationRuns();

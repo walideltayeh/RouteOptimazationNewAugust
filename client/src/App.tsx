@@ -9,6 +9,7 @@ import Dashboard from "@/pages/dashboard";
 import TerritoriesPage from "@/pages/territories";
 import RepMapPage from "@/pages/rep-map";
 import SchedulesPage from "@/pages/schedules";
+import ScenariosPage from "@/pages/scenarios";
 import VehiclesPage from "@/pages/vehicles";
 import VehicleDetailPage from "@/pages/vehicle-detail";
 import NotFound from "@/pages/not-found";
@@ -106,6 +107,7 @@ function AppContent() {
             <Route path="/territories" component={TerritoriesPage} />
             <Route path="/rep-map" component={RepMapPage} />
             <Route path="/schedules" component={SchedulesPage} />
+            <Route path="/scenarios" component={ScenariosPage} />
             <Route path="/vehicles" component={VehiclesPage} />
             <Route path="/vehicles/:id" component={VehicleDetailPage} />
             <Route component={NotFound} />

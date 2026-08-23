@@ -11,6 +11,7 @@ import {
   FileText,
   Route,
   CalendarDays,
+  FlaskConical,
   Car,
   Users,
   LogIn,
@@ -26,6 +27,7 @@ const navigation = [
   { name: "Territory Map", href: "/territories", icon: Map },
   { name: "Rep Map", href: "/rep-map", icon: Route },
   { name: "Schedules", href: "/schedules", icon: CalendarDays },
+  { name: "Scenarios", href: "/scenarios", icon: FlaskConical },
   { name: "Vehicles", href: "/vehicles", icon: Car },
 ];
 

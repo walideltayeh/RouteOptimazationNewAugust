@@ -82,6 +82,7 @@ export interface IStorage {
   getReps(): Promise<Rep[]>;
   getRep(id: string): Promise<Rep | undefined>;
   createRep(rep: InsertRep): Promise<Rep>;
+  createRepWithId(rep: Rep): Promise<Rep>;
   updateRep(id: string, rep: Partial<InsertRep>): Promise<Rep | undefined>;
   deleteRep(id: string): Promise<void>;
   deleteAllReps(): Promise<void>;
@@ -481,6 +482,13 @@ export class MemStorage implements IStorage {
 
   async getRep(id: string): Promise<Rep | undefined> {
     return this.reps.get(id);
+  }
+
+  // Restores a rep under its original id - schedules reference reps by id,
+  // so a restored plan must keep them.
+  async createRepWithId(rep: Rep): Promise<Rep> {
+    this.reps.set(rep.id, rep);
+    return rep;
   }
 
   async createRep(insertRep: InsertRep): Promise<Rep> {
