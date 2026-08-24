@@ -331,3 +331,209 @@ export function refineRepBalance(
 
   return groups;
 }
+
+/* ------------------------------------------------------------------ *
+ * Recursive load-balanced bisection
+ * ------------------------------------------------------------------ */
+
+/**
+ * Splits outlets into `k` groups that are BOTH contiguous on the map and even
+ * in workload.
+ *
+ * Centroid-based clustering (k-means and friends) cannot promise this. With
+ * capacities attached it starts flinging outlets to whichever group still has
+ * room, so groups interleave: on the Erbil plan 36% of outlets ended up closer
+ * to another rep's centre than to their own, and territories 43km wide crossed
+ * straight over each other on the map. Balanced on paper, nonsense on the
+ * ground.
+ *
+ * Recursive coordinate bisection makes overlap structurally impossible. Each
+ * step cuts the current set with a single straight line, placing the cut where
+ * the workload either side matches the number of groups each side must yield.
+ * Groups are half-planes intersected with half-planes, so they tile the map
+ * without gaps or overlap, and the load target is met by choosing WHERE to cut
+ * rather than by moving outlets across the city.
+ *
+ * The cut runs perpendicular to the set's principal axis, so it always divides
+ * the longest dimension - that is what keeps the pieces chunky instead of
+ * splintering them into strips.
+ */
+export function partitionByLoad(
+  outlets: Outlet[],
+  k: number,
+  weightFn: (o: Outlet) => number,
+): Outlet[][] {
+  if (k <= 1 || outlets.length === 0) return [outlets];
+  if (outlets.length <= k) {
+    const groups: Outlet[][] = Array.from({ length: k }, () => []);
+    outlets.forEach((o, i) => groups[i].push(o));
+    return groups;
+  }
+
+  const kA = Math.floor(k / 2);
+  const kB = k - kA;
+
+  // Local flat coordinates in km, so latitude and longitude are comparable.
+  const lat0 = outlets.reduce((s, o) => s + o.latitude, 0) / outlets.length;
+  const lng0 = outlets.reduce((s, o) => s + o.longitude, 0) / outlets.length;
+  const kmPerLng = 111.32 * Math.cos((lat0 * Math.PI) / 180);
+  const px = (o: Outlet) => (o.longitude - lng0) * kmPerLng;
+  const py = (o: Outlet) => (o.latitude - lat0) * 110.57;
+
+  // Principal axis: the direction the set is most stretched along.
+  let sxx = 0, syy = 0, sxy = 0;
+  for (const o of outlets) {
+    const x = px(o), y = py(o);
+    sxx += x * x; syy += y * y; sxy += x * y;
+  }
+  const theta = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+  const ax = Math.cos(theta), ay = Math.sin(theta);
+
+  // Sort along that axis and cut where the weight split matches the group split.
+  const sorted = [...outlets].sort((a, b) => (px(a) * ax + py(a) * ay) - (px(b) * ax + py(b) * ay));
+  const totalWeight = sorted.reduce((s, o) => s + weightFn(o), 0);
+  const targetA = (totalWeight * kA) / k;
+
+  let running = 0;
+  let cut = 0;
+  let bestGap = Infinity;
+  for (let i = 0; i < sorted.length; i++) {
+    running += weightFn(sorted[i]);
+    const gap = Math.abs(running - targetA);
+    if (gap < bestGap) { bestGap = gap; cut = i + 1; }
+    if (running >= targetA) break;
+  }
+  // Never hand an empty side to a recursion that owes at least one group.
+  cut = Math.max(kA, Math.min(cut, sorted.length - kB));
+
+  return [
+    ...partitionByLoad(sorted.slice(0, cut), kA, weightFn),
+    ...partitionByLoad(sorted.slice(cut), kB, weightFn),
+  ];
+}
+
+/**
+ * Straightens the boundary left by bisection: an outlet that sits closer to a
+ * neighbouring group's centre than its own moves across, as long as the swap
+ * does not push either group's load outside the tolerance band.
+ *
+ * Cuts are straight lines, but real market boundaries are not, so this recovers
+ * the last few percent of compactness that a straight cut costs.
+ */
+export function tidyBoundaries(
+  groups: Outlet[][],
+  weightFn: (o: Outlet) => number,
+  tolerance: number = 0.10,
+): Outlet[][] {
+  const working = groups.map(g => [...g]);
+  if (working.length < 2) return working;
+
+  const loadOf = (g: Outlet[]) => g.reduce((s, o) => s + weightFn(o), 0);
+  const total = working.reduce((s, g) => s + loadOf(g), 0);
+  const target = total / working.length;
+  const lo = target * (1 - tolerance);
+  const hi = target * (1 + tolerance);
+  // Straightening is a touch-up, not a second optimisation pass. Given a free
+  // hand it walks every group out to the edge of the tolerance band, trading
+  // all the balance the cut just bought for a little compactness. An outlet
+  // has to be clearly on the wrong side - meaningfully nearer the other centre,
+  // not just marginally - before it is worth moving.
+  const MIN_IMPROVEMENT = 0.75;
+
+  for (let pass = 0; pass < 6; pass++) {
+    const centroids = working.map(centroidOf);
+    let moved = 0;
+
+    for (let gi = 0; gi < working.length; gi++) {
+      for (let oi = working[gi].length - 1; oi >= 0; oi--) {
+        const o = working[gi][oi];
+        if (o.geoStatus === 'offset') continue;
+
+        let nearest = gi;
+        let nearestD = geoDist(centroids[gi].lat, centroids[gi].lng, o.latitude, o.longitude);
+        for (let gj = 0; gj < working.length; gj++) {
+          if (gj === gi) continue;
+          const d = geoDist(centroids[gj].lat, centroids[gj].lng, o.latitude, o.longitude);
+          if (d < nearestD) { nearestD = d; nearest = gj; }
+        }
+        // Must be at least 25% closer to the other centre to count as misplaced.
+        const ownD = geoDist(centroids[gi].lat, centroids[gi].lng, o.latitude, o.longitude);
+        if (nearest === gi || nearestD > ownD * MIN_IMPROVEMENT) continue;
+
+        const w = weightFn(o);
+        if (loadOf(working[gi]) - w < lo) continue;
+        if (loadOf(working[nearest]) + w > hi) continue;
+
+        working[gi].splice(oi, 1);
+        working[nearest].push(o);
+        moved++;
+      }
+    }
+    if (moved === 0) break;
+  }
+
+  return working;
+}
+
+/**
+ * Trades outlets of EQUAL weight between groups when doing so makes both
+ * tighter.
+ *
+ * Because the two outlets carry the same visit load, every swap leaves the
+ * balance exactly as it was - so unlike a plain move, this can be run to
+ * convergence without ever giving back the evenness the cut achieved. It is
+ * what turns the straight-line slabs left by bisection into groups that follow
+ * the actual shape of the market.
+ */
+export function swapForCompactness(
+  groups: Outlet[][],
+  weightFn: (o: Outlet) => number,
+  maxPasses: number = 8,
+): Outlet[][] {
+  const working = groups.map(g => [...g]);
+  if (working.length < 2) return working;
+
+  for (let pass = 0; pass < maxPasses; pass++) {
+    const centroids = working.map(centroidOf);
+    const distTo = (gi: number, o: Outlet) =>
+      geoDist(centroids[gi].lat, centroids[gi].lng, o.latitude, o.longitude);
+
+    let swaps = 0;
+    for (let gi = 0; gi < working.length; gi++) {
+      for (let gj = gi + 1; gj < working.length; gj++) {
+        // Only outlets that would rather be in the other group are candidates.
+        const wantsOut = working[gi]
+          .map((o, idx) => ({ o, idx, gain: distTo(gi, o) - distTo(gj, o) }))
+          .filter(c => c.gain > 0 && c.o.geoStatus !== 'offset')
+          .sort((a, b) => b.gain - a.gain);
+        const wantsIn = working[gj]
+          .map((o, idx) => ({ o, idx, gain: distTo(gj, o) - distTo(gi, o) }))
+          .filter(c => c.gain > 0 && c.o.geoStatus !== 'offset')
+          .sort((a, b) => b.gain - a.gain);
+        if (wantsOut.length === 0 || wantsIn.length === 0) continue;
+
+        const usedI = new Set<number>();
+        const usedJ = new Set<number>();
+        for (const a of wantsOut) {
+          if (usedI.has(a.idx)) continue;
+          const partner = wantsIn.find(
+            b => !usedJ.has(b.idx) && weightFn(b.o) === weightFn(a.o) && a.gain + b.gain > 0,
+          );
+          if (!partner) continue;
+          usedI.add(a.idx);
+          usedJ.add(partner.idx);
+          swaps++;
+        }
+        if (usedI.size === 0) continue;
+
+        const movingOut = Array.from(usedI).map(i => working[gi][i]);
+        const movingIn = Array.from(usedJ).map(i => working[gj][i]);
+        working[gi] = working[gi].filter((_, i) => !usedI.has(i)).concat(movingIn);
+        working[gj] = working[gj].filter((_, i) => !usedJ.has(i)).concat(movingOut);
+      }
+    }
+    if (swaps === 0) break;
+  }
+
+  return working;
+}

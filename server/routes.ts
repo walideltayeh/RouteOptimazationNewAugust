@@ -5,7 +5,7 @@ import * as path from "path";
 import { createHash, randomUUID } from "crypto";
 import { storage } from "./storage";
 import { isAdminConfigured, verifyAdmin, adminCredentialSource } from "./admin-credentials";
-import { balanceIntoDayGroups, dealEvenly, totalWeeklyLoad, refineRepBalance } from "./day-balancer";
+import { dealEvenly, totalWeeklyLoad, partitionByLoad, tidyBoundaries, swapForCompactness, weeklyLoadOf } from "./day-balancer";
 import { 
   insertOptimizationRunSchema, 
   insertOutletSchema, 
@@ -2875,12 +2875,14 @@ function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[][]): I
   const repOutlets = zoneGroups.flat();
   if (repOutlets.length === 0) return [];
 
-  // Zones are sized for geographic tightness, not for a day's workload, so
-  // handing one zone to each day produced days of 24, 26, 1, 11, 1, 1 visits.
-  // Rebalance the rep's outlets into equal-load days instead. Zone boundaries
-  // still shape the result: the balancer is seeded by geography and keeps
-  // days compact, it just refuses to leave a day with an hour of work in it.
-  const dailyClusters = balanceIntoDayGroups(repOutlets, numDays);
+  // Split the rep's territory into working days by recursive bisection, so a
+  // day is a contiguous piece of the map rather than a set of outlets that
+  // merely add up to the right workload. Capacity-driven clustering balanced
+  // the numbers but let days interleave across the whole city.
+  const dailyClusters = swapForCompactness(
+    tidyBoundaries(partitionByLoad(repOutlets, numDays, weeklyLoadOf), weeklyLoadOf, 0.04),
+    weeklyLoadOf,
+  );
   while (dailyClusters.length < numDays) dailyClusters.push([]);
 
   const loads = dailyClusters.map(g => Math.round(totalWeeklyLoad(g) * 10) / 10);
@@ -4495,15 +4497,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const balanceTolerance = typeof req.body.balanceTolerancePct === 'number'
         ? Math.min(0.5, Math.max(0.01, req.body.balanceTolerancePct / 100))
         : 0.10;
-      const zoneAssignments = assignZonesToRepsBalanced(clusters, allReps, balanceTolerance);
-
-      // Whole zones can only get territories so even - a zone is 40-50 outlets,
-      // so the best zone-level split still left reps ~16% apart on monthly
-      // visits. Trade individual boundary outlets to close the rest of the gap.
-      const repOutletGroups = refineRepBalance(
-        zoneAssignments.map(zones => zones.flatMap(z => z.outlets)),
-        balanceTolerance,
+      // Territories by recursive bisection of the whole market.
+      //
+      // Assigning whole zones to the nearest rep, then trading outlets to even
+      // the load, produced territories that overlapped badly: 36% of outlets
+      // sat closer to another rep's centre than their own, and territories
+      // 43km wide crossed over each other. Bisection cuts the market with
+      // straight lines instead, so territories tile it without overlapping,
+      // and the balance comes from where each cut falls.
+      const monthlyVisitsOf = (o: Outlet) => o.visitFrequency ?? 1;
+      const repOutletGroups = swapForCompactness(
+        tidyBoundaries(
+          partitionByLoad(outlets, allReps.length, monthlyVisitsOf),
+          monthlyVisitsOf,
+          Math.min(balanceTolerance, 0.04),
+        ),
+        monthlyVisitsOf,
       );
+      const zoneAssignments = assignZonesToRepsBalanced(clusters, allReps, balanceTolerance);
       {
         const visitsOf = (g: Outlet[]) => g.reduce((sum, o) => sum + (o.visitFrequency ?? 1), 0);
         const loads = repOutletGroups.map(visitsOf);

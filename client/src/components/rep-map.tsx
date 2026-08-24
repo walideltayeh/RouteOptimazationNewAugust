@@ -74,8 +74,14 @@ export function RepMap() {
   const [selectedReps, setSelectedReps] = useState<string[]>([]);
   const [open, setOpen] = useState(false);
   const [viewMode, setViewMode] = useState<'schedule' | 'universe'>('schedule'); // Schedule view or Universe (all zones) view
-  const [selectedDays, setSelectedDays] = useState<number[]>([1, 2, 3, 4, 5]); // Default to weekdays
-  const [selectedWeeks, setSelectedWeeks] = useState<number[]>([1, 2, 3, 4]); // Default to all weeks so VF1/VF2 outlets are visible
+  // All seven, not Mon-Fri: a six-day operation had its Saturday routes
+  // silently hidden on first load, which looked like missing outlets.
+  const [selectedDays, setSelectedDays] = useState<number[]>([1, 2, 3, 4, 5, 6, 7]);
+  // One week at a time. Drawing all four at once stacks four copies of every
+  // route on top of each other - the map reads as tangled spaghetti crossing
+  // the city even when each day is a tight, sensible cluster. Week 1 shows a
+  // realistic week's work; the week buttons add the rest on demand.
+  const [selectedWeeks, setSelectedWeeks] = useState<number[]>([1]);
   const [selectedRoles, setSelectedRoles] = useState<string[]>(['rep']); // Default to Sales Rep, now multi-select
   const [selectedVfs, setSelectedVfs] = useState<number[]>([1, 2, 3, 4]); // VF filter
   const [colorBy, setColorBy] = useState<'day' | 'vf'>('day'); // Marker coloring mode
