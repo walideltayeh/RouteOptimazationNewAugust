@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -6,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { queryClient } from "@/lib/queryClient";
-import { LogIn, Loader2 } from "lucide-react";
+import { LogIn, Loader2, AlertTriangle } from "lucide-react";
 
 interface LoginModalProps {
   isOpen: boolean;
@@ -19,6 +20,14 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const { toast } = useToast();
+
+  // When no admin exists yet every login is rejected, which reads like a wrong
+  // password. Ask the server up front so we can say what is actually wrong.
+  const { data: authStatus } = useQuery<{ adminConfigured?: boolean }>({
+    queryKey: ["/api/auth/status"],
+    enabled: isOpen,
+  });
+  const adminConfigured = authStatus?.adminConfigured !== false;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -58,6 +67,29 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
           </DialogTitle>
         </DialogHeader>
         
+        {!adminConfigured && (
+          <div
+            className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"
+            data-testid="alert-admin-not-configured"
+          >
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+              <div className="space-y-2">
+                <p className="font-medium">No admin login has been set up yet.</p>
+                <p>Open the shell and run this once, then restart the app:</p>
+                <code className="block rounded bg-amber-100 px-2 py-1 font-mono text-xs break-all">
+                  npm run set-admin -- you@example.com "your-password"
+                </code>
+                <p className="text-xs">
+                  Your password is salted and hashed into <code>data/admin.json</code>, which is
+                  never committed. Setting <code>SUPERUSER_EMAIL</code> and{" "}
+                  <code>SUPERUSER_PASSWORD</code> as secrets works too.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
         <form onSubmit={handleSubmit} className="space-y-4 mt-4">
           <div className="space-y-2">
             <Label htmlFor="email">Email</Label>
@@ -87,7 +119,7 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
             <Button type="button" variant="outline" onClick={onClose}>
               Cancel
             </Button>
-            <Button type="submit" disabled={isLoading}>
+            <Button type="submit" disabled={isLoading || !adminConfigured}>
               {isLoading ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />

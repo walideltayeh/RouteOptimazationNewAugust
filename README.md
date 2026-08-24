@@ -16,7 +16,7 @@ npm run dev            # serves app + API on http://localhost:5000
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `SUPERUSER_EMAIL` / `SUPERUSER_PASSWORD` | for admin login | Admin login is disabled until both are set. On Replit use Secrets. |
+| `SUPERUSER_EMAIL` / `SUPERUSER_PASSWORD` | optional | Admin login. Alternative to `npm run set-admin` - see [Admin login](#admin-login). |
 | `VITE_MAPBOX_TOKEN` | for map pages | Territory Map / Rep Map rendering ([free token](https://account.mapbox.com/access-tokens/)). |
 | `OSRM_URL` | optional | Self-hosted OSRM server for true road distances in road-aware mode. |
 
@@ -51,3 +51,30 @@ npm run dev            # serves app + API on http://localhost:5000
 | `POST /api/reoptimize` | Rebuild all schedules from current ownership |
 | `GET /api/schedules`, `/api/reps`, `/api/outlets` | Current plan data |
 | `GET /api/export/schedules` | Excel export |
+
+## Admin login
+
+Admin credentials are never stored in this repository. Set them once, on the
+machine running the app, in either of two ways.
+
+**Option A - one command (recommended):**
+
+```bash
+npm run set-admin -- you@example.com "choose-a-strong-password"
+```
+
+Then restart the app. The password is salted and hashed with scrypt into
+`data/admin.json`, which is gitignored, so the plain password is never written
+to disk or committed.
+
+**Option B - environment variables** (Replit Secrets, or a local `.env`):
+
+```
+SUPERUSER_EMAIL=you@example.com
+SUPERUSER_PASSWORD=choose-a-strong-password
+```
+
+Environment variables take precedence over `data/admin.json` when both exist.
+
+If neither is configured, admin sign-in is disabled and the login dialog tells
+you how to fix it rather than rejecting every attempt as a bad password.

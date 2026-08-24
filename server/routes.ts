@@ -4,6 +4,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { createHash, randomUUID } from "crypto";
 import { storage } from "./storage";
+import { isAdminConfigured, verifyAdmin, adminCredentialSource } from "./admin-credentials";
 import { 
   insertOptimizationRunSchema, 
   insertOutletSchema, 
@@ -3096,16 +3097,16 @@ function validateEmail(email: string): boolean {
 }
 
 
-// Superuser credentials come from environment variables ONLY. This repo is
-// public, so no fallback credentials may live in the code (the previous
-// hardcoded pair is exposed in git history - rotate it, don't reuse it).
-// Without both variables set, admin login is disabled and says so.
-const SUPERUSER = {
-  email: process.env.SUPERUSER_EMAIL || '',
-  password: process.env.SUPERUSER_PASSWORD || ''
-};
-if (!SUPERUSER.email || !SUPERUSER.password) {
-  console.warn('[auth] SUPERUSER_EMAIL / SUPERUSER_PASSWORD not set - admin login is disabled. Set both (e.g. in Replit Secrets or a .env file) to enable it.');
+// Admin credentials never live in this source file - the repo is public, and
+// the pair that used to be hardcoded here is still exposed in git history.
+// They come from env vars or from data/admin.json (see server/admin-credentials.ts).
+const credentialSource = adminCredentialSource();
+if (credentialSource === 'none') {
+  console.warn('[auth] No admin login configured - sign-in is disabled.');
+  console.warn('[auth] Fix it with:  npm run set-admin -- you@example.com "your-password"');
+  console.warn('[auth] Or set SUPERUSER_EMAIL and SUPERUSER_PASSWORD (Replit Secrets / .env).');
+} else {
+  console.log(`[auth] Admin login configured from ${credentialSource === 'env' ? 'environment variables' : 'data/admin.json'}.`);
 }
 
 // Server-side session storage for superuser tokens
@@ -3140,12 +3141,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/auth/login", async (req: Request, res: Response) => {
     try {
       const { email, password } = req.body;
-      
-      if (!SUPERUSER.email || !SUPERUSER.password) {
-        return res.status(503).json({ message: "Admin login is not configured. Set SUPERUSER_EMAIL and SUPERUSER_PASSWORD environment variables." });
+
+      if (!isAdminConfigured()) {
+        return res.status(503).json({
+          message: 'No admin login is configured yet. In the shell, run:  npm run set-admin -- you@example.com "your-password"  then restart the app.',
+          adminConfigured: false,
+        });
       }
 
-      if (email === SUPERUSER.email && password === SUPERUSER.password) {
+      if (verifyAdmin(email, password)) {
         // Generate a secure, random session token
         const sessionToken = generateSecureToken();
         activeSuperuserSessions.add(sessionToken);
@@ -3186,10 +3190,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Check auth status
   app.get("/api/auth/status", async (req: Request, res: Response) => {
     const isSuperuser = !!(req as any).isSuperuser;
-    
+
     res.json({
       isAuthenticated: isSuperuser,
-      isSuperuser
+      isSuperuser,
+      // Lets the login screen explain itself when no admin exists yet, instead
+      // of rejecting every attempt with "invalid credentials".
+      adminConfigured: isAdminConfigured(),
     });
   });
 
