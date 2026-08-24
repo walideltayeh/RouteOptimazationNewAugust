@@ -32,15 +32,24 @@ if (MAPBOX_TOKEN && MAPBOX_TOKEN !== 'demo_token' && !MAPBOX_TOKEN.includes('you
   mapboxgl.accessToken = MAPBOX_TOKEN;
 }
 
-// Color palette for different days
+// Colours for the days of the week.
+//
+// These must be told apart at a glance on a dense map. The previous palette
+// could not be: Monday and Saturday were both red (RGB distance 47) and
+// Tuesday, Wednesday and Friday were three shades of the same cyan (27-43
+// apart). A six-day plan therefore rendered in three visible colours, which
+// made three tight, well-separated days look like one day scattered across the
+// whole city - the grouping was fine, the map was lying about it.
+//
+// Maximally distinct hues, all readable on a light basemap.
 const DAY_COLORS = [
-  '#FF6B6B', // Monday - Red
-  '#4ECDC4', // Tuesday - Teal
-  '#45B7D1', // Wednesday - Blue
-  '#FED766', // Thursday - Yellow
-  '#2AB7CA', // Friday - Light Blue
-  '#FE4A49', // Saturday - Pink
-  '#6C5CE7'  // Sunday - Purple
+  '#E6194B', // Monday - crimson
+  '#3CB44B', // Tuesday - green
+  '#4363D8', // Wednesday - blue
+  '#F58231', // Thursday - orange
+  '#911EB4', // Friday - purple
+  '#00B8B8', // Saturday - teal
+  '#9A6324'  // Sunday - brown
 ];
 
 const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
@@ -74,8 +83,14 @@ export function RepMap() {
   const [selectedReps, setSelectedReps] = useState<string[]>([]);
   const [open, setOpen] = useState(false);
   const [viewMode, setViewMode] = useState<'schedule' | 'universe'>('schedule'); // Schedule view or Universe (all zones) view
-  const [selectedDays, setSelectedDays] = useState<number[]>([1, 2, 3, 4, 5]); // Default to weekdays
-  const [selectedWeeks, setSelectedWeeks] = useState<number[]>([1, 2, 3, 4]); // Default to all weeks so VF1/VF2 outlets are visible
+  // All seven, not Mon-Fri: a six-day operation had its Saturday routes
+  // silently hidden on first load, which looked like missing outlets.
+  const [selectedDays, setSelectedDays] = useState<number[]>([1, 2, 3, 4, 5, 6, 7]);
+  // One week at a time. Drawing all four at once stacks four copies of every
+  // route on top of each other - the map reads as tangled spaghetti crossing
+  // the city even when each day is a tight, sensible cluster. Week 1 shows a
+  // realistic week's work; the week buttons add the rest on demand.
+  const [selectedWeeks, setSelectedWeeks] = useState<number[]>([1]);
   const [selectedRoles, setSelectedRoles] = useState<string[]>(['rep']); // Default to Sales Rep, now multi-select
   const [selectedVfs, setSelectedVfs] = useState<number[]>([1, 2, 3, 4]); // VF filter
   const [colorBy, setColorBy] = useState<'day' | 'vf'>('day'); // Marker coloring mode
@@ -95,6 +110,10 @@ export function RepMap() {
   } | null>(null);
   const [newZone, setNewZone] = useState<string>('');
   const [newRepId, setNewRepId] = useState<string>('');
+  // Rep reassignments queued on the map; nothing executes until the user
+  // hits "Apply & Reoptimize", then affected reps' schedules rework in one
+  // batch instead of once per edited outlet.
+  const [pendingReassignments, setPendingReassignments] = useState<Record<string, { name: string; toRepId: string; toRepName: string }>>({});
   const [needsReoptimization, setNeedsReoptimization] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -112,10 +131,13 @@ export function RepMap() {
     queryKey: ["/api/reps"] 
   });
 
-  // Auto-select all reps the first time they load so the map isn't blank after upload+optimize.
+  // Auto-select the first rep when reps load so the map isn't blank after
+  // upload+optimize. Selecting ALL reps by default painted thousands of
+  // markers in 28+ colors at once - unreadable and slow; "Select All"
+  // remains one click away for whoever wants the full picture.
   useEffect(() => {
     if (reps.length > 0 && selectedReps.length === 0) {
-      setSelectedReps(reps.map(r => r.id));
+      setSelectedReps([reps[0].id]);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reps.length]);
@@ -608,6 +630,110 @@ export function RepMap() {
       newRepId: resolvedRepId
     });
   };
+
+  // --- Rep reassignment queue + misfit detection ---
+
+  const haversineKm = (lat1: number, lng1: number, lat2: number, lng2: number) => {
+    const R = 6371;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLng = (lng2 - lng1) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) ** 2 +
+      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(a));
+  };
+
+  // Territory centers per rep (mean of owned outlets)
+  const repCentroids = useMemo(() => {
+    const acc = new Map<string, { lat: number; lng: number; n: number }>();
+    for (const o of outlets) {
+      if (!o.repId || o.territory === 'Excluded') continue;
+      const c = acc.get(o.repId) || { lat: 0, lng: 0, n: 0 };
+      c.lat += o.latitude; c.lng += o.longitude; c.n++;
+      acc.set(o.repId, c);
+    }
+    const out = new Map<string, { lat: number; lng: number }>();
+    acc.forEach((c, id) => out.set(id, { lat: c.lat / c.n, lng: c.lng / c.n }));
+    return out;
+  }, [outlets]);
+
+  // Reps ranked by distance from the outlet being edited - answers "which
+  // rep's territory is this outlet actually closest to?" with numbers.
+  const rankedRepOptions = useMemo(() => {
+    if (!editingOutlet) return [];
+    return reps
+      .map(rep => {
+        const c = repCentroids.get(rep.id);
+        return { rep, distKm: c ? haversineKm(editingOutlet.lat, editingOutlet.lng, c.lat, c.lng) : Infinity };
+      })
+      .filter(r => r.distKm !== Infinity)
+      .sort((a, b) => a.distKm - b.distKm);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingOutlet, reps, repCentroids]);
+
+  interface MisfitOutlet {
+    outletId: string; name: string;
+    currentRepId: string; currentRepName: string; distCurrentKm: number;
+    suggestedRepId: string; suggestedRepName: string; distSuggestedKm: number;
+    savingsKm: number;
+  }
+  const { data: misfitData } = useQuery<{ misfits: MisfitOutlet[]; total: number }>({
+    queryKey: ["/api/reps/misfit-outlets"],
+    enabled: reps.length > 0,
+  });
+  const misfits = (misfitData?.misfits || []).filter(m => !pendingReassignments[m.outletId]);
+
+  const queueReassignment = (outletId: string, name: string, toRepId: string) => {
+    const toRep = reps.find(r => r.id === toRepId);
+    if (!toRep) return;
+    setPendingReassignments(prev => ({ ...prev, [outletId]: { name, toRepId, toRepName: toRep.name } }));
+  };
+
+  const handleQueueFromDialog = () => {
+    if (!editingOutlet || !newRepId || newRepId === 'keep-current') return;
+    queueReassignment(editingOutlet.id, editingOutlet.name, newRepId);
+    toast({ title: "Queued", description: `${editingOutlet.name} → ${reps.find(r => r.id === newRepId)?.name}. Apply & Reoptimize when ready.` });
+    setEditingOutlet(null);
+    setNewZone('');
+    setNewRepId('');
+  };
+
+  // Execute the whole queue: one reassignment call per target rep, so the
+  // affected reps' schedules rework once each instead of per outlet.
+  const applyPendingMutation = useMutation({
+    mutationFn: async () => {
+      const byRep = new Map<string, string[]>();
+      Object.entries(pendingReassignments).forEach(([outletId, p]) => {
+        if (!byRep.has(p.toRepId)) byRep.set(p.toRepId, []);
+        byRep.get(p.toRepId)!.push(outletId);
+      });
+      const warnings: string[] = [];
+      let moved = 0;
+      for (const [toRepId, outletIds] of Array.from(byRep.entries())) {
+        const res = await apiRequest("POST", "/api/reps/reassign-outlets", { outletIds, toRepId });
+        if (!res.ok) throw new Error((await res.json()).message || "Reassignment failed");
+        const data = await res.json();
+        moved += data.movedOutlets;
+        warnings.push(...(data.warnings || []));
+      }
+      return { moved, warnings };
+    },
+    onSuccess: (r) => {
+      setPendingReassignments({});
+      queryClient.invalidateQueries({ queryKey: ['/api/outlets'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/schedules'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/reps'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/reps/misfit-outlets'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/dashboard/metrics'] });
+      toast({
+        title: "Reoptimized",
+        description: `${r.moved} outlet(s) moved and schedules reworked.${r.warnings.length > 0 ? ' ' + r.warnings.join(' ') : ''}`,
+        variant: r.warnings.length > 0 ? "destructive" : "default",
+      });
+    },
+    onError: (e: Error) => toast({ title: "Apply failed", description: e.message, variant: "destructive" }),
+  });
+
+  const pendingCount = Object.keys(pendingReassignments).length;
 
   // Initialize map
   useEffect(() => {
@@ -1287,6 +1413,67 @@ export function RepMap() {
           </div>
         )}
         
+        {/* Pending rep reassignments queued from the map */}
+        {pendingCount > 0 && (
+          <div className="mt-4 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-xl border border-blue-200 dark:border-blue-800" data-testid="pending-reassignments">
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-sm text-blue-900 dark:text-blue-200 min-w-0">
+                <span className="font-semibold">{pendingCount} outlet{pendingCount === 1 ? '' : 's'} queued for reassignment.</span>{' '}
+                <span className="text-blue-700 dark:text-blue-300 truncate">
+                  {Object.values(pendingReassignments).slice(0, 3).map(p => `${p.name} → ${p.toRepName}`).join(' · ')}
+                  {pendingCount > 3 ? ` · +${pendingCount - 3} more` : ''}
+                </span>
+              </div>
+              <div className="flex gap-2 shrink-0">
+                <Button variant="outline" size="sm" onClick={() => setPendingReassignments({})} disabled={applyPendingMutation.isPending} data-testid="button-discard-pending">
+                  Discard
+                </Button>
+                <Button size="sm" onClick={() => applyPendingMutation.mutate()} disabled={applyPendingMutation.isPending} data-testid="button-apply-reoptimize">
+                  {applyPendingMutation.isPending ? (
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                  ) : (
+                    <RefreshCw className="h-4 w-4 mr-2" />
+                  )}
+                  Apply & Reoptimize
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Misfit detection: outlets probably assigned to the wrong rep */}
+        {misfits.length > 0 && (
+          <div className="mt-4 p-3 bg-amber-50 dark:bg-amber-900/20 rounded-xl border border-amber-200 dark:border-amber-800" data-testid="misfit-outlets">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-sm font-semibold text-amber-900 dark:text-amber-200">
+                {misfitData?.total} outlet{(misfitData?.total || 0) === 1 ? ' looks' : 's look'} closer to another rep's territory
+              </p>
+              <Button
+                variant="outline" size="sm" className="border-amber-400 text-amber-900"
+                onClick={() => misfits.forEach(m => queueReassignment(m.outletId, m.name, m.suggestedRepId))}
+                data-testid="button-queue-all-misfits"
+              >
+                Queue all fixes
+              </Button>
+            </div>
+            <div className="space-y-1 max-h-36 overflow-y-auto">
+              {misfits.slice(0, 8).map(m => (
+                <div key={m.outletId} className="flex items-center justify-between text-xs text-amber-800 dark:text-amber-300 gap-2">
+                  <span className="truncate" title={m.name}>
+                    {m.name} — {m.distCurrentKm}km from {m.currentRepName}, {m.distSuggestedKm}km from {m.suggestedRepName}
+                  </span>
+                  <Button
+                    variant="ghost" size="sm" className="h-6 px-2 text-amber-900 shrink-0"
+                    onClick={() => queueReassignment(m.outletId, m.name, m.suggestedRepId)}
+                  >
+                    Queue → {m.suggestedRepName}
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Reoptimize Button - appears after changes */}
         {needsReoptimization && (
           <div className="mt-4 p-3 bg-amber-50 dark:bg-amber-900/20 rounded-xl border border-amber-200 dark:border-amber-800">
@@ -1877,25 +2064,30 @@ export function RepMap() {
                 </Select>
               </div>
               <div>
-                <p className="text-sm text-gray-600 mb-2">New Rep (optional):</p>
+                <p className="text-sm text-gray-600 mb-2">Reassign to Rep (sorted by distance to this outlet):</p>
                 <Select value={newRepId} onValueChange={setNewRepId}>
-                  <SelectTrigger>
+                  <SelectTrigger data-testid="select-reassign-rep">
                     <SelectValue placeholder="Keep current rep or select new" />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="keep-current">Keep Current Rep</SelectItem>
-                    {reps.map(rep => (
-                      <SelectItem key={rep.id} value={rep.id}>
-                        {getRecommendations.reps.includes(rep.id) ? `Recommended - ${rep.name}` : rep.name}
-                      </SelectItem>
-                    ))}
+                    {rankedRepOptions
+                      .filter(({ rep }) => rep.id !== editingOutlet?.currentRepId)
+                      .map(({ rep, distKm }, idx) => (
+                        <SelectItem key={rep.id} value={rep.id}>
+                          {rep.name} — {distKm.toFixed(1)} km{idx === 0 ? ' (closest)' : ''}
+                        </SelectItem>
+                      ))}
                   </SelectContent>
                 </Select>
+                <p className="text-xs text-gray-500 mt-1">
+                  Rep changes are queued — hit "Apply &amp; Reoptimize" on the map when you're done editing.
+                </p>
               </div>
             </div>
             <DialogFooter className="flex justify-between sm:justify-between">
-              <Button 
-                variant="destructive" 
+              <Button
+                variant="destructive"
                 onClick={() => setShowDeleteConfirm(true)}
                 disabled={deleteMutation.isPending}
               >
@@ -1906,12 +2098,18 @@ export function RepMap() {
                 <Button variant="outline" onClick={() => { setEditingOutlet(null); setNewZone(''); setNewRepId(''); setShowDeleteConfirm(false); }}>
                   Cancel
                 </Button>
-                <Button 
-                  onClick={handleReassignOutlet} 
-                  disabled={!newZone || reassignMutation.isPending}
-                >
-                  {reassignMutation.isPending ? "Reassigning..." : "Reassign"}
-                </Button>
+                {newRepId && newRepId !== 'keep-current' ? (
+                  <Button onClick={handleQueueFromDialog} data-testid="button-queue-reassign">
+                    Queue Reassignment
+                  </Button>
+                ) : (
+                  <Button
+                    onClick={handleReassignOutlet}
+                    disabled={!newZone || reassignMutation.isPending}
+                  >
+                    {reassignMutation.isPending ? "Reassigning..." : "Move Zone"}
+                  </Button>
+                )}
               </div>
             </DialogFooter>
             

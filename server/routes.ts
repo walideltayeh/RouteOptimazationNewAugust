@@ -1,26 +1,23 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
+import * as fs from "fs";
+import * as path from "path";
 import { createHash, randomUUID } from "crypto";
 import { storage } from "./storage";
+import { isAdminConfigured, verifyAdmin, adminCredentialSource } from "./admin-credentials";
+import { dealEvenly, totalWeeklyLoad, growBalancedRegions, swapForCompactness, weeklyLoadOf } from "./day-balancer";
 import { 
   insertOptimizationRunSchema, 
   insertOutletSchema, 
   insertRepSchema, 
   insertScheduleSchema, 
-  insertVehicleSchema,
-  insertVehicleMaintenanceSchema,
   insertRoleHierarchySchema,
   ROLE_PRESETS,
-  TRIAL_LIMITS,
-  TRIAL_STATUS,
-  RISK_LEVELS,
   type InsertSchedule, 
   type InsertRoleSchedule,
   type Rep, 
   type Outlet,
-  type Schedule,
-  type FingerprintSignals,
-  type TrialStatus
+  type Schedule
 } from "@shared/schema";
 import multer from "multer";
 import * as XLSX from "xlsx";
@@ -28,16 +25,8 @@ import Papa from "papaparse";
 import { exec } from "child_process";
 import { promisify } from "util";
 import { performAdvancedClustering as performAdvancedClusteringJS } from "./clustering-algorithms";
+import { geoDist, setDistanceMode, prefetchRoadMatrix, clearRoadMatrix, haversineKm, type DistanceMode } from "./road-distance";
 import { generateAdvancedSchedule, reoptimizeSchedules, validateSchedule } from "./advanced-scheduling";
-import { 
-  shouldBlockTrial, 
-  generateOrgKey, 
-  extractIpSubnet, 
-  extractEmailDomain,
-  detectSharedFingerprints,
-  assessOrgRisk,
-  calculateFingerprintSimilarity
-} from "./trial-detection";
 
 const execAsync = promisify(exec);
 
@@ -1400,15 +1389,136 @@ function findMostCentralOutlet(outlets: Outlet[]): Outlet {
 
 function calculateClusterRadius(cluster: GeographicCluster): number {
   if (cluster.outlets.length <= 1) return 0;
-  
+
   const distances = cluster.outlets.map(outlet =>
     calculateHaversineDistance(
       outlet.latitude, outlet.longitude,
       cluster.centroid.lat, cluster.centroid.lng
     )
   );
-  
+
   return Math.max(...distances);
+}
+
+function computeOutletsCentroid(outlets: Outlet[]): { lat: number; lng: number } {
+  const lat = outlets.reduce((s, o) => s + o.latitude, 0) / outlets.length;
+  const lng = outlets.reduce((s, o) => s + o.longitude, 0) / outlets.length;
+  return { lat, lng };
+}
+
+// Splits any zone whose radius-from-centroid exceeds maxRadiusKm into tighter
+// sub-zones, even if that drops a sub-zone below minVisitsPerDay. Zone size
+// (min/max visits per day) was previously the only constraint the clustering
+// step enforced, so when a neighborhood's real outlet density didn't match
+// that size target, the clusterer bridged distant, unrelated neighborhoods
+// into one "zone" just to hit the count - producing zones with 80+ km radii
+// that no rep could realistically drive in a day. A tight day-route is the
+// actual goal, so geographic spread is enforced here as a hard cap that
+// takes priority over the outlet-count target.
+function splitOversizedZones(clusters: GeographicCluster[], maxRadiusKm: number): GeographicCluster[] {
+  const finished: Outlet[][] = [];
+  for (const cluster of clusters) {
+    const queue: Outlet[][] = [cluster.outlets];
+    while (queue.length > 0) {
+      const group = queue.shift()!;
+      const centroid = computeOutletsCentroid(group);
+      const radius = Math.max(...group.map(o =>
+        geoDist(o.latitude, o.longitude, centroid.lat, centroid.lng)
+      ));
+      if (radius <= maxRadiusKm || group.length < 2) {
+        finished.push(group);
+        continue;
+      }
+      const [a, b] = clusterOutletsIntoDailyGroups(group, 2);
+      if (a.length === 0 || b.length === 0) {
+        finished.push(group);
+      } else {
+        queue.push(a, b);
+      }
+    }
+  }
+  return finished.map((outlets, id) => ({ id, centroid: computeOutletsCentroid(outlets), outlets }));
+}
+
+// Counterpart to splitOversizedZones: merges adjacent under-target zones back
+// up toward the day-size target, but ONLY while the merged zone still fits
+// under the radius cap. Splitting alone leaves a sparse market (where many
+// zones get split for spread) full of half-empty days - e.g. Erbil produced
+// 42 zones of ~27 outlets for a 40-50 target, so reps did ~13 visits/day
+// instead of 20-25 and the required-rep count inflated by ~75%. Merging
+// restores the day size wherever geography actually allows it; zones that
+// stay small are the ones that genuinely cannot grow without breaking
+// tightness.
+function mergeUndersizedZones(
+  clusters: GeographicCluster[],
+  targetMinOutlets: number,
+  targetMaxOutlets: number,
+  maxRadiusKm: number,
+  maxGapKm: number = 5
+): GeographicCluster[] {
+  const groups = clusters.map(c => [...c.outlets]);
+
+  const radiusOf = (g: Outlet[]) => {
+    const c = computeOutletsCentroid(g);
+    return Math.max(...g.map(o => geoDist(o.latitude, o.longitude, c.lat, c.lng)));
+  };
+
+  let merged = true;
+  while (merged) {
+    merged = false;
+    // Smallest zone first: it has the most to gain from a merge.
+    const order = groups
+      .map((g, i) => ({ i, n: g.length }))
+      .filter(x => x.n < targetMinOutlets)
+      .sort((a, b) => a.n - b.n);
+
+    for (const { i } of order) {
+      if (!groups[i] || groups[i].length === 0) continue;
+      // Flagged geographic outliers stay in their own zone - merging one
+      // into a neighbour stretches a real rep's day across the country.
+      if (groups[i].some(o => o.geoStatus === 'offset')) continue;
+      const ci = computeOutletsCentroid(groups[i]);
+
+      let bestJ = -1, bestD = Infinity;
+      for (let j = 0; j < groups.length; j++) {
+        if (j === i || groups[j].length === 0) continue;
+        if (groups[j].some(o => o.geoStatus === 'offset')) continue;
+        if (groups[i].length + groups[j].length > targetMaxOutlets) continue;
+        const cj = computeOutletsCentroid(groups[j]);
+        const d = geoDist(ci.lat, ci.lng, cj.lat, cj.lng);
+        if (d >= bestD) continue;
+        // Adjacency guard: the two zones must actually touch, i.e. their
+        // closest outlets are within maxGapKm. Without this the merge
+        // happily bridges empty countryside between two distant clusters -
+        // the zone stays under the radius cap on paper while the rep drives
+        // across a void mid-day.
+        let gap = Infinity;
+        for (const a of groups[i]) {
+          for (const b of groups[j]) {
+            const g = geoDist(a.latitude, a.longitude, b.latitude, b.longitude);
+            if (g < gap) gap = g;
+            if (gap <= maxGapKm) break;
+          }
+          if (gap <= maxGapKm) break;
+        }
+        if (gap > maxGapKm) continue;
+        // Only accept if the merged zone stays tight.
+        if (radiusOf([...groups[i], ...groups[j]]) > maxRadiusKm) continue;
+        bestD = d; bestJ = j;
+      }
+
+      if (bestJ >= 0) {
+        groups[bestJ] = [...groups[bestJ], ...groups[i]];
+        groups[i] = [];
+        merged = true;
+        break; // recompute the ordering after each merge
+      }
+    }
+  }
+
+  return groups
+    .filter(g => g.length > 0)
+    .map((outlets, id) => ({ id, centroid: computeOutletsCentroid(outlets), outlets }));
 }
 
 function assignClustersToReps(clusters: GeographicCluster[], repCount: number): GeographicCluster[] {
@@ -1484,19 +1594,427 @@ function assignZonesToReps(clusters: GeographicCluster[], reps: Rep[], zonesPerR
     
     assignments[repIndex] = repZones;
   }
-  
+
   return assignments;
 }
 
-function generateZoneBasedSchedules(rep: Rep, zones: GeographicCluster[], allClusters: GeographicCluster[]): InsertSchedule[] {
-  const allOutlets: Outlet[] = [];
-  for (const zone of zones) {
-    allOutlets.push(...zone.outlets);
+function zoneMonthlyVisits(zone: GeographicCluster): number {
+  return zone.outlets.reduce((s, o) => s + (o.visitFrequency ?? 1), 0);
+}
+
+function territoryCentroidOf(zones: GeographicCluster[]): { lat: number; lng: number } {
+  let lat = 0, lng = 0, n = 0;
+  for (const z of zones) {
+    lat += z.centroid.lat * z.outlets.length;
+    lng += z.centroid.lng * z.outlets.length;
+    n += z.outlets.length;
   }
-  if (allOutlets.length === 0) return [];
-  // Delegate to the anchor-aware scheduler. This handles VF1/VF2/VF3/VF4
-  // correctly with same-day-of-week guarantee and balanced weekly load.
-  return buildAnchorAwareSchedules(rep, allOutlets);
+  return n > 0 ? { lat: lat / n, lng: lng / n } : { lat: 0, lng: 0 };
+}
+
+// Balanced, geography-aware zone-to-rep assignment. The classic districting
+// objectives are balance, compactness, and contiguity; the old chaining
+// approach (assignZonesToReps above) only optimized compactness, so reps
+// seeded late inherited whatever zones were left - producing 3x workload
+// spreads. This replacement:
+//   1. Seeds one zone per rep by farthest-point sampling (territories start
+//      spread across the map instead of chained end-to-end).
+//   2. Grows territories by always letting the currently least-loaded rep
+//      claim the unassigned zone nearest its territory centroid - balance
+//      and compactness advance together.
+//   3. Refines with bounded boundary-zone moves from over- to under-loaded
+//      reps, accepting a move only when it is geographically local (the zone
+//      must sit within max(15km, 2x its distance to its current territory) of
+//      the receiving territory). Imbalance between genuinely disconnected
+//      regions is deliberately left in place rather than paid for with long
+//      drives - the residual is reported, not hidden.
+// Workload = monthly visits (sum of visit frequencies), per user requirement.
+function assignZonesToRepsBalanced(
+  clusters: GeographicCluster[],
+  reps: Rep[],
+  tolerance: number = 0.10
+): GeographicCluster[][] {
+  const repCount = reps.length;
+  const assignments: GeographicCluster[][] = reps.map(() => []);
+  if (clusters.length === 0 || repCount === 0) return assignments;
+
+  const dist = (a: { lat: number; lng: number }, b: { lat: number; lng: number }) =>
+    geoDist(a.lat, a.lng, b.lat, b.lng);
+
+  // --- 1. Farthest-point seeding ---
+  const seedIdxs: number[] = [];
+  let heaviest = 0;
+  for (let i = 1; i < clusters.length; i++) {
+    if (zoneMonthlyVisits(clusters[i]) > zoneMonthlyVisits(clusters[heaviest])) heaviest = i;
+  }
+  seedIdxs.push(heaviest);
+  while (seedIdxs.length < Math.min(repCount, clusters.length)) {
+    let bestIdx = -1, bestScore = -1;
+    for (let i = 0; i < clusters.length; i++) {
+      if (seedIdxs.includes(i)) continue;
+      const minD = Math.min(...seedIdxs.map(s => dist(clusters[i].centroid, clusters[s].centroid)));
+      if (minD > bestScore) { bestScore = minD; bestIdx = i; }
+    }
+    seedIdxs.push(bestIdx);
+  }
+
+  const loads = new Array(repCount).fill(0);
+  const assigned = new Array(clusters.length).fill(false);
+  const addZone = (repIdx: number, zoneIdx: number) => {
+    assignments[repIdx].push(clusters[zoneIdx]);
+    loads[repIdx] += zoneMonthlyVisits(clusters[zoneIdx]);
+    assigned[zoneIdx] = true;
+  };
+  seedIdxs.forEach((zi, ri) => addZone(ri, zi));
+
+  // --- 2. Balance-driven growth ---
+  let remaining = clusters.length - seedIdxs.length;
+  while (remaining > 0) {
+    let repIdx = 0;
+    for (let r = 1; r < repCount; r++) {
+      if (loads[r] < loads[repIdx]) repIdx = r;
+    }
+    const c = territoryCentroidOf(assignments[repIdx]);
+    let bestZone = -1, bestD = Infinity;
+    for (let i = 0; i < clusters.length; i++) {
+      if (assigned[i]) continue;
+      const d = dist(clusters[i].centroid, c);
+      if (d < bestD) { bestD = d; bestZone = i; }
+    }
+    if (bestZone < 0) break;
+    addZone(repIdx, bestZone);
+    remaining--;
+  }
+
+  // --- 3. Bounded boundary-move refinement ---
+  const target = loads.reduce((a, b) => a + b, 0) / repCount;
+  const hi = target * (1 + tolerance);
+  const lo = target * (1 - tolerance);
+  for (let iter = 0; iter < 500; iter++) {
+    const over = reps.map((_, r) => r).filter(r => loads[r] > hi).sort((a, b) => loads[b] - loads[a]);
+    const under = reps.map((_, r) => r).filter(r => loads[r] < lo).sort((a, b) => loads[a] - loads[b]);
+    if (over.length === 0 || under.length === 0) break;
+
+    let moved = false;
+    for (const o of over) {
+      if (moved) break;
+      const oCentroid = territoryCentroidOf(assignments[o]);
+      for (const u of under) {
+        const uCentroid = territoryCentroidOf(assignments[u]);
+        let bestZi = -1, bestImprove = 0, bestDU = Infinity;
+        for (let zi = 0; zi < assignments[o].length; zi++) {
+          if (assignments[o].length <= 1) break;
+          const z = assignments[o][zi];
+          const w = zoneMonthlyVisits(z);
+          const dU = dist(z.centroid, uCentroid);
+          const dO = dist(z.centroid, oCentroid);
+          // Locality guard: only boundary zones may migrate.
+          if (dU > Math.max(15, 2 * dO)) continue;
+          const oldDev = Math.abs(loads[o] - target) + Math.abs(loads[u] - target);
+          const newDev = Math.abs(loads[o] - w - target) + Math.abs(loads[u] + w - target);
+          const improve = oldDev - newDev;
+          if (improve > bestImprove || (improve === bestImprove && improve > 0 && dU < bestDU)) {
+            bestImprove = improve; bestZi = zi; bestDU = dU;
+          }
+        }
+        if (bestZi >= 0) {
+          const [z] = assignments[o].splice(bestZi, 1);
+          assignments[u].push(z);
+          const w = zoneMonthlyVisits(z);
+          loads[o] -= w;
+          loads[u] += w;
+          moved = true;
+          break;
+        }
+      }
+    }
+
+    // When one-way moves stall (every whole-zone move overshoots the band or
+    // fails the locality guard), try pairwise swaps: exchanging a larger
+    // zone from an overloaded rep for a smaller zone from an underloaded one
+    // transfers only the workload DIFFERENCE, a much finer correction.
+    if (!moved) {
+      let bestSwap: { o: number; u: number; oi: number; ui: number; improve: number } | null = null;
+      for (const o of over) {
+        const oCentroid = territoryCentroidOf(assignments[o]);
+        for (const u of under) {
+          const uCentroid = territoryCentroidOf(assignments[u]);
+          for (let oi = 0; oi < assignments[o].length; oi++) {
+            const zO = assignments[o][oi];
+            const wO = zoneMonthlyVisits(zO);
+            const dOtoU = dist(zO.centroid, uCentroid);
+            const dOtoO = dist(zO.centroid, oCentroid);
+            if (dOtoU > Math.max(15, 2 * dOtoO)) continue;
+            for (let ui = 0; ui < assignments[u].length; ui++) {
+              const zU = assignments[u][ui];
+              const wU = zoneMonthlyVisits(zU);
+              if (wO <= wU) continue; // swap must shift load from over to under
+              const dUtoO = dist(zU.centroid, oCentroid);
+              const dUtoU = dist(zU.centroid, uCentroid);
+              if (dUtoO > Math.max(15, 2 * dUtoU)) continue;
+              const delta = wO - wU;
+              const oldDev = Math.abs(loads[o] - target) + Math.abs(loads[u] - target);
+              const newDev = Math.abs(loads[o] - delta - target) + Math.abs(loads[u] + delta - target);
+              const improve = oldDev - newDev;
+              if (improve > 0 && (!bestSwap || improve > bestSwap.improve)) {
+                bestSwap = { o, u, oi, ui, improve };
+              }
+            }
+          }
+        }
+      }
+      if (bestSwap) {
+        const { o, u, oi, ui } = bestSwap;
+        const zO = assignments[o][oi];
+        const zU = assignments[u][ui];
+        assignments[o][oi] = zU;
+        assignments[u][ui] = zO;
+        const delta = zoneMonthlyVisits(zO) - zoneMonthlyVisits(zU);
+        loads[o] -= delta;
+        loads[u] += delta;
+        moved = true;
+      }
+    }
+
+    if (!moved) break; // no geographically acceptable move or swap left
+  }
+
+  // Order each rep's zones by nearest-neighbor chaining so that when the
+  // day-builder merges consecutive zones (zones > working days) the merged
+  // pairs are geographically adjacent.
+  for (let r = 0; r < repCount; r++) {
+    const zones = assignments[r];
+    if (zones.length <= 2) continue;
+    const chained: GeographicCluster[] = [zones[0]];
+    const used = new Set([0]);
+    while (chained.length < zones.length) {
+      const last = chained[chained.length - 1];
+      let bestI = -1, bestD = Infinity;
+      for (let i = 0; i < zones.length; i++) {
+        if (used.has(i)) continue;
+        const d = dist(last.centroid, zones[i].centroid);
+        if (d < bestD) { bestD = d; bestI = i; }
+      }
+      chained.push(zones[bestI]);
+      used.add(bestI);
+    }
+    assignments[r] = chained;
+  }
+
+  return assignments;
+}
+
+type CoverageWeightMode = 'value' | 'isolation' | 'vf';
+
+interface CoverageSuggestion {
+  territory: string;
+  outletCount: number;
+  monthlyVisits: number;
+  isolationKm: number;
+  radiusKm: number;
+  costPerVisitKm: number;
+  totalValue: number | null;
+  outletIds: string[];
+  sampleOutlets: string[];
+  reason: string;
+}
+
+// Coverage-worthiness analysis: flags zones whose drive economics don't
+// justify direct rep coverage, as candidates the USER may choose to remove
+// (indirect coverage via distributor/wholesale/telesales). Never removes
+// anything by itself - it returns evidence-backed suggestions only.
+//   - weightMode 'isolation': flags zones purely on drive cost per visit
+//     (remote, sparse pockets), needs no extra data.
+//   - weightMode 'vf': same economics, but visit frequencies weight the
+//     visits, so a remote pocket of weekly outlets is harder to flag than a
+//     remote pocket of monthly ones.
+//   - weightMode 'value': combines drive cost with the commercial value
+//     column (VC/volume/sales) when the uploaded file provides one; falls
+//     back to isolation with a note when it doesn't.
+function analyzeCoverageWorthiness(
+  clusters: GeographicCluster[],
+  weightMode: CoverageWeightMode
+): { suggestions: CoverageSuggestion[]; weightModeUsed: string } {
+  if (clusters.length < 3) return { suggestions: [], weightModeUsed: weightMode };
+
+  const hasValueData = clusters.some(z => z.outlets.some(o => o.value != null));
+  let effectiveMode: CoverageWeightMode = weightMode;
+  let weightModeUsed: string = weightMode;
+  if (weightMode === 'value' && !hasValueData) {
+    effectiveMode = 'isolation';
+    weightModeUsed = 'isolation (no value/VC column found in uploaded file)';
+  }
+
+  const metrics = clusters.map((z, i) => {
+    const monthlyVisits = Math.max(1, zoneMonthlyVisits(z));
+    const radiusKm = calculateClusterRadius(z);
+    let isolationKm = Infinity;
+    for (let j = 0; j < clusters.length; j++) {
+      if (j === i) continue;
+      const d = geoDist(
+        z.centroid.lat, z.centroid.lng,
+        clusters[j].centroid.lat, clusters[j].centroid.lng
+      );
+      if (d < isolationKm) isolationKm = d;
+    }
+    // Out-and-back to the pocket plus local running around, amortized per visit.
+    const driveCostKm = 2 * isolationKm + 2 * radiusKm;
+    const costPerVisitKm = driveCostKm / monthlyVisits;
+    const totalValue = hasValueData
+      ? z.outlets.reduce((s, o) => s + (o.value ?? 0), 0)
+      : null;
+    return { zone: z, idx: i, monthlyVisits, radiusKm, isolationKm, costPerVisitKm, totalValue };
+  });
+
+  const median = (arr: number[]) => {
+    const s = [...arr].sort((a, b) => a - b);
+    return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
+  };
+  const medCPV = Math.max(0.1, median(metrics.map(m => m.costPerVisitKm)));
+
+  const suggestions: CoverageSuggestion[] = [];
+  for (const m of metrics) {
+    let flagged = false;
+    let reason = '';
+    if (effectiveMode === 'value') {
+      const valuePerKm = (m.totalValue ?? 0) / Math.max(0.1, 2 * m.isolationKm + 2 * m.radiusKm);
+      const medVPK = Math.max(0.001, median(metrics.map(x =>
+        (x.totalValue ?? 0) / Math.max(0.1, 2 * x.isolationKm + 2 * x.radiusKm))));
+      if (valuePerKm < medVPK / 3 && m.costPerVisitKm > medCPV * 2) {
+        flagged = true;
+        reason = `Low commercial value for the drive: ${(m.totalValue ?? 0).toFixed(0)} value over ~${(2 * m.isolationKm + 2 * m.radiusKm).toFixed(0)}km of driving (value/km is under 1/3 of the median), and cost per visit is ${m.costPerVisitKm.toFixed(1)}km vs ${medCPV.toFixed(1)}km median.`;
+      }
+    } else {
+      // 'isolation' and 'vf' share the drive-economics rule; under 'vf' the
+      // monthlyVisits denominator is already VF-weighted.
+      if (m.costPerVisitKm > Math.max(3 * medCPV, 2)) {
+        flagged = true;
+        reason = `Isolated pocket: nearest other zone is ${m.isolationKm.toFixed(1)}km away, costing ~${m.costPerVisitKm.toFixed(1)}km of driving per visit vs a ${medCPV.toFixed(1)}km median.`;
+      }
+    }
+    if (flagged) {
+      suggestions.push({
+        territory: `Zone ${m.idx + 1}`,
+        outletCount: m.zone.outlets.length,
+        monthlyVisits: m.monthlyVisits,
+        isolationKm: Math.round(m.isolationKm * 10) / 10,
+        radiusKm: Math.round(m.radiusKm * 10) / 10,
+        costPerVisitKm: Math.round(m.costPerVisitKm * 10) / 10,
+        totalValue: m.totalValue,
+        outletIds: m.zone.outlets.map(o => o.id),
+        sampleOutlets: m.zone.outlets.slice(0, 3).map(o => o.name),
+        reason
+      });
+    }
+  }
+
+  suggestions.sort((a, b) => b.costPerVisitKm - a.costPerVisitKm);
+  return { suggestions: suggestions.slice(0, 15), weightModeUsed };
+}
+
+export interface GeoOutlier {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+  distanceKm: number;
+}
+
+// Flags outlets located far outside the dataset's core coverage area (the
+// market plus its rural belt) - e.g. an outlet coded to Baghdad whose GPS
+// point sits in another governorate. The core center is the MEDIAN of all
+// coordinates, which the outliers themselves cannot drag (unlike a mean).
+// Always straight-line geometry, independent of the distance mode.
+// Highlight-only: nothing is removed - the user decides via the exclusion
+// flow after seeing the evidence.
+function detectGeoOutliers(
+  outlets: { id: string; name: string; latitude: number; longitude: number }[],
+  radiusKm: number = 30
+): GeoOutlier[] {
+  if (outlets.length < 10) return [];
+  const median = (arr: number[]) => {
+    const s = [...arr].sort((a, b) => a - b);
+    return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
+  };
+  // Cluster-level isolation. Two weaker tests fail on real data: distance
+  // from a median centre punishes legitimately distant-but-populated regions
+  // (it flagged 483 real Lebanese outlets, 18% of that universe), while
+  // k-nearest-neighbour distance misses the most common bad-data shape -
+  // several records sharing one wrong coordinate, which look perfectly
+  // neighbourly to each other (6 co-located Baghdad records 450km away
+  // scored 0km). So: link outlets into components by proximity, then flag
+  // whole components that are both small and far from the market's mass.
+  const LINK_KM = 5;            // outlets within 5km belong to one component
+  const CELL = LINK_KM / 111;   // degrees, ~5km
+  const grid = new Map<string, typeof outlets>();
+  const keyOf = (lat: number, lng: number) => `${Math.floor(lat / CELL)}:${Math.floor(lng / CELL)}`;
+  for (const o of outlets) {
+    const k = keyOf(o.latitude, o.longitude);
+    if (!grid.has(k)) grid.set(k, []);
+    grid.get(k)!.push(o);
+  }
+
+  const componentOf = new Map<string, number>();
+  const components: { outlets: typeof outlets; lat: number; lng: number }[] = [];
+  for (const seed of outlets) {
+    if (componentOf.has(seed.id)) continue;
+    const idx = components.length;
+    const queue = [seed];
+    const members: typeof outlets = [];
+    componentOf.set(seed.id, idx);
+    while (queue.length > 0) {
+      const cur = queue.pop()!;
+      members.push(cur);
+      const cy = Math.floor(cur.latitude / CELL);
+      const cx = Math.floor(cur.longitude / CELL);
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const cell = grid.get(`${cy + dy}:${cx + dx}`);
+          if (!cell) continue;
+          for (const n of cell) {
+            if (componentOf.has(n.id)) continue;
+            if (haversineKm(cur.latitude, cur.longitude, n.latitude, n.longitude) <= LINK_KM) {
+              componentOf.set(n.id, idx);
+              queue.push(n);
+            }
+          }
+        }
+      }
+    }
+    components.push({
+      outlets: members,
+      lat: members.reduce((s, o) => s + o.latitude, 0) / members.length,
+      lng: members.reduce((s, o) => s + o.longitude, 0) / members.length,
+    });
+  }
+
+  // A component is part of the market if it holds a meaningful share of the
+  // universe; anything smaller must prove it sits near one that does.
+  const minRealSize = Math.max(10, Math.floor(outlets.length * 0.01));
+  const mainComponents = components.filter(c => c.outlets.length >= minRealSize);
+  if (mainComponents.length === 0) return [];
+
+  const flagged: GeoOutlier[] = [];
+  for (const c of components) {
+    if (c.outlets.length >= minRealSize) continue;
+    let nearest = Infinity;
+    for (const m of mainComponents) {
+      if (m === c) continue;
+      const d = haversineKm(c.lat, c.lng, m.lat, m.lng);
+      if (d < nearest) nearest = d;
+    }
+    if (nearest > radiusKm) {
+      for (const o of c.outlets) {
+        flagged.push({
+          id: o.id, name: o.name,
+          latitude: o.latitude, longitude: o.longitude,
+          distanceKm: Math.round(nearest * 10) / 10
+        });
+      }
+    }
+  }
+  flagged.sort((a, b) => b.distanceKm - a.distanceKm);
+  return flagged;
 }
 
 function clusterOutletsIntoDailyGroups(outlets: Outlet[], k: number): Outlet[][] {
@@ -2254,7 +2772,129 @@ function buildAnchorAwareSchedules(rep: Rep, repOutlets: Outlet[]): InsertSchedu
     }
   }
 
-  // STEP 3+4: Per-day VF rotation with spatial sub-clustering.
+  return scheduleFromDailyClusters(rep, dailyClusters, repOutlets);
+}
+
+// Builds numDays daily clusters directly from pre-computed geographic zones,
+// preserving their boundaries instead of flattening everything into one pool
+// and re-deriving daily groups from scratch (which was free to blend outlets
+// from distant, unrelated zones onto the same day). Falls back to merging or
+// splitting zones only when the zone count doesn't already match numDays.
+function buildDailyClustersFromZones(zoneGroups: Outlet[][], numDays: number, maxWeeklyVisitsPerDay?: number): Outlet[][] {
+  const zones = zoneGroups.filter(z => z.length > 0).map(z => [...z]);
+  if (zones.length === 0) return Array.from({ length: numDays }, () => []);
+
+  if (zones.length === numDays) {
+    return zones;
+  }
+
+  if (zones.length > numDays) {
+    // More zones than day slots: agglomerative merging - repeatedly merge
+    // the two geographically closest groups until numDays remain. Unlike
+    // quota-slicing along the chain, this never forces a distant zone into a
+    // neighbor's day just to satisfy counts: an isolated zone simply stays
+    // its own (smaller) day, keeping every day-route tight. Merging is also
+    // capacity-aware: pairs whose combined weekly visit load would exceed
+    // the rep's daily cap are avoided while any legal pair exists, so a
+    // merged day doesn't blow past maxDailyVisits.
+    const groups: Outlet[][] = zones;
+    const centroidOf = (g: Outlet[]) => ({
+      lat: g.reduce((s, o) => s + o.latitude, 0) / g.length,
+      lng: g.reduce((s, o) => s + o.longitude, 0) / g.length,
+    });
+    const weeklyLoad = (g: Outlet[]) => g.reduce((s, o) => s + (o.visitFrequency ?? 1), 0) / 4;
+    // A zone holding a flagged geographic outlier must never be merged into
+    // a neighbour: one mis-geocoded outlet 450km away would otherwise turn a
+    // normal day-route into a cross-country drive. It keeps its own (small)
+    // day until the user excludes or fixes it.
+    const hasOutlier = (g: Outlet[]) => g.some(o => o.geoStatus === 'offset');
+    while (groups.length > numDays) {
+      const cs = groups.map(centroidOf);
+      const loads = groups.map(weeklyLoad);
+      let bi = -1, bj = -1, bestD = Infinity;
+      let fi = -1, fj = -1, fallbackLoad = Infinity;
+      for (let i = 0; i < groups.length; i++) {
+        if (hasOutlier(groups[i])) continue;
+        for (let j = i + 1; j < groups.length; j++) {
+          if (hasOutlier(groups[j])) continue;
+          const d = geoDist(cs[i].lat, cs[i].lng, cs[j].lat, cs[j].lng);
+          const combined = loads[i] + loads[j];
+          if (maxWeeklyVisitsPerDay === undefined || combined <= maxWeeklyVisitsPerDay) {
+            if (d < bestD) { bestD = d; bi = i; bj = j; }
+          }
+          if (combined < fallbackLoad) { fallbackLoad = combined; fi = i; fj = j; }
+        }
+      }
+      // No pair fits under the cap -> merge the lightest pair (the day count
+      // must still come out to numDays).
+      if (bi < 0) { bi = fi; bj = fj; }
+      if (bi < 0 || bj < 0) {
+        // Every remaining pair involves an outlier zone. Outlier containment
+        // is best-effort ONLY: the group count must still reach numDays,
+        // because groups beyond numDays get no day and their outlets would
+        // silently vanish from the plan. Merge the two closest groups
+        // regardless of outlier status.
+        let ci2 = -1, cj2 = -1, cd = Infinity;
+        for (let i = 0; i < groups.length; i++) {
+          for (let j = i + 1; j < groups.length; j++) {
+            const d = calculateHaversineDistance(cs[i].lat, cs[i].lng, cs[j].lat, cs[j].lng);
+            if (d < cd) { cd = d; ci2 = i; cj2 = j; }
+          }
+        }
+        if (ci2 < 0 || cj2 < 0) break;
+        bi = ci2; bj = cj2;
+      }
+      groups[bi] = [...groups[bi], ...groups[bj]];
+      groups.splice(bj, 1);
+    }
+    return groups;
+  }
+
+  // Fewer zones than day slots: split the largest zone(s) geographically so
+  // every working day still gets its own tight group.
+  const groups = zones;
+  while (groups.length < numDays) {
+    let largestIdx = 0;
+    for (let i = 1; i < groups.length; i++) {
+      if (groups[i].length > groups[largestIdx].length) largestIdx = i;
+    }
+    if (groups[largestIdx].length < 2) break; // nothing left worth splitting
+    const [a, b] = clusterOutletsIntoDailyGroups(groups[largestIdx], 2);
+    groups.splice(largestIdx, 1, a, b);
+  }
+  while (groups.length < numDays) groups.push([]);
+  return groups;
+}
+
+// Same VF1-4 anchor-aware weekly rotation as buildAnchorAwareSchedules, but
+// takes pre-computed geographic zones (one per working day, ideally) instead
+// of a flat outlet pool, so the already-tight zone boundaries from the
+// clustering step survive into the final day-routes.
+function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[][]): InsertSchedule[] {
+  const numDays = rep.workingDaysPerWeek || 5;
+  const repOutlets = zoneGroups.flat();
+  if (repOutlets.length === 0) return [];
+
+  // Split the rep's territory into working days by recursive bisection, so a
+  // day is a contiguous piece of the map rather than a set of outlets that
+  // merely add up to the right workload. Capacity-driven clustering balanced
+  // the numbers but let days interleave across the whole city.
+  const dailyClusters = swapForCompactness(
+    growBalancedRegions(repOutlets, numDays, weeklyLoadOf),
+    weeklyLoadOf,
+  );
+  while (dailyClusters.length < numDays) dailyClusters.push([]);
+
+  const loads = dailyClusters.map(g => Math.round(totalWeeklyLoad(g) * 10) / 10);
+  console.log(`[days] ${rep.name}: ${repOutlets.length} outlets -> weekly visits/day ${loads.join(', ')}`);
+
+  return scheduleFromDailyClusters(rep, dailyClusters, repOutlets);
+}
+
+// STEP 3+4 of the anchor-aware scheduler: per-day VF rotation with spatial
+// sub-clustering, shared by both the flat-pool and zone-preserving builders.
+function scheduleFromDailyClusters(rep: Rep, dailyClusters: Outlet[][], repOutlets: Outlet[]): InsertSchedule[] {
+  const numDays = rep.workingDaysPerWeek || 5;
   const VF3_PATTERNS: number[][] = [[1, 2, 3], [1, 2, 4], [1, 3, 4], [2, 3, 4]];
   const VF2_PATTERNS: number[][] = [[1, 3], [2, 4]];
   const VF1_PATTERNS: number[][] = [[1], [2], [3], [4]];
@@ -2300,9 +2940,14 @@ function buildAnchorAwareSchedules(rep: Rep, repOutlets: Outlet[]): InsertSchedu
     const vf2 = dayOutlets.filter(o => o.visitFrequency === 2);
     const vf1 = dayOutlets.filter(o => (o.visitFrequency ?? 1) === 1);
 
-    const vf3Buckets = subCluster(vf3, 4);
-    const vf2Buckets = subCluster(vf2, 2);
-    const vf1Buckets = subCluster(vf1, 4);
+    // Split each frequency band into equal-sized buckets, one per week it can
+    // fall on. Clustering these by geography made some weeks far heavier than
+    // others within the same day; dealing them along a route-order walk keeps
+    // the four weeks the same size without meaningfully hurting compactness
+    // (they are all inside one day-route's area already).
+    const vf3Buckets = dealEvenly(vf3, 4);
+    const vf2Buckets = dealEvenly(vf2, 2);
+    const vf1Buckets = dealEvenly(vf1, 4);
 
     for (let week = 1; week <= 4; week++) {
       const weekOutlets: Outlet[] = [...vf4];
@@ -2430,19 +3075,12 @@ function generateWeeklySchedules(rep: Rep, outlets: Outlet[]): InsertSchedule[] 
   return schedules;
 }
 
-import { generateScheduleExcel, generateVehicleSummaryExcel } from './export';
+import { generateScheduleExcel } from './export';
 
-interface TrialContext {
-  ipAddress: string;
-  ipSubnet: string;
-  trialId: string | null;
-  isTrialMode: boolean;
-}
 
 declare global {
   namespace Express {
     interface Request {
-      trialContext?: TrialContext;
     }
   }
 }
@@ -2456,106 +3094,23 @@ function extractIpAddress(req: Request): string {
   return req.socket?.remoteAddress || '127.0.0.1';
 }
 
-
-function generateFingerprintHashServerSide(signals: FingerprintSignals): string {
-  const components = [
-    String(signals.screenWidth ?? ''),
-    String(signals.screenHeight ?? ''),
-    String(signals.screenColorDepth ?? ''),
-    String(signals.devicePixelRatio ?? ''),
-    String(signals.hardwareConcurrency ?? ''),
-    String(signals.deviceMemory ?? ''),
-    String(signals.maxTouchPoints ?? ''),
-    signals.timezone ?? '',
-    String(signals.timezoneOffset ?? ''),
-    signals.platform ?? '',
-    signals.language ?? '',
-    signals.webglVendor ?? '',
-    signals.webglRenderer ?? '',
-    signals.webglHash ?? '',
-    signals.canvasHash ?? '',
-    signals.audioHash ?? '',
-    signals.fontsHash ?? '',
-    signals.userAgent ?? ''
-  ];
-  return createHash('sha256').update(components.join('|')).digest('hex');
-}
-
-async function getAllFingerprintsForOrg(orgKey: string): Promise<import("@shared/schema").DeviceFingerprint[]> {
-  const orgProfile = await storage.getOrgRiskProfileByKey(orgKey);
-  if (!orgProfile) return [];
-  
-  const linkedTrialIds = (orgProfile.linkedTrialIds as string[] | null) || [];
-  const allFingerprints: import("@shared/schema").DeviceFingerprint[] = [];
-  
-  for (const trialId of linkedTrialIds) {
-    const fingerprints = await storage.getDeviceFingerprintsByTrialId(trialId);
-    allFingerprints.push(...fingerprints);
-  }
-  
-  return allFingerprints;
-}
-
 function validateEmail(email: string): boolean {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   return emailRegex.test(email);
 }
 
 
-async function getTrialStatus(trialId: string): Promise<TrialStatus> {
-  const trial = await storage.getTrialAccount(trialId);
-  const usage = await storage.getTrialUsage(trialId);
-  
-  if (!trial) {
-    return {
-      isTrialMode: false,
-      trialId: null,
-      status: 'inactive',
-      outletLimit: 0,
-      vehicleLimit: 0,
-      outletCount: 0,
-      vehicleCount: 0,
-      outletsRemaining: 0,
-      vehiclesRemaining: 0,
-      daysRemaining: 0,
-      isExpired: true,
-      isBlocked: false,
-      upgradeRequired: true
-    };
-  }
-  
-  const now = new Date();
-  const endDate = trial.endDate ? new Date(trial.endDate) : null;
-  const daysRemaining = endDate ? Math.max(0, Math.ceil((endDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))) : 0;
-  const isExpired = trial.status === TRIAL_STATUS.EXPIRED || (endDate ? endDate < now : false);
-  const isBlocked = trial.status === TRIAL_STATUS.BLOCKED;
-  
-  const outletCount = usage?.outletCount || 0;
-  const vehicleCount = usage?.vehicleCount || 0;
-  
-  return {
-    isTrialMode: true,
-    trialId: trial.id,
-    status: trial.status,
-    outletLimit: trial.outletLimit,
-    vehicleLimit: trial.vehicleLimit,
-    outletCount,
-    vehicleCount,
-    outletsRemaining: Math.max(0, trial.outletLimit - outletCount),
-    vehiclesRemaining: Math.max(0, trial.vehicleLimit - vehicleCount),
-    daysRemaining,
-    isExpired,
-    isBlocked,
-    blockReason: isBlocked ? 'Account has been blocked due to suspicious activity' : undefined,
-    upgradeRequired: isExpired || outletCount >= trial.outletLimit || vehicleCount >= trial.vehicleLimit
-  };
+// Admin credentials never live in this source file - the repo is public, and
+// the pair that used to be hardcoded here is still exposed in git history.
+// They come from env vars or from data/admin.json (see server/admin-credentials.ts).
+const credentialSource = adminCredentialSource();
+if (credentialSource === 'none') {
+  console.warn('[auth] No admin login configured - sign-in is disabled.');
+  console.warn('[auth] Fix it with:  npm run set-admin -- you@example.com "your-password"');
+  console.warn('[auth] Or set SUPERUSER_EMAIL and SUPERUSER_PASSWORD (Replit Secrets / .env).');
+} else {
+  console.log(`[auth] Admin login configured from ${credentialSource === 'env' ? 'environment variables' : 'data/admin.json'}.`);
 }
-
-// Superuser credentials from environment variables with fallback
-const SUPERUSER = {
-  email: process.env.SUPERUSER_EMAIL || 'walid@walid.com',
-  password: process.env.SUPERUSER_PASSWORD || 'Walid1981@'
-};
 
 // Server-side session storage for superuser tokens
 const activeSuperuserSessions = new Set<string>();
@@ -2574,21 +3129,11 @@ function isValidSuperuserSession(token: string | null): boolean {
 export async function registerRoutes(app: Express): Promise<Server> {
   
   app.use((req: Request, _res: Response, next: NextFunction) => {
-    const ipAddress = extractIpAddress(req);
-    const ipSubnet = extractIpSubnet(ipAddress);
-    const trialCookie = req.cookies?.trial_session || null;
     const superuserCookie = req.cookies?.superuser_session || null;
-    
+
     // Validate superuser session server-side
     const isSuperuserValid = isValidSuperuserSession(superuserCookie);
-    
-    req.trialContext = {
-      ipAddress,
-      ipSubnet,
-      trialId: trialCookie,
-      isTrialMode: !!trialCookie && !isSuperuserValid
-    };
-    
+
     // Add superuser flag to request (only if token is valid)
     (req as any).isSuperuser = isSuperuserValid;
     
@@ -2599,8 +3144,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/auth/login", async (req: Request, res: Response) => {
     try {
       const { email, password } = req.body;
-      
-      if (email === SUPERUSER.email && password === SUPERUSER.password) {
+
+      if (!isAdminConfigured()) {
+        return res.status(503).json({
+          message: 'No admin login is configured yet. In the shell, run:  npm run set-admin -- you@example.com "your-password"  then restart the app.',
+          adminConfigured: false,
+        });
+      }
+
+      if (verifyAdmin(email, password)) {
         // Generate a secure, random session token
         const sessionToken = generateSecureToken();
         activeSuperuserSessions.add(sessionToken);
@@ -2611,9 +3163,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
           maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
           sameSite: 'lax'
         });
-        
-        // Clear trial session if present
-        res.clearCookie('trial_session');
         
         return res.json({
           success: true,
@@ -2638,458 +3187,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
       activeSuperuserSessions.delete(sessionToken);
     }
     res.clearCookie('superuser_session');
-    res.clearCookie('trial_session');
     res.json({ success: true, message: "Logged out" });
   });
 
   // Check auth status
   app.get("/api/auth/status", async (req: Request, res: Response) => {
     const isSuperuser = !!(req as any).isSuperuser;
-    const trialId = req.trialContext?.trialId || req.cookies?.trial_session;
-    const isTrialMode = !!trialId && !isSuperuser;
-    
+
     res.json({
       isAuthenticated: isSuperuser,
       isSuperuser,
-      isTrialMode
+      // Lets the login screen explain itself when no admin exists yet, instead
+      // of rejecting every attempt with "invalid credentials".
+      adminConfigured: isAdminConfigured(),
     });
-  });
-
-  app.post("/api/trial/start", async (req: Request, res: Response) => {
-    try {
-      const { email, companyName, consentGiven } = req.body;
-      
-      if (!email || !validateEmail(email)) {
-        return res.status(400).json({ message: "Invalid email format" });
-      }
-      
-      if (!consentGiven) {
-        return res.status(400).json({ message: "Consent is required to start a trial" });
-      }
-      
-      // Check if trial already exists for this email
-      const existingTrial = await storage.getTrialAccountByEmail(email);
-      if (existingTrial) {
-        // Check if the existing trial is still valid
-        const now = new Date();
-        const endDate = existingTrial.endDate ? new Date(existingTrial.endDate) : null;
-        const isExpired = existingTrial.status === TRIAL_STATUS.EXPIRED || (endDate ? endDate < now : false);
-        const isBlocked = existingTrial.status === TRIAL_STATUS.BLOCKED;
-        
-        if (isBlocked) {
-          return res.status(403).json({
-            message: "This email has been blocked. Please contact support or upgrade.",
-            blocked: true,
-            upgradeRequired: true
-          });
-        }
-        
-        if (isExpired) {
-          return res.status(402).json({
-            message: "Your trial has expired. Please upgrade to continue.",
-            upgradeRequired: true
-          });
-        }
-        
-        // Return the existing trial instead of creating a new one
-        res.cookie('trial_session', existingTrial.id, {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          maxAge: TRIAL_LIMITS.TRIAL_DURATION_DAYS * 24 * 60 * 60 * 1000,
-          sameSite: 'lax'
-        });
-        
-        const status = await getTrialStatus(existingTrial.id);
-        return res.status(200).json({
-          ...status,
-          message: "Welcome back! Your existing trial has been restored."
-        });
-      }
-      
-      const ipAddress = req.trialContext?.ipAddress || extractIpAddress(req);
-      const ipSubnet = extractIpSubnet(ipAddress);
-      const emailDomain = extractEmailDomain(email);
-      const orgKey = generateOrgKey(ipSubnet, emailDomain);
-      
-      const blockDecision = await shouldBlockTrial(email, orgKey, null, storage);
-      if (blockDecision.blocked) {
-        return res.status(403).json({ 
-          message: blockDecision.reason || "Unable to create trial. Please contact support.",
-          blocked: true,
-          reason: blockDecision.reason,
-          riskLevel: blockDecision.riskLevel,
-          upgradeRequired: blockDecision.upgradeRequired
-        });
-      }
-      
-      const endDate = new Date();
-      endDate.setDate(endDate.getDate() + TRIAL_LIMITS.TRIAL_DURATION_DAYS);
-      
-      const trial = await storage.createTrialAccount({
-        email,
-        companyName: companyName || null,
-        status: TRIAL_STATUS.ACTIVE,
-        outletLimit: TRIAL_LIMITS.MAX_OUTLETS,
-        vehicleLimit: TRIAL_LIMITS.MAX_VEHICLES,
-        startDate: new Date(),
-        endDate,
-        consentGiven: true,
-        consentTimestamp: new Date(),
-        ipAddress,
-        ipSubnet,
-        emailDomain,
-        orgKey,
-        metadata: { source: 'web' }
-      });
-      
-      await storage.createTrialUsage(trial.id);
-      
-      const existingOrgProfile = await storage.getOrgRiskProfileByKey(orgKey);
-      if (!existingOrgProfile) {
-        await storage.createOrgRiskProfile({
-          orgKey,
-          ipSubnet,
-          emailDomain,
-          trialCount: 1,
-          activeTrialCount: 1,
-          riskLevel: RISK_LEVELS.LOW,
-          riskScore: 0,
-          linkedTrialIds: [trial.id]
-        });
-      } else {
-        await storage.incrementOrgTrialCount(orgKey);
-      }
-      
-      res.cookie('trial_session', trial.id, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        maxAge: TRIAL_LIMITS.TRIAL_DURATION_DAYS * 24 * 60 * 60 * 1000,
-        sameSite: 'lax'
-      });
-      
-      const status = await getTrialStatus(trial.id);
-      res.status(201).json(status);
-    } catch (error) {
-      console.error("Error starting trial:", error);
-      res.status(500).json({ message: "Failed to start trial" });
-    }
-  });
-
-  app.post("/api/trial/fingerprint", async (req: Request, res: Response) => {
-    try {
-      const trialId = req.trialContext?.trialId || req.cookies?.trial_session;
-      if (!trialId) {
-        return res.status(401).json({ message: "No active trial session" });
-      }
-      
-      const signals = req.body as FingerprintSignals;
-      const fingerprintHash = generateFingerprintHashServerSide(signals);
-      const ipAddress = req.trialContext?.ipAddress || extractIpAddress(req);
-      const ipSubnet = extractIpSubnet(ipAddress);
-      
-      const trial = await storage.getTrialAccount(trialId);
-      if (!trial) {
-        return res.status(404).json({ message: "Trial account not found" });
-      }
-      
-      const orgKey = trial.orgKey;
-      let orgProfile = orgKey ? await storage.getOrgRiskProfileByKey(orgKey) : null;
-      
-      const existingFingerprints = await storage.getDeviceFingerprintsByTrialId(trialId);
-      const allFingerprints = orgKey ? await getAllFingerprintsForOrg(orgKey) : [];
-      
-      const sharedDetection = detectSharedFingerprints(fingerprintHash, allFingerprints.filter(fp => fp.trialId !== trialId));
-      
-      if (sharedDetection.isShared) {
-        if (orgProfile && orgKey) {
-          const currentSharedSignals = (orgProfile.sharedSignals as { fingerprintMatches?: number } | null) || {};
-          const newSharedSignals = {
-            ...currentSharedSignals,
-            fingerprintMatches: (currentSharedSignals.fingerprintMatches || 0) + 1,
-            lastMatchedTrials: sharedDetection.matchingTrialIds,
-            signalTypes: sharedDetection.signalTypes
-          };
-          
-          const currentLinkedFingerprints = (orgProfile.linkedFingerprints as string[] | null) || [];
-          const newLinkedFingerprints = Array.from(new Set([...currentLinkedFingerprints, fingerprintHash]));
-          
-          const currentRiskFactors = (orgProfile.riskFactors as { velocity?: number; lastTrialTime?: string } | null) || {};
-          const now = new Date();
-          let velocity = currentRiskFactors.velocity || 0;
-          if (currentRiskFactors.lastTrialTime) {
-            const lastTime = new Date(currentRiskFactors.lastTrialTime);
-            const hoursSinceLastTrial = (now.getTime() - lastTime.getTime()) / (1000 * 60 * 60);
-            if (hoursSinceLastTrial < 24) {
-              velocity = Math.min(1, velocity + 0.2);
-            }
-          }
-          
-          await storage.updateOrgRiskProfile(orgProfile.id, {
-            sharedSignals: newSharedSignals,
-            linkedFingerprints: newLinkedFingerprints,
-            riskFactors: {
-              ...currentRiskFactors,
-              fingerprintMatch: true,
-              matchedTrialIds: sharedDetection.matchingTrialIds,
-              velocity,
-              lastTrialTime: now.toISOString()
-            }
-          });
-          
-          orgProfile = await storage.getOrgRiskProfileByKey(orgKey);
-          if (orgProfile) {
-            const riskAssessment = assessOrgRisk(orgProfile);
-            
-            let riskLevel: typeof RISK_LEVELS[keyof typeof RISK_LEVELS] = RISK_LEVELS.LOW;
-            if (riskAssessment.level === 'blocked') {
-              riskLevel = RISK_LEVELS.BLOCKED;
-            } else if (riskAssessment.level === 'high') {
-              riskLevel = RISK_LEVELS.HIGH;
-            } else if (riskAssessment.level === 'medium') {
-              riskLevel = RISK_LEVELS.MEDIUM;
-            }
-            
-            await storage.updateOrgRiskProfile(orgProfile.id, {
-              riskScore: riskAssessment.score,
-              riskLevel
-            });
-            
-            if (riskAssessment.level === 'blocked') {
-              await storage.updateTrialAccount(trialId, {
-                status: TRIAL_STATUS.BLOCKED
-              });
-              
-              await storage.createFingerprintEvent({
-                fingerprintId: sharedDetection.matchingTrialIds[0] || fingerprintHash,
-                trialId,
-                eventType: 'blocked',
-                metadata: { 
-                  reason: 'high_risk_fingerprint_sharing',
-                  riskScore: riskAssessment.score,
-                  factors: riskAssessment.factors
-                },
-                ipAddress
-              });
-              
-              return res.status(403).json({ 
-                success: false, 
-                blocked: true,
-                reason: "Account blocked due to suspicious activity. Please contact support.",
-                riskLevel: 'blocked'
-              });
-            }
-          }
-        }
-        
-        const existingMatch = await storage.getDeviceFingerprintByHash(fingerprintHash);
-        if (existingMatch) {
-          await storage.createFingerprintEvent({
-            fingerprintId: existingMatch.id,
-            trialId,
-            eventType: 'suspicious',
-            metadata: { 
-              reason: 'fingerprint_reuse', 
-              originalTrialId: existingMatch.trialId,
-              matchingTrials: sharedDetection.matchingTrialIds
-            },
-            ipAddress
-          });
-          
-          return res.status(200).json({ 
-            success: true, 
-            warning: 'Device has been seen before',
-            fingerprintId: existingMatch.id
-          });
-        }
-      }
-      
-      const fingerprint = await storage.createDeviceFingerprint({
-        trialId,
-        fingerprintHash,
-        userAgent: signals.userAgent,
-        platform: signals.platform,
-        language: signals.language,
-        languages: signals.languages,
-        timezone: signals.timezone,
-        timezoneOffset: signals.timezoneOffset,
-        screenWidth: signals.screenWidth,
-        screenHeight: signals.screenHeight,
-        screenColorDepth: signals.screenColorDepth,
-        devicePixelRatio: signals.devicePixelRatio,
-        hardwareConcurrency: signals.hardwareConcurrency,
-        deviceMemory: signals.deviceMemory,
-        maxTouchPoints: signals.maxTouchPoints,
-        canvasHash: signals.canvasHash,
-        webglVendor: signals.webglVendor,
-        webglRenderer: signals.webglRenderer,
-        webglHash: signals.webglHash,
-        audioHash: signals.audioHash,
-        fontsHash: signals.fontsHash,
-        ipAddress,
-        ipSubnet,
-        connectionType: signals.connectionType,
-        localStorageId: signals.localStorageId,
-        sessionStorageId: signals.sessionStorageId,
-        cookieId: signals.cookieId,
-        trustScore: 100
-      });
-      
-      if (orgProfile && orgKey) {
-        const currentLinkedFingerprints = (orgProfile.linkedFingerprints as string[] | null) || [];
-        if (!currentLinkedFingerprints.includes(fingerprintHash)) {
-          await storage.updateOrgRiskProfile(orgProfile.id, {
-            linkedFingerprints: [...currentLinkedFingerprints, fingerprintHash]
-          });
-        }
-      }
-      
-      await storage.createFingerprintEvent({
-        fingerprintId: fingerprint.id,
-        trialId,
-        eventType: 'created',
-        metadata: { source: 'trial_registration' },
-        ipAddress
-      });
-      
-      res.status(201).json({ 
-        success: true, 
-        fingerprintId: fingerprint.id 
-      });
-    } catch (error) {
-      console.error("Error processing fingerprint:", error);
-      res.status(500).json({ message: "Failed to process fingerprint" });
-    }
-  });
-
-  app.get("/api/trial/status", async (req: Request, res: Response) => {
-    try {
-      const trialId = req.trialContext?.trialId || req.cookies?.trial_session;
-      
-      if (!trialId) {
-        return res.json({
-          isTrialMode: false,
-          trialId: null,
-          status: 'inactive',
-          outletLimit: 0,
-          vehicleLimit: 0,
-          outletCount: 0,
-          vehicleCount: 0,
-          outletsRemaining: 0,
-          vehiclesRemaining: 0,
-          daysRemaining: 0,
-          isExpired: false,
-          isBlocked: false,
-          upgradeRequired: false
-        } as TrialStatus);
-      }
-      
-      const status = await getTrialStatus(trialId);
-      res.json(status);
-    } catch (error) {
-      console.error("Error fetching trial status:", error);
-      res.status(500).json({ message: "Failed to fetch trial status" });
-    }
-  });
-
-  app.post("/api/trial/check-limits", async (req: Request, res: Response) => {
-    try {
-      const trialId = req.trialContext?.trialId || req.cookies?.trial_session;
-      
-      if (!trialId) {
-        return res.json({ allowed: true });
-      }
-      
-      const { operation, count = 1 } = req.body as { operation: 'add_outlet' | 'add_vehicle'; count?: number };
-      
-      if (!operation) {
-        return res.status(400).json({ message: "Operation type is required" });
-      }
-      
-      const trial = await storage.getTrialAccount(trialId);
-      const usage = await storage.getTrialUsage(trialId);
-      
-      if (!trial || !usage) {
-        return res.json({ allowed: true });
-      }
-      
-      if (trial.status === TRIAL_STATUS.BLOCKED) {
-        return res.json({ 
-          allowed: false, 
-          reason: "Trial account has been blocked" 
-        });
-      }
-      
-      if (trial.status === TRIAL_STATUS.EXPIRED || (trial.endDate && new Date(trial.endDate) < new Date())) {
-        return res.json({ 
-          allowed: false, 
-          reason: "Trial period has expired. Please upgrade to continue." 
-        });
-      }
-      
-      if (operation === 'add_outlet') {
-        const newCount = usage.outletCount + count;
-        if (newCount > trial.outletLimit) {
-          return res.json({ 
-            allowed: false, 
-            reason: `Outlet limit reached (${usage.outletCount}/${trial.outletLimit}). Upgrade to add more outlets.`,
-            currentCount: usage.outletCount,
-            limit: trial.outletLimit
-          });
-        }
-      }
-      
-      if (operation === 'add_vehicle') {
-        const newCount = usage.vehicleCount + count;
-        if (newCount > trial.vehicleLimit) {
-          return res.json({ 
-            allowed: false, 
-            reason: `Vehicle limit reached (${usage.vehicleCount}/${trial.vehicleLimit}). Upgrade to add more vehicles.`,
-            currentCount: usage.vehicleCount,
-            limit: trial.vehicleLimit
-          });
-        }
-      }
-      
-      res.json({ allowed: true });
-    } catch (error) {
-      console.error("Error checking trial limits:", error);
-      res.status(500).json({ message: "Failed to check trial limits" });
-    }
   });
 
   app.post("/api/outlets", async (req: Request, res: Response) => {
     try {
-      const trialId = req.trialContext?.trialId || req.cookies?.trial_session;
-      
-      if (trialId) {
-        const trial = await storage.getTrialAccount(trialId);
-        const usage = await storage.getTrialUsage(trialId);
-        
-        if (trial && usage) {
-          if (trial.status === TRIAL_STATUS.BLOCKED) {
-            return res.status(402).json({ 
-              message: "Trial account has been blocked. Please contact support.",
-              upgradeRequired: true
-            });
-          }
-          
-          if (trial.status === TRIAL_STATUS.EXPIRED || (trial.endDate && new Date(trial.endDate) < new Date())) {
-            return res.status(402).json({ 
-              message: "Trial period has expired. Please upgrade to continue.",
-              upgradeRequired: true
-            });
-          }
-          
-          if (usage.outletCount >= trial.outletLimit) {
-            return res.status(402).json({ 
-              message: `Outlet limit reached (${usage.outletCount}/${trial.outletLimit}). Upgrade to add more outlets.`,
-              upgradeRequired: true,
-              currentCount: usage.outletCount,
-              limit: trial.outletLimit
-            });
-          }
-        }
-      }
       
       const parsed = insertOutletSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -3097,11 +3212,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       
       const outlet = await storage.createOutlet(parsed.data);
-      
-      if (trialId) {
-        await storage.incrementOutletCount(trialId, 1);
-      }
-      
+
       res.status(201).json(outlet);
     } catch (error) {
       console.error("Error creating outlet:", error);
@@ -3190,38 +3301,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       if (data.length === 0) {
         return res.status(400).json({ message: "File is empty or could not be parsed" });
-      }
-
-      // Check trial limits before processing
-      const trialId = req.trialContext?.trialId || req.cookies?.trial_session;
-      if (trialId) {
-        const trial = await storage.getTrialAccount(trialId);
-        if (trial) {
-          // Check if trial is blocked or expired
-          if (trial.status === TRIAL_STATUS.BLOCKED) {
-            return res.status(402).json({
-              message: "Your trial has been blocked. Please upgrade to continue.",
-              upgradeRequired: true
-            });
-          }
-          if (trial.status === TRIAL_STATUS.EXPIRED || (trial.endDate && new Date(trial.endDate) < new Date())) {
-            return res.status(402).json({
-              message: "Your trial has expired. Please upgrade to continue.",
-              upgradeRequired: true
-            });
-          }
-
-          // Check outlet limit
-          const outletLimit = trial.outletLimit || TRIAL_LIMITS.MAX_OUTLETS;
-          if (data.length > outletLimit) {
-            return res.status(402).json({
-              message: `Your trial is limited to ${outletLimit} outlets. This file contains ${data.length} outlets. Please upgrade to process more outlets.`,
-              upgradeRequired: true,
-              fileOutlets: data.length,
-              outletLimit: outletLimit
-            });
-          }
-        }
       }
 
       // Clear existing outlets
@@ -3317,9 +3396,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
                     row.address || row.Address || "",
             latitude: parsedLat,
             longitude: parsedLng,
-            visitFrequency: parseInt(normalizedRow['vf'] || normalizedRow['visitfrequency'] || 
+            visitFrequency: parseInt(normalizedRow['vf'] || normalizedRow['visitfrequency'] ||
                                     row.vf || row.VF || row.visit_frequency || row["Visit Frequency"] || "2"),
             timePerVisit: isNaN(timePerVisit) ? 30 : Math.max(5, Math.min(120, timePerVisit)),
+            value: (() => {
+              // Commercial weight of the outlet (VC / volume class / sales value)
+              // used by weightMode 'value' in coverage-worthiness analysis.
+              const raw = normalizedRow['vc'] || normalizedRow['value'] || normalizedRow['volume'] ||
+                          normalizedRow['volumeclass'] || normalizedRow['sales'] || normalizedRow['salesvalue'];
+              const parsedValue = parseFloat(raw);
+              return isNaN(parsedValue) ? null : parsedValue;
+            })(),
             territory: normalizedRow['district'] || normalizedRow['territory'] || normalizedRow['zone'] || normalizedRow['region'] ||
                       row.District || row.territory || row.Territory || row.zone || row.Zone || null,
             repId: null,
@@ -3348,16 +3435,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Create outlets in storage
-      await storage.createOutlets(outlets);
+      const createdOutlets = await storage.createOutlets(outlets);
+
+      // Highlight outlets whose GPS point sits far outside the dataset's
+      // core coverage area (market + rural belt). Flag only - the user
+      // decides later whether to exclude them.
+      const geoOutlierRadiusKm = parseFloat(String(req.body?.geoOutlierRadiusKm ?? '')) || 30;
+      const geoOutliers = detectGeoOutliers(createdOutlets, geoOutlierRadiusKm);
+      for (const g of geoOutliers) {
+        await storage.updateOutlet(g.id, { geoStatus: 'offset' });
+      }
+      if (geoOutliers.length > 0) {
+        console.log(`Flagged ${geoOutliers.length} geographic outliers (> ${geoOutlierRadiusKm}km from core area)`);
+      }
 
       // Calculate analysis
       const vf1Count = outlets.filter(o => o.visitFrequency === 1).length;
       const vf2Count = outlets.filter(o => o.visitFrequency === 2).length;
       const vf4Count = outlets.filter(o => o.visitFrequency === 4).length;
-      const avgTimePerVisit = Math.round(
-        outlets.reduce((sum, o) => sum + (o.timePerVisit || 30), 0) / outlets.length
-      );
-      
+
       // Initial rough estimate - will be refined after optimization
       // Assuming ~25 outlets per zone and 10 zones per rep
       const recommendedReps = Math.ceil(outlets.length / 250);
@@ -3384,12 +3480,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       });
 
-      // Update trial usage if in trial mode
-      const uploadTrialId = req.trialContext?.trialId || req.cookies?.trial_session;
-      if (uploadTrialId) {
-        await storage.setOutletCount(uploadTrialId, outlets.length);
-      }
-
       res.json({
         success: true,
         runId: optimizationRun.id,
@@ -3398,7 +3488,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
           vf1: vf1Count,
           vf2: vf2Count,
           vf4: vf4Count,
-          avgTimePerVisit,
           recommendedReps
         },
         report: {
@@ -3409,8 +3498,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           vf1Count,
           vf2Count,
           vf4Count,
-          avgTimePerVisit,
-          recommendedReps
+          recommendedReps,
+          geoOutliers: geoOutliers.length,
+          geoOutlierDetails: geoOutliers.slice(0, 25)
         }
       });
 
@@ -4149,21 +4239,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Route optimization
   app.post("/api/optimize", async (req, res) => {
-    // Check trial restrictions - trial users can run 1 optimization only
-    const isSuperuser = !!(req as any).isSuperuser;
-    const trialId = req.trialContext?.trialId || req.cookies?.trial_session;
-    
-    if (trialId && !isSuperuser) {
-      const trialUsage = await storage.getTrialUsage(trialId);
-      if (trialUsage && trialUsage.optimizationRuns >= 1) {
-        return res.status(402).json({
-          message: "You have reached the optimization limit for your trial (1 run). Please upgrade to run more optimizations.",
-          upgradeRequired: true,
-          feature: 'optimization'
-        });
-      }
-    }
-    
     const progressId = req.body.progressId || '';
     
     // Helper to yield to event loop so SSE can flush
@@ -4178,74 +4253,113 @@ export async function registerRoutes(app: Express): Promise<Server> {
     
     try {
       await emitProgress(2, 'Starting', 'Loading outlets from database...');
-      const outlets = await storage.getOutlets();
+      const allStoredOutlets = await storage.getOutlets();
+
+      // Outlets the user chose to exclude after reviewing coverage
+      // suggestions (indirect-coverage candidates). They keep existing but
+      // are left out of territories and schedules for this run.
+      const excludedOutletIds: string[] = Array.isArray(req.body.excludedOutletIds)
+        ? req.body.excludedOutletIds.filter((x: unknown) => typeof x === 'string')
+        : [];
+      const excludedSet = new Set(excludedOutletIds);
+      const selectedOutlets = allStoredOutlets.filter(o => !excludedSet.has(o.id));
+      for (const o of allStoredOutlets) {
+        if (excludedSet.has(o.id)) {
+          await storage.updateOutlet(o.id, { territory: 'Excluded', cluster: null, repId: null });
+        }
+      }
+
+      // Geographic outliers are found BEFORE routing, not after.
+      //
+      // Detecting them afterwards meant every first run routed them: a single
+      // bad record in the Erbil file ("warehouse difference after unloading",
+      // 412km from the city) turned one rep's day into a 430km round trip.
+      // They are held out of the day-routes and reported for review instead -
+      // the user fixes the coordinates or deletes the row, and nothing is
+      // deleted on their behalf. Pass includeGeoOutliers to route them anyway.
+      const geoOutlierRadiusKm = req.body.geoOutlierRadiusKm || 30;
+      const includeGeoOutliers = req.body.includeGeoOutliers === true;
+      const detectedOutliers = detectGeoOutliers(selectedOutlets, geoOutlierRadiusKm);
+      const outlierIds = new Set(detectedOutliers.map(o => o.id));
+
+      // Clear stale flags first so a fixed outlet stops being flagged.
+      for (const o of selectedOutlets) {
+        const shouldFlag = outlierIds.has(o.id);
+        if (shouldFlag && o.geoStatus !== 'offset') {
+          await storage.updateOutlet(o.id, { geoStatus: 'offset' });
+        } else if (!shouldFlag && o.geoStatus === 'offset') {
+          await storage.updateOutlet(o.id, { geoStatus: null });
+        }
+      }
+
+      const outlets = includeGeoOutliers
+        ? selectedOutlets
+        : selectedOutlets.filter(o => !outlierIds.has(o.id));
+
+      if (!includeGeoOutliers && outlierIds.size > 0) {
+        console.log(`[geo] Holding ${outlierIds.size} far-flung outlet(s) out of the routes for review (>${geoOutlierRadiusKm}km from the core area).`);
+        for (const o of detectedOutliers) {
+          await storage.updateOutlet(o.id, { territory: 'Needs Review', cluster: null, repId: null });
+        }
+      }
+
       if (outlets.length === 0) {
         if (progressId) progressManager.error(progressId, 'No outlets available');
         return res.status(400).json({ message: "No outlets available for optimization" });
       }
-      
+
       await emitProgress(5, 'Analyzing', `Processing ${outlets.length} outlets...`);
 
       // Calculate total weekly visits required based on visit frequency
       const totalWeeklyVisits = outlets.reduce((sum, outlet) => sum + outlet.visitFrequency, 0);
-      
+
+      // Distance model for all grouping decisions this run: straight-line
+      // (default) or road-aware (urban detour factor + river-crossing
+      // penalties, upgraded to true road distances for zone pairs when an
+      // OSRM_URL server is configured).
+      const distanceMode: DistanceMode = req.body.distanceMode === 'road' ? 'road' : 'haversine';
+      setDistanceMode(distanceMode);
+      clearRoadMatrix();
+
       // Set default values for rep constraints (use body params if provided)
       const workingDaysPerWeek = req.body.workingDaysPerWeek || 5; // Monday to Friday
-      const calculationMode = req.body.calculationMode || 'manual'; // 'manual' or 'time-based'
-      const maxTimePerOutlet = req.body.maxTimePerOutlet || 45; // minutes
-      const maxWorkingHoursPerDay = req.body.maxWorkingHoursPerDay || 8; // hours
-      
-      // Calculate min/max visits based on mode
-      let minVisitsPerDay: number;
-      let maxVisitsPerDay: number;
-      
-      if (calculationMode === 'time-based') {
-        // Calculate based on time constraints
-        const maxWorkingMinutes = maxWorkingHoursPerDay * 60;
-        
-        // Get average time per visit from outlets
-        const avgTimePerVisit = outlets.length > 0
-          ? outlets.reduce((sum, o) => sum + (o.timePerVisit || 30), 0) / outlets.length
-          : maxTimePerOutlet;
-        
-        // Estimate average travel time between outlets (assume ~10 min avg travel)
-        const avgTravelTime = 10;
-        
-        // Calculate max outlets: working hours / (time per outlet + travel time)
-        const effectiveTimePerOutlet = Math.min(avgTimePerVisit, maxTimePerOutlet) + avgTravelTime;
-        const calculatedMax = Math.floor(maxWorkingMinutes / effectiveTimePerOutlet);
-        
-        // Guard against zero or negative values - fall back to reasonable defaults
-        maxVisitsPerDay = Math.max(5, calculatedMax); // At least 5 outlets per day
-        minVisitsPerDay = Math.max(1, Math.floor(maxVisitsPerDay * 0.8));
-        
-        // Ensure min < max
-        if (minVisitsPerDay >= maxVisitsPerDay) {
-          minVisitsPerDay = Math.max(1, maxVisitsPerDay - 2);
-        }
-        
-        console.log(`Time-based calculation: ${maxWorkingMinutes} min / ${effectiveTimePerOutlet.toFixed(1)} min per outlet = ${maxVisitsPerDay} max outlets/day (min=${minVisitsPerDay})`);
-      } else {
-        // Manual mode - use provided values
-        minVisitsPerDay = Math.max(1, req.body.minVisitsPerDay || 25);
-        maxVisitsPerDay = Math.max(minVisitsPerDay + 1, req.body.maxVisitsPerDay || 27);
-      }
+      const calculationMode = 'manual'; // time-based mode removed: min/max visits per day IS the capacity input, time-per-visit was a redundant second way to express it
+
+      // Daily visit targets come directly from the user
+      const minVisitsPerDay = Math.max(1, req.body.minVisitsPerDay || 25);
+      const maxVisitsPerDay = Math.max(minVisitsPerDay + 1, req.body.maxVisitsPerDay || 27);
       
       console.log(`Optimization using ${calculationMode} mode: min=${minVisitsPerDay}, max=${maxVisitsPerDay} visits/day`);
-      
+
+      // minVisitsPerDay/maxVisitsPerDay mean ACTUAL visits a rep makes each
+      // day. A day-zone is visited on its day-of-week every week, but only
+      // the outlets due that week show up (VF4 every week, VF2 alternating
+      // weeks, VF1 one week in four) - so a zone must hold MORE unique
+      // outlets than the daily target for the due share to hit it. Scale
+      // zone capacity by the dataset's average weekly-visit fraction
+      // (vf/4 per outlet: VF4=1.0, VF2=0.5, VF1=0.25). Example: all-VF2
+      // data with a 20-25 target -> zones of 40-50 outlets, whose
+      // alternating halves are 20-25 actual visits.
+      const totalMonthlyVisits = outlets.reduce((s, o) => s + (o.visitFrequency ?? 1), 0);
+      const avgWeeklyVisitFraction = Math.min(1, Math.max(0.25, totalMonthlyVisits / 4 / outlets.length));
+      const zoneMinOutlets = Math.max(1, Math.round(minVisitsPerDay / avgWeeklyVisitFraction));
+      const zoneMaxOutlets = Math.max(zoneMinOutlets + 1, Math.round(maxVisitsPerDay / avgWeeklyVisitFraction));
+      console.log(`Visit-frequency-aware zone sizing: avg weekly fraction ${avgWeeklyVisitFraction.toFixed(2)} -> zones of ${zoneMinOutlets}-${zoneMaxOutlets} outlets for ${minVisitsPerDay}-${maxVisitsPerDay} actual visits/day`);
+
       // Calculate required reps based on daily visit constraints
-      // Formula: Weekly visits / (working days * max visits per day)
+      // Formula: actual weekly visits / (working days * max visits per day)
+      const actualWeeklyVisits = Math.ceil(totalMonthlyVisits / 4);
       const maxWeeklyCapacityPerRep = workingDaysPerWeek * maxVisitsPerDay;
-      const requiredReps = Math.ceil(totalWeeklyVisits / maxWeeklyCapacityPerRep);
-      
+      const requiredReps = Math.ceil(actualWeeklyVisits / maxWeeklyCapacityPerRep);
+
       // Ensure we don't go below minimum daily visits requirement
       const minWeeklyCapacityPerRep = workingDaysPerWeek * minVisitsPerDay;
-      
+
       // Use the calculated required reps (initial estimate)
       let finalRequiredReps = Math.max(1, requiredReps); // At least 1 rep needed
 
       await emitProgress(10, 'Preparing', 'Clearing existing data...');
-      
+
       // Clear existing reps first
       const existingReps = await storage.getReps();
       for (const rep of existingReps) {
@@ -4253,31 +4367,49 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       await emitProgress(15, 'Clustering', `Analyzing ${outlets.length} outlets for geographic patterns...`);
-      
+
       // Create territories based on geographic clusters (each cluster = one zone)
       console.log(`Creating zones based on geographic clustering for ${outlets.length} outlets`);
-      
-      // Calculate target zones based on the required rep count and user's max visits per day
+
+      // Calculate target zones based on the required rep count and the
+      // VF-adjusted zone capacity
       const zonesPerRep = workingDaysPerWeek; // One zone per working day
       const targetZones = Math.max(
-        Math.ceil(outlets.length / maxVisitsPerDay), // At least one zone per maxVisitsPerDay outlets
+        Math.ceil(outlets.length / zoneMaxOutlets), // At least one zone per zoneMaxOutlets outlets
         finalRequiredReps * zonesPerRep // Or enough zones for all reps
       );
-      
+
       await emitProgress(20, 'Clustering', 'Running advanced geographic clustering algorithm...');
-      
+
       // Perform advanced clustering using JavaScript implementation (HDBSCAN + VRP + Capacitated K-Means)
       // Pass progress callback to allow SSE updates during long-running clustering
-      const advancedClusters = await performAdvancedClusteringJS(outlets, targetZones, minVisitsPerDay, maxVisitsPerDay, emitProgress);
-      const clusters = advancedClusters.map(cluster => ({
+      const advancedClusters = await performAdvancedClusteringJS(outlets, targetZones, zoneMinOutlets, zoneMaxOutlets, emitProgress);
+      const rawClusters = advancedClusters.map(cluster => ({
         id: cluster.id,
         centroid: cluster.centroid,
         outlets: cluster.outlets
       }));
+      // Enforce a hard geographic-tightness cap: a "zone" whose outlets are
+      // spread more than maxZoneRadiusKm apart isn't a real day-route no
+      // matter how well its outlet count matches minVisitsPerDay/maxVisitsPerDay,
+      // so oversized zones get split into tighter sub-zones here.
+      const maxZoneRadiusKm = req.body.maxZoneRadiusKm || 15;
+      const splitClusters = splitOversizedZones(rawClusters, maxZoneRadiusKm);
+      // Then merge the under-target zones splitting left behind, so days
+      // still carry the requested visit load wherever geography allows.
+      const clusters = mergeUndersizedZones(splitClusters, zoneMinOutlets, zoneMaxOutlets, maxZoneRadiusKm);
       const actualZoneCount = clusters.length;
-      
+      console.log(`Zones: ${rawClusters.length} raw -> ${splitClusters.length} after split -> ${actualZoneCount} after merge`);
+
+      // In road mode with an OSRM server configured, resolve zone-centroid
+      // pairs to true road distances before assignment decisions run.
+      if (distanceMode === 'road' && process.env.OSRM_URL) {
+        const filled = await prefetchRoadMatrix(clusters.map(c => ({ lat: c.centroid.lat, lng: c.centroid.lng })));
+        console.log(`OSRM road matrix: ${filled} zone pairs cached`);
+      }
+
       await emitProgress(45, 'Zones Created', `Created ${actualZoneCount} geographic zones`);
-      console.log(`Created ${actualZoneCount} geographic zones`);
+      console.log(`Created ${actualZoneCount} geographic zones (max ${maxZoneRadiusKm}km radius)`);
       
       // First, assign outlets to their zones
       for (let i = 0; i < actualZoneCount; i++) {
@@ -4300,13 +4432,40 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
       
-      // Calculate how many reps we need based on actual zones created
-      // Each rep visits 10 zones (5 per week * 2 weeks)
-      // So we need zones/10 reps (rounded up)
-      const requiredRepCount = Math.ceil(actualZoneCount / 10);
-      
+      // How many reps the work actually needs.
+      //
+      // This used to be ceil(zoneCount / workingDays), which made headcount a
+      // side effect of how finely the geographic splitter happened to cut the
+      // map. Tightening the radius cap created more zones, and more zones
+      // silently "required" more reps: real Erbil data (2,302 visits/month)
+      // asked for 10 reps to do 4 reps' work, then spread it so thinly that
+      // days came out with one outlet on them.
+      //
+      // Headcount follows demand instead: total monthly visits divided by what
+      // one rep can do in a month. Zones are then distributed across that many
+      // reps, however many zones there happen to be.
+      const dayslotsPerRep = workingDaysPerWeek * 4; // working days in a 4-week cycle
+
+      // Fewest reps that can carry the load without breaking maxVisitsPerDay,
+      // and the most that can be kept busy at minVisitsPerDay.
+      const fewestReps = Math.max(1, Math.ceil(totalMonthlyVisits / (dayslotsPerRep * maxVisitsPerDay)));
+      const mostReps = Math.max(1, Math.floor(totalMonthlyVisits / (dayslotsPerRep * minVisitsPerDay)));
+
+      // Aim for the middle of the requested range so a normal day sits
+      // comfortably inside it rather than pinned to either end, then clamp
+      // into the feasible band.
+      const midTargetPerDay = (minVisitsPerDay + maxVisitsPerDay) / 2;
+      const idealReps = Math.round(totalMonthlyVisits / (dayslotsPerRep * midTargetPerDay));
+      const requiredRepCount = Math.min(Math.max(idealReps, fewestReps), Math.max(fewestReps, mostReps));
+
+      const projectedVisitsPerDay = totalMonthlyVisits / (requiredRepCount * dayslotsPerRep);
+      console.log(`Headcount from demand: ${totalMonthlyVisits} monthly visits, ${dayslotsPerRep} day-slots/rep -> ${requiredRepCount} reps (~${projectedVisitsPerDay.toFixed(1)} visits/day each; feasible band ${fewestReps}-${mostReps})`);
+      if (projectedVisitsPerDay < minVisitsPerDay) {
+        console.warn(`[headcount] ${projectedVisitsPerDay.toFixed(1)} visits/day is below the ${minVisitsPerDay} minimum - this dataset cannot fill ${requiredRepCount} reps at ${workingDaysPerWeek} days/week.`);
+      }
+
       await emitProgress(55, 'Assigning', `Assigning ${outlets.length} outlets to ${actualZoneCount} zones...`);
-      console.log(`Need ${requiredRepCount} reps to cover ${actualZoneCount} zones (10 zones per rep)`);
+      console.log(`Need ${requiredRepCount} reps to cover ${actualZoneCount} zones (${zonesPerRep} zones per rep)`);
       
       // Check if working days have changed for existing optimization
       const existingSchedules = await storage.getSchedules();
@@ -4333,7 +4492,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       
       // Assign zones to reps based on geographic proximity
-      const zoneAssignments = assignZonesToReps(clusters, allReps, zonesPerRep);
+      // Balanced assignment: equalize monthly-visit workload across reps
+      // (within the tolerance band) while keeping territories compact.
+      const balanceTolerance = typeof req.body.balanceTolerancePct === 'number'
+        ? Math.min(0.5, Math.max(0.01, req.body.balanceTolerancePct / 100))
+        : 0.10;
+      // Territories by recursive bisection of the whole market.
+      //
+      // Assigning whole zones to the nearest rep, then trading outlets to even
+      // the load, produced territories that overlapped badly: 36% of outlets
+      // sat closer to another rep's centre than their own, and territories
+      // 43km wide crossed over each other. Bisection cuts the market with
+      // straight lines instead, so territories tile it without overlapping,
+      // and the balance comes from where each cut falls.
+      const monthlyVisitsOf = (o: Outlet) => o.visitFrequency ?? 1;
+      const repOutletGroups = swapForCompactness(
+        growBalancedRegions(outlets, allReps.length, monthlyVisitsOf),
+        monthlyVisitsOf,
+      );
+      const zoneAssignments = assignZonesToRepsBalanced(clusters, allReps, balanceTolerance);
+      {
+        const visitsOf = (g: Outlet[]) => g.reduce((sum, o) => sum + (o.visitFrequency ?? 1), 0);
+        const loads = repOutletGroups.map(visitsOf);
+        const mean = loads.reduce((a, b) => a + b, 0) / (loads.length || 1);
+        const spread = mean > 0 ? ((Math.max(...loads) - Math.min(...loads)) / mean) * 100 : 0;
+        console.log(`[balance] monthly visits per rep: ${loads.join(', ')} (spread ${spread.toFixed(1)}% of mean, tolerance ${(balanceTolerance * 100).toFixed(0)}%)`);
+      }
       
       await emitProgress(70, 'Scheduling', `Generating schedules for ${allReps.length} reps...`);
       
@@ -4342,14 +4526,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
       for (let repIndex = 0; repIndex < allReps.length; repIndex++) {
         const rep = allReps[repIndex];
         const repZones = zoneAssignments[repIndex] || [];
-        
-        if (repZones.length > 0) {
-          console.log(`${rep.name} will cover zones: ${repZones.map(z => z.id + 1).join(', ')}`);
-          
-          // Generate schedule where rep visits one complete zone per day
-          const repSchedules = generateZoneBasedSchedules(rep, repZones, clusters);
+        const repOutlets = repOutletGroups[repIndex] || [];
+
+        if (repOutlets.length > 0) {
+          console.log(`${rep.name} will cover zones: ${repZones.map(z => z.id + 1).join(', ')} (${repOutlets.length} outlets after balancing)`);
+
+          // Record ownership: repId on the outlet is the source of truth
+          // that reassignment and targeted re-optimization rely on.
+          for (const outlet of repOutlets) {
+            await storage.updateOutlet(outlet.id, { repId: rep.id });
+          }
+
+          // Schedule from the rep's balanced outlet set. Passing repZones here
+          // would re-introduce the pre-balance membership and undo the boundary
+          // trades made just above.
+          const repSchedules = buildAnchorAwareSchedulesFromZones(rep, [repOutlets]);
           console.log(`Generated ${repSchedules.length} schedules for ${rep.name}`);
-          
+
           for (const schedule of repSchedules) {
             await storage.createSchedule(schedule);
           }
@@ -4431,21 +4624,83 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const updatedOutlets = await storage.getOutlets();
       const updatedReps = await storage.getReps();
 
-      if (progressId) progressManager.complete(progressId);
-      
-      // Increment trial optimization run count if in trial mode
-      if (trialId && !isSuperuser) {
-        await storage.incrementOptimizationRuns(trialId);
+      // Territory balance report: how even the monthly-visit workload came
+      // out per rep, against the ±tolerance band the user asked for.
+      const balanceTarget = zoneAssignments.reduce(
+        (s, zones) => s + zones.reduce((zs, z) => zs + zoneMonthlyVisits(z), 0), 0
+      ) / Math.max(1, allReps.length);
+      const perRepBalance = allReps.map((rep, i) => {
+        const monthlyVisits = (zoneAssignments[i] || []).reduce((s, z) => s + zoneMonthlyVisits(z), 0);
+        return {
+          name: rep.name,
+          code: rep.code,
+          monthlyVisits,
+          uniqueOutlets: (zoneAssignments[i] || []).reduce((s, z) => s + z.outlets.length, 0),
+          deviationPct: balanceTarget > 0
+            ? Math.round(((monthlyVisits - balanceTarget) / balanceTarget) * 1000) / 10
+            : 0
+        };
+      });
+      const maxDeviationPct = perRepBalance.reduce((m, r) => Math.max(m, Math.abs(r.deviationPct)), 0);
+
+      // Coverage-worthiness suggestions (advisory only - the user decides).
+      const weightMode: CoverageWeightMode =
+        req.body.weightMode === 'value' || req.body.weightMode === 'vf' ? req.body.weightMode : 'isolation';
+      const coverage = analyzeCoverageWorthiness(clusters, weightMode);
+
+      // Every optimization is captured as a scenario automatically. A run
+      // replaces the live plan, so without this the previous plan would be
+      // gone for good - capturing means you can always compare against it
+      // and restore it from the Scenarios page.
+      let capturedScenarioId: string | null = null;
+      try {
+        capturedScenarioId = await captureCurrentPlanAsScenario({
+          workingDaysPerWeek, minVisitsPerDay, maxVisitsPerDay,
+          maxZoneRadiusKm, distanceMode, weightMode,
+        });
+      } catch (err) {
+        console.error("[scenarios] auto-capture failed:", (err as Error).message);
       }
-      
+
+      if (progressId) progressManager.complete(progressId);
+
       res.json({
         success: true,
+        capturedScenarioId,
         requiredReps: finalRequiredReps,
         assignedOutlets: updatedOutlets.filter(o => o.repId !== null).length,
+        excludedOutlets: excludedOutletIds.length,
+        // Far-flung records held out of the routes, for the review panel.
+        outletsNeedingReview: includeGeoOutliers ? 0 : outlierIds.size,
+        // When the data simply cannot fill the requested week, say so instead
+        // of quietly emitting near-empty days. A rep with 1-2 calls a day is a
+        // staffing question, not a routing result.
+        capacityWarning: projectedVisitsPerDay < minVisitsPerDay
+          ? {
+              projectedVisitsPerDay: Math.round(projectedVisitsPerDay * 10) / 10,
+              minVisitsPerDay,
+              // Days per week this volume can actually keep busy at the minimum.
+              supportedWorkingDays: Math.max(1, Math.floor(totalMonthlyVisits / (requiredRepCount * 4 * minVisitsPerDay))),
+              message: `${totalMonthlyVisits} monthly visits across ${requiredRepCount} rep(s) is about ${projectedVisitsPerDay.toFixed(1)} visits/day - below the ${minVisitsPerDay}/day minimum. There is not enough work here to fill ${workingDaysPerWeek} days a week.`,
+            }
+          : null,
         totalWeeklyVisits,
         maxWeeklyCapacityPerRep,
         minWeeklyCapacityPerRep,
         roleSchedulesGenerated: totalRoleSchedules,
+        territoryBalance: {
+          metric: 'monthlyVisits',
+          targetPerRep: Math.round(balanceTarget),
+          tolerancePct: Math.round(balanceTolerance * 100),
+          maxDeviationPct,
+          withinTolerance: maxDeviationPct <= balanceTolerance * 100,
+          perRep: perRepBalance
+        },
+        coverageSuggestions: coverage.suggestions,
+        coverageWeightModeUsed: coverage.weightModeUsed,
+        geoOutliers: detectedOutliers,
+        geoOutlierRadiusKm,
+        distanceMode,
         calculation: {
           totalOutlets: outlets.length,
           totalWeeklyVisits,
@@ -4454,7 +4709,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           maxVisitsPerDay,
           estimatedReps: finalRequiredReps
         },
-        message: `Optimization completed. ${finalRequiredReps} routes created for ${totalWeeklyVisits} weekly visits (${minVisitsPerDay}-${maxVisitsPerDay} visits/day). ${outlets.length} outlets assigned.${totalRoleSchedules > 0 ? ` ${totalRoleSchedules} role schedules generated.` : ''}`
+        message: `Optimization completed. ${finalRequiredReps} routes created for ${totalWeeklyVisits} weekly visits (${minVisitsPerDay}-${maxVisitsPerDay} visits/day). ${outlets.length} outlets assigned.${excludedOutletIds.length > 0 ? ` ${excludedOutletIds.length} outlets excluded per user selection.` : ''}${totalRoleSchedules > 0 ? ` ${totalRoleSchedules} role schedules generated.` : ''}`
       });
 
     } catch (error) {
@@ -4465,6 +4720,310 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Optimization runs
+  // --- Scenarios: compare plans before committing to one ---
+  //
+  // An optimization run used to overwrite the previous plan with no way to
+  // compare them, so questions like "is 6 days better than 5?" or "what does
+  // tighter compactness actually cost?" could not be answered from the app.
+  // A scenario captures the plan currently in memory - its parameters, its
+  // quality KPIs, and a full snapshot of the assignment - so runs can be
+  // compared side by side and any one of them restored as the live plan.
+  interface ScenarioSnapshot {
+    outlets: { id: string; repId: string | null; territory: string | null; cluster: number | null }[];
+    reps: Rep[];
+    schedules: Schedule[];
+  }
+  interface Scenario {
+    id: string;
+    name: string;
+    createdAt: string;
+    params: Record<string, any>;
+    kpis: Record<string, number>;
+    snapshot: ScenarioSnapshot;
+  }
+  // Scenarios persist across restarts, but NOT inside the main storage
+  // snapshot: that file is rewritten in full on every change, and a single
+  // scenario snapshot of a 7,878-outlet plan is ~2.5MB - ten of them would
+  // turn a 4MB write into a 29MB write on every edit. Instead the index
+  // (name, params, KPIs - a couple of KB) lives in one small file, and each
+  // scenario's heavy snapshot sits in its own file, written once at capture
+  // and read only when the user applies it.
+  const SCENARIO_DIR = path.join(process.env.DATA_DIR || path.join(process.cwd(), "data"), "scenarios");
+  const SCENARIO_INDEX = path.join(SCENARIO_DIR, "index.json");
+  type ScenarioSummary = Omit<Scenario, "snapshot">;
+  let scenarioIndex: ScenarioSummary[] = [];
+
+  const loadScenarioIndex = () => {
+    try {
+      if (fs.existsSync(SCENARIO_INDEX)) {
+        scenarioIndex = JSON.parse(fs.readFileSync(SCENARIO_INDEX, "utf-8"));
+        console.log(`[scenarios] Restored ${scenarioIndex.length} scenario(s)`);
+      }
+    } catch (err) {
+      console.error("[scenarios] Failed to read index:", (err as Error).message);
+      scenarioIndex = [];
+    }
+  };
+  const saveScenarioIndex = () => {
+    try {
+      fs.mkdirSync(SCENARIO_DIR, { recursive: true });
+      const tmp = SCENARIO_INDEX + ".tmp";
+      fs.writeFileSync(tmp, JSON.stringify(scenarioIndex));
+      fs.renameSync(tmp, SCENARIO_INDEX);
+    } catch (err) {
+      console.error("[scenarios] Failed to write index:", (err as Error).message);
+    }
+  };
+  const scenarioFile = (id: string) => path.join(SCENARIO_DIR, `${id}.json`);
+  const readScenarioSnapshot = (id: string): ScenarioSnapshot | null => {
+    try {
+      return JSON.parse(fs.readFileSync(scenarioFile(id), "utf-8"));
+    } catch {
+      return null;
+    }
+  };
+  const writeScenarioSnapshot = (id: string, snapshot: ScenarioSnapshot) => {
+    fs.mkdirSync(SCENARIO_DIR, { recursive: true });
+    const tmp = scenarioFile(id) + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify(snapshot));
+    fs.renameSync(tmp, scenarioFile(id));
+  };
+  const deleteScenarioSnapshot = (id: string) => {
+    try { fs.unlinkSync(scenarioFile(id)); } catch { /* already gone */ }
+  };
+  loadScenarioIndex();
+
+  // Captures whatever plan is currently in storage as a scenario and returns
+  // its id. Used by /api/optimize so no run is ever lost.
+  async function captureCurrentPlanAsScenario(params: Record<string, any>, name?: string): Promise<string | null> {
+    const allSchedules = await storage.getSchedules();
+    if (allSchedules.length === 0) return null;
+    const allOutlets = await storage.getOutlets();
+    const id = randomUUID();
+    const label = name || [
+      `${params.workingDaysPerWeek}d`,
+      `${params.minVisitsPerDay}-${params.maxVisitsPerDay}/day`,
+      `${params.maxZoneRadiusKm ?? 15}km`,
+      params.distanceMode === 'road' ? 'road' : null,
+    ].filter(Boolean).join(' · ');
+    const summary: ScenarioSummary = {
+      id,
+      name: label.slice(0, 80),
+      createdAt: new Date().toISOString(),
+      params,
+      kpis: await computePlanKPIs(),
+    };
+    writeScenarioSnapshot(id, {
+      outlets: allOutlets.map(o => ({ id: o.id, repId: o.repId, territory: o.territory, cluster: o.cluster })),
+      reps: await storage.getReps(),
+      schedules: allSchedules,
+    });
+    scenarioIndex.push(summary);
+    while (scenarioIndex.length > 10) {
+      const dropped = scenarioIndex.shift();
+      if (dropped) deleteScenarioSnapshot(dropped.id);
+    }
+    saveScenarioIndex();
+    return id;
+  }
+
+  // Solution-quality KPIs for the plan currently in storage. These are the
+  // numbers a planner actually judges a route plan by.
+  async function computePlanKPIs() {
+    const allOutlets = await storage.getOutlets();
+    const allReps = await storage.getReps();
+    const allSchedules = await storage.getSchedules();
+    const byId = new Map(allOutlets.map(o => [o.id, o]));
+
+    const active = allOutlets.filter(o => o.territory !== 'Excluded');
+    const covered = new Set<string>();
+    for (const s of allSchedules) for (const id of (s.outletIds as string[])) covered.add(id);
+    const coveredActive = active.filter(o => covered.has(o.id)).length;
+
+    const daySizes: number[] = [];
+    const dayDiameters: number[] = [];
+    let totalDriveKm = 0;
+    for (const s of allSchedules) {
+      const pts = (s.outletIds as string[]).map(id => byId.get(id)).filter(Boolean) as Outlet[];
+      daySizes.push(pts.length);
+      totalDriveKm += s.totalDistance || 0;
+      if (pts.length >= 2) {
+        let maxD = 0;
+        for (let i = 0; i < pts.length; i++) {
+          for (let j = i + 1; j < pts.length; j++) {
+            const d = haversineKm(pts[i].latitude, pts[i].longitude, pts[j].latitude, pts[j].longitude);
+            if (d > maxD) maxD = d;
+          }
+        }
+        dayDiameters.push(maxD);
+      }
+    }
+    const median = (arr: number[]) => {
+      if (arr.length === 0) return 0;
+      const s = [...arr].sort((a, b) => a - b);
+      return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
+    };
+
+    // Workload balance across reps, by monthly visits
+    const loadByRep = new Map<string, number>();
+    for (const o of active) {
+      if (!o.repId) continue;
+      loadByRep.set(o.repId, (loadByRep.get(o.repId) || 0) + (o.visitFrequency ?? 1));
+    }
+    const loads = Array.from(loadByRep.values());
+    const avgLoad = loads.length > 0 ? loads.reduce((a, b) => a + b, 0) / loads.length : 0;
+    const maxDeviationPct = avgLoad > 0 ? Math.max(...loads.map(l => Math.abs(l - avgLoad) / avgLoad)) * 100 : 0;
+
+    const minTarget = allReps.length > 0 ? Math.min(...allReps.map(r => r.minDailyVisits)) : 0;
+    const maxTarget = allReps.length > 0 ? Math.max(...allReps.map(r => r.maxDailyVisits)) : 0;
+    const inBand = daySizes.filter(n => n >= minTarget && n <= maxTarget).length;
+
+    return {
+      outlets: allOutlets.length,
+      activeOutlets: active.length,
+      coveragePct: active.length > 0 ? Math.round((coveredActive / active.length) * 1000) / 10 : 0,
+      unscheduledOutlets: active.length - coveredActive,
+      reps: allReps.length,
+      dayRoutes: allSchedules.length,
+      medianVisitsPerDay: Math.round(median(daySizes)),
+      avgVisitsPerDay: daySizes.length > 0 ? Math.round((daySizes.reduce((a, b) => a + b, 0) / daySizes.length) * 10) / 10 : 0,
+      daysInTargetBandPct: daySizes.length > 0 ? Math.round((inBand / daySizes.length) * 1000) / 10 : 0,
+      medianRouteDiameterKm: Math.round(median(dayDiameters) * 100) / 100,
+      maxRouteDiameterKm: dayDiameters.length > 0 ? Math.round(Math.max(...dayDiameters) * 10) / 10 : 0,
+      routesOver15kmPct: dayDiameters.length > 0 ? Math.round((dayDiameters.filter(d => d > 15).length / dayDiameters.length) * 1000) / 10 : 0,
+      workloadDeviationPct: Math.round(maxDeviationPct * 10) / 10,
+      totalDriveKmPerCycle: Math.round(totalDriveKm),
+      excludedOutlets: allOutlets.length - active.length,
+    };
+  }
+
+  app.get("/api/plan/kpis", async (_req, res) => {
+    try {
+      res.json(await computePlanKPIs());
+    } catch (error) {
+      console.error("KPI computation error:", error);
+      res.status(500).json({ message: "Failed to compute plan KPIs" });
+    }
+  });
+
+  app.get("/api/scenarios", async (_req, res) => {
+    res.json(scenarioIndex);
+  });
+
+  // Capture the plan currently in memory as a named scenario.
+  app.post("/api/scenarios/capture", async (req, res) => {
+    try {
+      const { name, params } = req.body as { name?: string; params?: Record<string, any> };
+      const allSchedules = await storage.getSchedules();
+      if (allSchedules.length === 0) {
+        return res.status(400).json({ message: "No plan to capture - run an optimization first." });
+      }
+      const allOutlets = await storage.getOutlets();
+      const id = randomUUID();
+      const summary: ScenarioSummary = {
+        id,
+        name: (name || `Scenario ${scenarioIndex.length + 1}`).slice(0, 80),
+        createdAt: new Date().toISOString(),
+        params: params || {},
+        kpis: await computePlanKPIs(),
+      };
+      writeScenarioSnapshot(id, {
+        outlets: allOutlets.map(o => ({ id: o.id, repId: o.repId, territory: o.territory, cluster: o.cluster })),
+        reps: await storage.getReps(),
+        schedules: allSchedules,
+      });
+      scenarioIndex.push(summary);
+      // Keep it bounded - the oldest scenario and its snapshot drop off.
+      while (scenarioIndex.length > 10) {
+        const dropped = scenarioIndex.shift();
+        if (dropped) deleteScenarioSnapshot(dropped.id);
+      }
+      saveScenarioIndex();
+      res.status(201).json(summary);
+    } catch (error) {
+      console.error("Scenario capture error:", error);
+      res.status(500).json({ message: "Failed to capture scenario" });
+    }
+  });
+
+  // Restore a captured scenario as the live plan.
+  app.post("/api/scenarios/:id/apply", async (req, res) => {
+    try {
+      const scenario = scenarioIndex.find(s => s.id === req.params.id);
+      if (!scenario) return res.status(404).json({ message: "Scenario not found" });
+      const snapshot = readScenarioSnapshot(scenario.id);
+      if (!snapshot) return res.status(410).json({ message: "Scenario snapshot is no longer available" });
+
+      for (const rep of await storage.getReps()) await storage.deleteRep(rep.id);
+      await storage.clearSchedules();
+
+      for (const rep of snapshot.reps) {
+        await storage.createRepWithId(rep);
+      }
+      for (const o of snapshot.outlets) {
+        await storage.updateOutlet(o.id, { repId: o.repId, territory: o.territory, cluster: o.cluster });
+      }
+      await storage.createSchedules(snapshot.schedules.map(s => ({
+        repId: s.repId, week: s.week, dayOfWeek: s.dayOfWeek,
+        outletIds: s.outletIds as string[], routeOrder: s.routeOrder as string[],
+        totalDistance: s.totalDistance ?? undefined, estimatedDuration: s.estimatedDuration ?? undefined,
+      })));
+
+      res.json({ success: true, applied: scenario.name, kpis: scenario.kpis });
+    } catch (error) {
+      console.error("Scenario apply error:", error);
+      res.status(500).json({ message: "Failed to apply scenario" });
+    }
+  });
+
+  // Rename a scenario (auto-captured runs get a parameter-derived name).
+  app.patch("/api/scenarios/:id", async (req, res) => {
+    const scenario = scenarioIndex.find(s => s.id === req.params.id);
+    if (!scenario) return res.status(404).json({ message: "Scenario not found" });
+    const { name } = req.body as { name?: string };
+    if (typeof name === "string" && name.trim()) {
+      scenario.name = name.trim().slice(0, 80);
+      saveScenarioIndex();
+    }
+    res.json(scenario);
+  });
+
+  app.delete("/api/scenarios/:id", async (req, res) => {
+    const idx = scenarioIndex.findIndex(s => s.id === req.params.id);
+    if (idx < 0) return res.status(404).json({ message: "Scenario not found" });
+    scenarioIndex.splice(idx, 1);
+    deleteScenarioSnapshot(req.params.id);
+    saveScenarioIndex();
+    res.json({ success: true });
+  });
+
+  // Full reset: wipe every trace of the current project so the next optimization
+  // starts from a blank dashboard. Lives here (not next to /api/clear) because it
+  // needs closure access to the scenario index.
+  // Saved scenarios are kept unless the caller explicitly asks for them to go, so
+  // a fresh upload can still be compared against what came before.
+  app.post("/api/reset", async (req, res) => {
+    try {
+      const includeScenarios = req.body?.includeScenarios === true;
+      let scenariosRemoved = 0;
+
+      await storage.clearAll();
+
+      if (includeScenarios) {
+        scenariosRemoved = scenarioIndex.length;
+        for (const scenario of scenarioIndex) deleteScenarioSnapshot(scenario.id);
+        scenarioIndex = [];
+        saveScenarioIndex();
+      }
+
+      console.log(`[reset] Cleared all plan data${includeScenarios ? ` and ${scenariosRemoved} scenario(s)` : ""}`);
+      res.json({ success: true, scenariosRemoved });
+    } catch (error) {
+      console.error("Failed to reset:", error);
+      res.status(500).json({ message: "Failed to reset" });
+    }
+  });
+
   app.get("/api/optimization-runs", async (_req, res) => {
     try {
       const runs = await storage.getOptimizationRuns();
@@ -4800,173 +5359,297 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({ message: "Failed to export routes" });
     }
   });
+  async function regenerateSchedulesForReps(repIds: string[]) {
+    const uniqueRepIds = Array.from(new Set(repIds.filter(Boolean)));
+    const allReps = await storage.getReps();
+    const allOutlets = await storage.getOutlets();
+    const allHierarchies = await storage.getRoleHierarchies();
+    const summary: { repId: string; name: string; outlets: number; monthlyVisits: number; schedules: number; overCapacity: boolean }[] = [];
 
-  // ============= VEHICLE MANAGEMENT ROUTES =============
+    for (const repId of uniqueRepIds) {
+      const rep = allReps.find(r => r.id === repId);
+      if (!rep) continue;
 
-  // Get all vehicles
-  app.get("/api/vehicles", async (_req, res) => {
-    try {
-      const vehicles = await storage.getVehicles();
-      res.json(vehicles);
-    } catch (error) {
-      res.status(500).json({ message: "Failed to fetch vehicles" });
-    }
-  });
+      await storage.deleteSchedulesByRepId(rep.id);
+      const repOutlets = allOutlets.filter(o => o.repId === rep.id && o.territory !== 'Excluded');
 
-  // Get single vehicle
-  app.get("/api/vehicles/:id", async (req, res) => {
-    try {
-      const vehicle = await storage.getVehicle(req.params.id);
-      if (!vehicle) {
-        return res.status(404).json({ message: "Vehicle not found" });
+      let created = 0;
+      if (repOutlets.length > 0) {
+        const byZone = new Map<string, Outlet[]>();
+        for (const o of repOutlets) {
+          const key = o.territory || 'unzoned';
+          if (!byZone.has(key)) byZone.set(key, []);
+          byZone.get(key)!.push(o);
+        }
+        const schedules = buildAnchorAwareSchedulesFromZones(rep, Array.from(byZone.values()));
+        for (const s of schedules) await storage.createSchedule(s);
+        created = schedules.length;
+
+        const repSchedules = await storage.getSchedulesByRepId(rep.id);
+        const repHierarchies = allHierarchies
+          .filter(h => h.repId === rep.id)
+          .filter(h => h.isActive && h.role !== 'rep' && h.role !== '_config');
+        if (repSchedules.length > 0 && repHierarchies.length > 0) {
+          await generateRoleSchedulesForRep(rep.id, repSchedules, repHierarchies);
+        }
+      } else {
+        await storage.deleteRoleSchedulesByRepId(rep.id);
       }
-      res.json(vehicle);
+
+      const monthlyVisits = repOutlets.reduce((s, o) => s + (o.visitFrequency ?? 1), 0);
+      const monthlyCapacity = (rep.workingDaysPerWeek || 5) * 4 * (rep.maxDailyVisits || 25);
+      summary.push({
+        repId: rep.id,
+        name: rep.name,
+        outlets: repOutlets.length,
+        monthlyVisits,
+        schedules: created,
+        overCapacity: monthlyVisits > monthlyCapacity
+      });
+    }
+    return summary;
+  }
+
+  // Reps whose schedules currently reference any of these outlets, plus the
+  // reps the outlets are owned by - both sides of any move.
+  async function repsAffectedByOutlets(outletIds: string[]): Promise<string[]> {
+    const idSet = new Set(outletIds);
+    const affected = new Set<string>();
+    const allOutlets = await storage.getOutlets();
+    for (const o of allOutlets) {
+      if (idSet.has(o.id) && o.repId) affected.add(o.repId);
+    }
+    const allSchedules = await storage.getSchedules();
+    for (const s of allSchedules) {
+      if ((s.outletIds as string[]).some(id => idSet.has(id))) affected.add(s.repId);
+    }
+    return Array.from(affected);
+  }
+
+  // Move outlets from their current rep(s) to another rep, then rework the
+  // affected reps' schedules automatically - the "assign outlets to other
+  // reps and the app re-optimizes" flow.
+  // Misfit detection: outlets that are probably assigned to the wrong rep.
+  // The metric is LOCAL adjacency - how far is this outlet from its own
+  // rep's nearest outlets vs another rep's nearest outlets - NOT distance
+  // to territory centroids: a territory spans several day-zones, so its
+  // centroid is far from legitimate edge outlets and flags a third of the
+  // universe as "wrong". Using the 3rd-nearest same-rep outlet makes the
+  // own-side distance robust against a single co-located stray. Pure
+  // analysis; fixing anything goes through the normal reassignment flow.
+  app.get("/api/reps/misfit-outlets", async (_req, res) => {
+    try {
+      const allReps = await storage.getReps();
+      const repName = new Map(allReps.map(r => [r.id, r.name]));
+      const allOutlets = (await storage.getOutlets())
+        .filter(o => o.repId && o.territory !== 'Excluded' && o.geoStatus !== 'offset');
+
+      // Spatial grid (~2.2km cells) for neighbor lookups
+      const CELL = 0.02;
+      const grid = new Map<string, typeof allOutlets>();
+      const keyOf = (lat: number, lng: number) => `${Math.floor(lat / CELL)}:${Math.floor(lng / CELL)}`;
+      for (const o of allOutlets) {
+        const k = keyOf(o.latitude, o.longitude);
+        if (!grid.has(k)) grid.set(k, []);
+        grid.get(k)!.push(o);
+      }
+
+      const misfits: {
+        outletId: string; name: string; latitude: number; longitude: number;
+        currentRepId: string; currentRepName: string; distCurrentKm: number;
+        suggestedRepId: string; suggestedRepName: string; distSuggestedKm: number;
+        savingsKm: number;
+      }[] = [];
+
+      const MAX_RING = 5; // ~11km search radius
+      for (const o of allOutlets) {
+        const cy = Math.floor(o.latitude / CELL);
+        const cx = Math.floor(o.longitude / CELL);
+
+        const ownDists: number[] = [];
+        const bestOther = new Map<string, number>();
+        for (let ring = 0; ring <= MAX_RING; ring++) {
+          for (let dy = -ring; dy <= ring; dy++) {
+            for (let dx = -ring; dx <= ring; dx++) {
+              if (Math.max(Math.abs(dy), Math.abs(dx)) !== ring) continue; // ring shell only
+              const cell = grid.get(`${cy + dy}:${cx + dx}`);
+              if (!cell) continue;
+              for (const n of cell) {
+                if (n.id === o.id) continue;
+                const d = haversineKm(o.latitude, o.longitude, n.latitude, n.longitude);
+                if (n.repId === o.repId) ownDists.push(d);
+                else {
+                  const cur = bestOther.get(n.repId!);
+                  if (cur === undefined || d < cur) bestOther.set(n.repId!, d);
+                }
+              }
+            }
+          }
+          // Stop expanding once we have enough context on both sides
+          if (ownDists.length >= 3 && bestOther.size >= 1 && ring >= 1) break;
+        }
+
+        if (ownDists.length === 0 || bestOther.size === 0) continue;
+        ownDists.sort((a, b) => a - b);
+        const dOwn = ownDists[Math.min(2, ownDists.length - 1)]; // 3rd nearest (robust)
+
+        let suggestedRepId = '', dSuggested = Infinity;
+        for (const [rid, d] of Array.from(bestOther.entries())) {
+          if (d < dSuggested) { dSuggested = d; suggestedRepId = rid; }
+        }
+
+        // Flag when another rep's outlets are at most half as far AND the
+        // difference is operationally meaningful (>1km).
+        if (dSuggested < dOwn * 0.5 && dOwn - dSuggested > 1) {
+          misfits.push({
+            outletId: o.id, name: o.name, latitude: o.latitude, longitude: o.longitude,
+            currentRepId: o.repId!, currentRepName: repName.get(o.repId!) || '?',
+            distCurrentKm: Math.round(dOwn * 10) / 10,
+            suggestedRepId, suggestedRepName: repName.get(suggestedRepId) || '?',
+            distSuggestedKm: Math.round(dSuggested * 10) / 10,
+            savingsKm: Math.round((dOwn - dSuggested) * 10) / 10
+          });
+        }
+      }
+
+      misfits.sort((a, b) => b.savingsKm - a.savingsKm);
+      res.json({ misfits: misfits.slice(0, 100), total: misfits.length });
     } catch (error) {
-      res.status(500).json({ message: "Failed to fetch vehicle" });
+      console.error("Misfit analysis error:", error);
+      res.status(500).json({ message: "Failed to analyze misfit outlets" });
     }
   });
 
-  // Create vehicle
-  app.post("/api/vehicles", async (req: Request, res: Response) => {
+  app.post("/api/reps/reassign-outlets", async (req, res) => {
     try {
-      const trialId = req.trialContext?.trialId || req.cookies?.trial_session;
-      
-      if (trialId) {
-        const trial = await storage.getTrialAccount(trialId);
-        const usage = await storage.getTrialUsage(trialId);
-        
-        if (trial && usage) {
-          if (trial.status === TRIAL_STATUS.BLOCKED) {
-            return res.status(402).json({ 
-              message: "Trial account has been blocked. Please contact support.",
-              upgradeRequired: true
+      const { outletIds, toRepId } = req.body as { outletIds: string[]; toRepId: string };
+      if (!Array.isArray(outletIds) || outletIds.length === 0) {
+        return res.status(400).json({ message: "outletIds must be a non-empty array" });
+      }
+      const targetRep = await storage.getRep(toRepId);
+      if (!targetRep) {
+        return res.status(404).json({ message: "Target rep not found" });
+      }
+
+      const affectedBefore = await repsAffectedByOutlets(outletIds);
+
+      let moved = 0;
+      for (const id of outletIds) {
+        const outlet = await storage.updateOutlet(id, { repId: toRepId });
+        if (outlet) moved++;
+      }
+      if (moved === 0) {
+        return res.status(404).json({ message: "No matching outlets found" });
+      }
+
+      const affectedRepIds = Array.from(new Set([...affectedBefore, toRepId]));
+      const summary = await regenerateSchedulesForReps(affectedRepIds);
+
+      const warnings: string[] = [];
+      for (const s of summary) {
+        if (s.overCapacity) {
+          warnings.push(`${s.name} is now over monthly capacity (${s.monthlyVisits} visits).`);
+        }
+      }
+
+      // Capacity-aware cascade: when the move overloads a rep, suggest which
+      // of that rep's outlets could move on to nearby reps with spare
+      // capacity to restore balance. Suggestions only - applying them is
+      // another call to this same endpoint.
+      const suggestedCascade: {
+        outletId: string; outletName: string; monthlyVisits: number;
+        fromRep: string; toRepId: string; toRepName: string; distanceKm: number;
+      }[] = [];
+      const overloaded = summary.filter(s => s.overCapacity);
+      if (overloaded.length > 0) {
+        const allRepsNow = await storage.getReps();
+        const allOutletsNow = await storage.getOutlets();
+        const justMoved = new Set(outletIds);
+
+        const repLoad = new Map<string, number>();
+        const repOutletsMap = new Map<string, Outlet[]>();
+        for (const r of allRepsNow) {
+          const os = allOutletsNow.filter(o => o.repId === r.id && o.territory !== 'Excluded');
+          repOutletsMap.set(r.id, os);
+          repLoad.set(r.id, os.reduce((s, o) => s + (o.visitFrequency ?? 1), 0));
+        }
+        const capacityOf = (r: Rep) => (r.workingDaysPerWeek || 5) * 4 * (r.maxDailyVisits || 25);
+        const centroidOf = (os: Outlet[]) => ({
+          lat: os.reduce((s, o) => s + o.latitude, 0) / os.length,
+          lng: os.reduce((s, o) => s + o.longitude, 0) / os.length,
+        });
+
+        for (const ov of overloaded) {
+          const rep = allRepsNow.find(r => r.id === ov.repId);
+          if (!rep) continue;
+          let excess = ov.monthlyVisits - capacityOf(rep);
+          if (excess <= 0) continue;
+
+          const receivers = allRepsNow
+            .filter(r => r.id !== rep.id && (repOutletsMap.get(r.id)?.length ?? 0) > 0)
+            .map(r => ({ rep: r, spare: capacityOf(r) - (repLoad.get(r.id) ?? 0), centroid: centroidOf(repOutletsMap.get(r.id)!) }))
+            .filter(r => r.spare > 0);
+          if (receivers.length === 0) continue;
+
+          // Rank this rep's outlets by how close they are to another rep's
+          // territory - boundary outlets cascade with the least disruption.
+          const candidates = (repOutletsMap.get(rep.id) ?? [])
+            .filter(o => !justMoved.has(o.id))
+            .map(o => {
+              let best = receivers[0], bestD = Infinity;
+              for (const rc of receivers) {
+                const d = geoDist(o.latitude, o.longitude, rc.centroid.lat, rc.centroid.lng);
+                if (d < bestD) { bestD = d; best = rc; }
+              }
+              return { o, toRep: best.rep, distanceKm: bestD };
+            })
+            .sort((a, b) => a.distanceKm - b.distanceKm);
+
+          for (const c of candidates) {
+            if (excess <= 0 || suggestedCascade.length >= 30) break;
+            const w = c.o.visitFrequency ?? 1;
+            suggestedCascade.push({
+              outletId: c.o.id,
+              outletName: c.o.name,
+              monthlyVisits: w,
+              fromRep: rep.name,
+              toRepId: c.toRep.id,
+              toRepName: c.toRep.name,
+              distanceKm: Math.round(c.distanceKm * 10) / 10,
             });
-          }
-          
-          if (trial.status === TRIAL_STATUS.EXPIRED || (trial.endDate && new Date(trial.endDate) < new Date())) {
-            return res.status(402).json({ 
-              message: "Trial period has expired. Please upgrade to continue.",
-              upgradeRequired: true
-            });
-          }
-          
-          if (usage.vehicleCount >= trial.vehicleLimit) {
-            return res.status(402).json({ 
-              message: `Vehicle limit reached (${usage.vehicleCount}/${trial.vehicleLimit}). Upgrade to add more vehicles.`,
-              upgradeRequired: true,
-              currentCount: usage.vehicleCount,
-              limit: trial.vehicleLimit
-            });
+            excess -= w;
           }
         }
       }
-      
-      const parsed = insertVehicleSchema.safeParse(req.body);
-      if (!parsed.success) {
-        return res.status(400).json({ message: "Invalid vehicle data", errors: parsed.error.errors });
-      }
-      
-      const vehicle = await storage.createVehicle(parsed.data);
-      
-      if (trialId) {
-        await storage.incrementVehicleCount(trialId, 1);
-      }
-      
-      res.status(201).json(vehicle);
+
+      res.json({
+        success: true,
+        movedOutlets: moved,
+        toRep: { id: targetRep.id, name: targetRep.name },
+        repsReworked: summary,
+        warnings,
+        suggestedCascade,
+        message: `Moved ${moved} outlet(s) to ${targetRep.name} and reworked schedules for ${summary.length} rep(s).${suggestedCascade.length > 0 ? ` ${suggestedCascade.length} cascade move(s) suggested to restore capacity.` : ''}`
+      });
     } catch (error) {
-      console.error("Error creating vehicle:", error);
-      res.status(500).json({ message: "Failed to create vehicle" });
+      console.error("Reassign-outlets error:", error);
+      res.status(500).json({ message: "Failed to reassign outlets" });
     }
   });
 
-  // Update vehicle
-  app.patch("/api/vehicles/:id", async (req, res) => {
-    try {
-      const vehicle = await storage.updateVehicle(req.params.id, req.body);
-      if (!vehicle) {
-        return res.status(404).json({ message: "Vehicle not found" });
-      }
-      res.json(vehicle);
-    } catch (error) {
-      res.status(500).json({ message: "Failed to update vehicle" });
-    }
-  });
-
-  // Delete vehicle
-  app.delete("/api/vehicles/:id", async (req, res) => {
-    try {
-      await storage.deleteVehicle(req.params.id);
-      res.json({ success: true });
-    } catch (error) {
-      res.status(500).json({ message: "Failed to delete vehicle" });
-    }
-  });
-
-  // Get vehicle maintenance records
-  app.get("/api/vehicles/:id/maintenance", async (req, res) => {
-    try {
-      const records = await storage.getVehicleMaintenanceRecords(req.params.id);
-      res.json(records);
-    } catch (error) {
-      res.status(500).json({ message: "Failed to fetch maintenance records" });
-    }
-  });
-
-  // Get all maintenance records
-  app.get("/api/vehicle-maintenance", async (_req, res) => {
-    try {
-      const records = await storage.getVehicleMaintenanceRecords();
-      res.json(records);
-    } catch (error) {
-      res.status(500).json({ message: "Failed to fetch maintenance records" });
-    }
-  });
-
-  // Create maintenance record
-  app.post("/api/vehicle-maintenance", async (req, res) => {
-    try {
-      const parsed = insertVehicleMaintenanceSchema.safeParse(req.body);
-      if (!parsed.success) {
-        return res.status(400).json({ message: "Invalid maintenance data", errors: parsed.error.errors });
-      }
-      const record = await storage.createVehicleMaintenanceRecord(parsed.data);
-      res.status(201).json(record);
-    } catch (error) {
-      res.status(500).json({ message: "Failed to create maintenance record" });
-    }
-  });
-
-  // Get vehicle alerts
-  app.get("/api/vehicle-alerts", async (_req, res) => {
-    try {
-      const alerts = await storage.getVehicleAlerts();
-      res.json(alerts);
-    } catch (error) {
-      res.status(500).json({ message: "Failed to fetch vehicle alerts" });
-    }
-  });
-
-  // Get vehicle usage records
-  app.get("/api/vehicles/:id/usage", async (req, res) => {
-    try {
-      const records = await storage.getVehicleUsageRecords(req.params.id);
-      res.json(records);
-    } catch (error) {
-      res.status(500).json({ message: "Failed to fetch usage records" });
-    }
-  });
-
-  // ============= RE-OPTIMIZATION ROUTES =============
-
-  // Re-assign outlet to a different zone/territory
   app.post("/api/outlets/:id/reassign", async (req, res) => {
     try {
       const { territory, repId } = req.body;
+      const affectedBefore = await repsAffectedByOutlets([req.params.id]);
       const outlet = await storage.updateOutlet(req.params.id, { territory, repId });
       if (!outlet) {
         return res.status(404).json({ message: "Outlet not found" });
       }
-      res.json(outlet);
+      // Rework schedules for every rep touched by the move so the change is
+      // reflected in actual day-routes, not just the outlet record.
+      const affected = Array.from(new Set([...affectedBefore, ...(repId ? [repId] : [])]));
+      const repsReworked = await regenerateSchedulesForReps(affected);
+      res.json({ ...outlet, repsReworked });
     } catch (error) {
       res.status(500).json({ message: "Failed to reassign outlet" });
     }
@@ -4976,11 +5659,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/outlets/bulk-reassign", async (req, res) => {
     try {
       const { updates } = req.body; // Array of { id, territory, repId }
+      const ids = updates.map((u: any) => u.id);
+      const affectedBefore = await repsAffectedByOutlets(ids);
+      // A null/absent repId means "keep the current rep" - never strip
+      // ownership, or the outlet would silently vanish from all schedules.
       const results = await storage.updateOutlets(updates.map((u: any) => ({
         id: u.id,
-        data: { territory: u.territory, repId: u.repId }
+        data: {
+          ...(u.territory ? { territory: u.territory } : {}),
+          ...(u.repId ? { repId: u.repId } : {})
+        }
       })));
-      res.json({ success: true, updated: results.length });
+      const newRepIds = updates.map((u: any) => u.repId).filter(Boolean);
+      const affected = Array.from(new Set([...affectedBefore, ...newRepIds]));
+      const repsReworked = await regenerateSchedulesForReps(affected);
+      res.json({ success: true, updated: results.length, repsReworked });
     } catch (error) {
       res.status(500).json({ message: "Failed to bulk reassign outlets" });
     }
@@ -5002,15 +5695,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
       await storage.clearSchedules();
 
       // Generate new schedules using the anchor-aware VF1/VF2/VF3/VF4
-      // scheduler. Outlet→rep linkage uses the territory string here (this
-      // endpoint is the full bulk re-optimization).
+      // scheduler. Outlet→rep linkage is by repId (the ownership record the
+      // optimize and reassignment flows maintain); the old territory-string
+      // match compared outlet zones ("Zone N") to rep territories
+      // ("Territory N"), which never matched - wiping all schedules and
+      // rebuilding none. Territory match is kept only as a fallback for
+      // data created before repId ownership existed. Outlets are grouped by
+      // zone label so geographic tightness survives the rebuild.
+      const hasOwnership = outlets.some(o => o.repId);
       const schedules: InsertSchedule[] = [];
       for (const rep of reps) {
-        const repOutlets = outlets.filter(o => o.territory === rep.territory);
+        const repOutlets = hasOwnership
+          ? outlets.filter(o => o.repId === rep.id && o.territory !== 'Excluded')
+          : outlets.filter(o => o.territory === rep.territory);
         if (repOutlets.length === 0) continue;
-        const repSchedules = buildAnchorAwareSchedules(
+        const byZone = new Map<string, Outlet[]>();
+        for (const o of repOutlets) {
+          const key = o.territory || 'unzoned';
+          if (!byZone.has(key)) byZone.set(key, []);
+          byZone.get(key)!.push(o);
+        }
+        const repSchedules = buildAnchorAwareSchedulesFromZones(
           { ...rep, workingDaysPerWeek: rep.workingDaysPerWeek || workingDaysPerWeek } as Rep,
-          repOutlets
+          Array.from(byZone.values())
         );
         schedules.push(...repSchedules);
       }
@@ -5148,358 +5855,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // ============= VEHICLE DASHBOARD & MAINTENANCE FORECASTING =============
-
-  // Get vehicle dashboard with all analytics
-  app.get("/api/vehicles/:id/dashboard", async (req, res) => {
-    try {
-      const dashboard = await storage.getVehicleDashboard(req.params.id);
-      if (!dashboard) {
-        return res.status(404).json({ message: "Vehicle not found" });
-      }
-      res.json(dashboard);
-    } catch (error) {
-      console.error("Vehicle dashboard error:", error);
-      res.status(500).json({ message: "Failed to fetch vehicle dashboard" });
-    }
-  });
-
-  // Calculate and update maintenance forecasts for a vehicle
-  app.post("/api/vehicles/:id/calculate-forecasts", async (req, res) => {
-    try {
-      const vehicleId = req.params.id;
-      const vehicle = await storage.getVehicle(vehicleId);
-      if (!vehicle) {
-        return res.status(404).json({ message: "Vehicle not found" });
-      }
-
-      // Get maintenance policies and history
-      const policies = await storage.getMaintenancePolicies();
-      const maintenanceRecords = await storage.getVehicleMaintenanceRecords(vehicleId);
-      const usageRecords = await storage.getVehicleUsageRecords(vehicleId);
-
-      // Clear existing forecasts
-      await storage.deleteMaintenanceForecastsByVehicle(vehicleId);
-
-      // Calculate average daily KM from usage records
-      let avgDailyKm = 50; // Default estimate
-      if (usageRecords.length > 0) {
-        const totalKm = usageRecords.reduce((sum, r) => sum + r.distance, 0);
-        const days = Math.ceil((Date.now() - new Date(usageRecords[0].tripDate).getTime()) / (24 * 60 * 60 * 1000));
-        avgDailyKm = totalKm / Math.max(days, 1);
-      }
-
-      const forecasts = [];
-
-      for (const policy of policies.filter(p => p.isActive)) {
-        // Find last maintenance of this type
-        const lastMaintenance = maintenanceRecords
-          .filter(r => r.maintenanceType === policy.maintenanceType)
-          .sort((a, b) => new Date(b.serviceDate).getTime() - new Date(a.serviceDate).getTime())[0];
-
-        let dueMileage: number;
-        let kmSinceLastService: number;
-
-        if (lastMaintenance) {
-          dueMileage = lastMaintenance.mileageAtService + policy.intervalKm;
-          kmSinceLastService = vehicle.currentMileage - lastMaintenance.mileageAtService;
-        } else {
-          // No record - assume due based on starting mileage
-          dueMileage = vehicle.startingMileage + policy.intervalKm;
-          kmSinceLastService = vehicle.currentMileage - vehicle.startingMileage;
-        }
-
-        const remainingKm = dueMileage - vehicle.currentMileage;
-        const remainingDays = avgDailyKm > 0 ? Math.ceil(remainingKm / avgDailyKm) : null;
-        const estimatedDueDate = remainingDays ? new Date(Date.now() + remainingDays * 24 * 60 * 60 * 1000) : null;
-
-        // Determine severity and status
-        let severity: string;
-        let status: string;
-
-        if (remainingKm < 0) {
-          status = 'overdue';
-          severity = Math.abs(remainingKm) >= policy.criticalThresholdKm ? 'critical' : 'high';
-        } else if (remainingKm <= policy.warningThresholdKm) {
-          status = 'due';
-          severity = remainingKm <= policy.warningThresholdKm / 2 ? 'high' : 'medium';
-        } else {
-          status = 'upcoming';
-          severity = 'low';
-        }
-
-        // Generate recommendation
-        const recommendation = remainingKm < 0
-          ? `URGENT: ${policy.name} is overdue by ${Math.abs(remainingKm).toFixed(0)} km. Schedule immediately.`
-          : remainingKm <= policy.warningThresholdKm
-          ? `${policy.name} due soon. ${remainingKm.toFixed(0)} km remaining.`
-          : `${policy.name} scheduled in ${remainingKm.toFixed(0)} km (approx. ${remainingDays || '?'} days).`;
-
-        const forecast = await storage.createMaintenanceForecast({
-          vehicleId,
-          policyId: policy.id,
-          maintenanceType: policy.maintenanceType,
-          currentMileage: vehicle.currentMileage,
-          dueMileage,
-          estimatedDueDate,
-          remainingKm,
-          remainingDays,
-          severity,
-          status,
-          recommendation
-        });
-
-        forecasts.push(forecast);
-      }
-
-      res.json({
-        success: true,
-        vehicleId,
-        forecastsGenerated: forecasts.length,
-        forecasts
-      });
-    } catch (error) {
-      console.error("Forecast calculation error:", error);
-      res.status(500).json({ message: "Failed to calculate maintenance forecasts" });
-    }
-  });
 
   // Get maintenance policies
-  app.get("/api/maintenance-policies", async (_req, res) => {
-    try {
-      const policies = await storage.getMaintenancePolicies();
-      res.json(policies);
-    } catch (error) {
-      res.status(500).json({ message: "Failed to fetch maintenance policies" });
-    }
-  });
-
   // Update maintenance policy
-  app.patch("/api/maintenance-policies/:id", async (req, res) => {
-    try {
-      const policy = await storage.updateMaintenancePolicy(req.params.id, req.body);
-      if (!policy) {
-        return res.status(404).json({ message: "Policy not found" });
-      }
-      res.json(policy);
-    } catch (error) {
-      res.status(500).json({ message: "Failed to update maintenance policy" });
-    }
-  });
-
-  // Get vehicle forecasts
-  app.get("/api/vehicles/:id/forecasts", async (req, res) => {
-    try {
-      const forecasts = await storage.getMaintenanceForecasts(req.params.id);
-      res.json(forecasts);
-    } catch (error) {
-      res.status(500).json({ message: "Failed to fetch forecasts" });
-    }
-  });
-
-  // Export vehicle summary to Excel
-  app.get("/api/vehicles/:id/export", async (req, res) => {
-    try {
-      const vehicleId = req.params.id;
-      const vehicle = await storage.getVehicle(vehicleId);
-      if (!vehicle) {
-        return res.status(404).json({ message: "Vehicle not found" });
-      }
-
-      const reps = await storage.getReps();
-      const assignedRep = reps.find(r => r.id === vehicle.assignedRepId);
-      const forecasts = await storage.getMaintenanceForecasts(vehicleId);
-      const maintenanceHistory = await storage.getVehicleMaintenanceRecords(vehicleId);
-      const mileageSnapshots = await storage.getVehicleMileageSnapshots(vehicleId);
-
-      const latestSnapshot = mileageSnapshots.sort((a, b) => 
-        new Date(b.snapshotDate).getTime() - new Date(a.snapshotDate).getTime()
-      )[0];
-
-      const exportData = {
-        vehicle: {
-          plateNumber: vehicle.plateNumber,
-          model: vehicle.model,
-          year: vehicle.year,
-          currentMileage: vehicle.currentMileage,
-          startingMileage: vehicle.startingMileage,
-          status: vehicle.status,
-          assignedRepName: assignedRep?.name
-        },
-        usage: {
-          dailyKm: latestSnapshot?.dailyKm || 0,
-          weeklyKm: latestSnapshot?.weeklyKm || 0,
-          monthlyKm: latestSnapshot?.monthlyKm || 0,
-          lifetimeKm: latestSnapshot?.lifetimeKm || vehicle.currentMileage - vehicle.startingMileage,
-          avgDailyKm: latestSnapshot?.avgDailyKm || 0,
-          routeIntensity: latestSnapshot?.routeIntensity || 'light'
-        },
-        forecasts: forecasts.map(f => ({
-          maintenanceType: f.maintenanceType,
-          dueMileage: f.dueMileage,
-          remainingKm: f.remainingKm,
-          status: f.status,
-          severity: f.severity,
-          recommendation: f.recommendation || ''
-        })),
-        maintenanceHistory: maintenanceHistory.map(h => ({
-          serviceDate: h.serviceDate.toISOString(),
-          maintenanceType: h.maintenanceType,
-          mileageAtService: h.mileageAtService,
-          cost: h.cost || undefined,
-          notes: h.notes || undefined
-        }))
-      };
-
-      const buffer = generateVehicleSummaryExcel(exportData);
-      
-      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-      res.setHeader('Content-Disposition', `attachment; filename="vehicle_${vehicle.plateNumber}_summary.xlsx"`);
-      res.send(buffer);
-    } catch (error) {
-      console.error("Vehicle export error:", error);
-      res.status(500).json({ message: "Failed to export vehicle summary" });
-    }
-  });
-
   // Record route usage (KM accumulation from rep routes)
-  app.post("/api/vehicles/:id/record-usage", async (req, res) => {
-    try {
-      const vehicleId = req.params.id;
-      const { repId, scheduleId, distance, tripDate } = req.body;
-
-      const vehicle = await storage.getVehicle(vehicleId);
-      if (!vehicle) {
-        return res.status(404).json({ message: "Vehicle not found" });
-      }
-
-      const startMileage = vehicle.currentMileage;
-      const endMileage = startMileage + distance;
-
-      // Create usage record
-      const usageRecord = await storage.createVehicleUsageRecord({
-        vehicleId,
-        repId,
-        scheduleId: scheduleId || null,
-        tripDate: new Date(tripDate || Date.now()),
-        startMileage,
-        endMileage,
-        distance
-      });
-
-      // Update vehicle mileage (already done in createVehicleUsageRecord)
-      
-      // Create daily mileage snapshot
-      const today = new Date().toISOString().split('T')[0];
-      const existingSnapshots = await storage.getVehicleMileageSnapshots(vehicleId);
-      const todaySnapshot = existingSnapshots.find(s => s.snapshotDate === today);
-      
-      if (!todaySnapshot) {
-        // Calculate aggregated values
-        const usageRecords = await storage.getVehicleUsageRecords(vehicleId);
-        const now = new Date();
-        const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-        const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-
-        const dailyKm = distance;
-        const weeklyKm = usageRecords
-          .filter(r => new Date(r.tripDate) >= weekAgo)
-          .reduce((sum, r) => sum + r.distance, 0);
-        const monthlyKm = usageRecords
-          .filter(r => new Date(r.tripDate) >= monthAgo)
-          .reduce((sum, r) => sum + r.distance, 0);
-        const lifetimeKm = endMileage - vehicle.startingMileage;
-        const avgDailyKm = monthlyKm / 30;
-
-        let routeIntensity: 'light' | 'medium' | 'heavy' = 'light';
-        if (avgDailyKm > 150) routeIntensity = 'heavy';
-        else if (avgDailyKm > 75) routeIntensity = 'medium';
-
-        await storage.createVehicleMileageSnapshot({
-          vehicleId,
-          snapshotDate: today,
-          dailyKm,
-          weeklyKm,
-          monthlyKm,
-          lifetimeKm,
-          avgDailyKm,
-          routeIntensity
-        });
-      }
-
-      res.json({
-        success: true,
-        usageRecord,
-        newMileage: endMileage
-      });
-    } catch (error) {
-      console.error("Usage recording error:", error);
-      res.status(500).json({ message: "Failed to record vehicle usage" });
-    }
-  });
-
-  // Assign rep to vehicle (triggers KM accumulation link)
-  app.post("/api/vehicles/:id/assign-rep", async (req, res) => {
-    try {
-      const { repId } = req.body;
-      const vehicleId = req.params.id;
-
-      // Update vehicle with assigned rep
-      const vehicle = await storage.updateVehicle(vehicleId, { assignedRepId: repId });
-      if (!vehicle) {
-        return res.status(404).json({ message: "Vehicle not found" });
-      }
-
-      // Update rep with vehicle assignment
-      if (repId) {
-        await storage.updateRep(repId, { vehicleId });
-      }
-
-      // Trigger initial forecast calculation
-      const policies = await storage.getMaintenancePolicies();
-      const maintenanceRecords = await storage.getVehicleMaintenanceRecords(vehicleId);
-
-      // Clear existing forecasts
-      await storage.deleteMaintenanceForecastsByVehicle(vehicleId);
-
-      // Generate initial forecasts
-      for (const policy of policies.filter(p => p.isActive)) {
-        const lastMaintenance = maintenanceRecords
-          .filter(r => r.maintenanceType === policy.maintenanceType)
-          .sort((a, b) => new Date(b.serviceDate).getTime() - new Date(a.serviceDate).getTime())[0];
-
-        const dueMileage = lastMaintenance 
-          ? lastMaintenance.mileageAtService + policy.intervalKm
-          : vehicle.startingMileage + policy.intervalKm;
-
-        const remainingKm = dueMileage - vehicle.currentMileage;
-        const severity = remainingKm < 0 ? 'critical' : remainingKm < policy.warningThresholdKm ? 'medium' : 'low';
-        const status = remainingKm < 0 ? 'overdue' : remainingKm < policy.warningThresholdKm ? 'due' : 'upcoming';
-
-        await storage.createMaintenanceForecast({
-          vehicleId,
-          policyId: policy.id,
-          maintenanceType: policy.maintenanceType,
-          currentMileage: vehicle.currentMileage,
-          dueMileage,
-          remainingKm,
-          severity,
-          status,
-          recommendation: `${policy.name}: ${remainingKm.toFixed(0)} km until next service`
-        });
-      }
-
-      res.json({
-        success: true,
-        vehicle,
-        message: `Rep assigned to vehicle. Maintenance forecasts generated.`
-      });
-    } catch (error) {
-      console.error("Rep assignment error:", error);
-      res.status(500).json({ message: "Failed to assign rep to vehicle" });
-    }
-  });
-
   // Calculate route KM for a rep from their schedule
   app.get("/api/reps/:id/route-km", async (req, res) => {
     try {
@@ -5575,169 +5934,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Vehicle reassignment impact analysis
-  app.post("/api/vehicles/:id/reassignment-impact", async (req, res) => {
-    try {
-      const vehicleId = req.params.id;
-      const { toRepId } = req.body;
-
-      const vehicle = await storage.getVehicle(vehicleId);
-      if (!vehicle) {
-        return res.status(404).json({ message: "Vehicle not found" });
-      }
-
-      const reps = await storage.getReps();
-      const fromRep = vehicle.assignedRepId ? reps.find(r => r.id === vehicle.assignedRepId) : null;
-      const toRep = reps.find(r => r.id === toRepId);
-
-      if (!toRep) {
-        return res.status(404).json({ message: "Target rep not found" });
-      }
-
-      // Get current vehicle usage
-      const usageRecords = await storage.getVehicleUsageRecords(vehicleId);
-      const now = new Date();
-      const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-      const recentUsage = usageRecords.filter(r => new Date(r.tripDate) >= monthAgo);
-      const currentAvgDailyKm = recentUsage.length > 0 
-        ? recentUsage.reduce((sum, r) => sum + r.distance, 0) / 30 
-        : 0;
-
-      // Calculate projected KM for new rep's routes
-      const schedules = await storage.getSchedulesByRepId(toRepId);
-      const outlets = await storage.getOutlets();
-      const weeklyKmByWeek: Record<number, number> = {};
-
-      for (const schedule of schedules) {
-        const outletIds = schedule.outletIds as string[];
-        const scheduleOutlets = outletIds
-          .map(id => outlets.find(o => o.id === id))
-          .filter(Boolean) as typeof outlets;
-
-        let routeDistance = 0;
-        for (let i = 0; i < scheduleOutlets.length - 1; i++) {
-          const from = scheduleOutlets[i];
-          const to = scheduleOutlets[i + 1];
-          if (from.latitude && from.longitude && to.latitude && to.longitude) {
-            routeDistance += haversineDistance(
-              from.latitude, from.longitude,
-              to.latitude, to.longitude
-            );
-          }
-        }
-
-        weeklyKmByWeek[schedule.week] = (weeklyKmByWeek[schedule.week] || 0) + routeDistance;
-      }
-
-      // Calculate average weekly KM across all weeks
-      const weeks = Object.keys(weeklyKmByWeek);
-      const projectedWeeklyKm = weeks.length > 0 
-        ? Object.values(weeklyKmByWeek).reduce((sum, km) => sum + km, 0) / weeks.length 
-        : 0;
-
-      const workingDays = toRep.workingDaysPerWeek || 5;
-      const projectedAvgDailyKm = workingDays > 0 ? projectedWeeklyKm / workingDays : 0;
-      const kmChangePercent = currentAvgDailyKm > 0 
-        ? ((projectedAvgDailyKm - currentAvgDailyKm) / currentAvgDailyKm) * 100 
-        : 0;
-
-      // Determine maintenance impact
-      let maintenanceImpact: 'accelerated' | 'normal' | 'delayed' = 'normal';
-      if (kmChangePercent > 20) maintenanceImpact = 'accelerated';
-      else if (kmChangePercent < -20) maintenanceImpact = 'delayed';
-
-      // Get affected maintenance items
-      const forecasts = await storage.getMaintenanceForecasts(vehicleId);
-      const affectedMaintenanceItems = forecasts.map(f => {
-        const currentDaysRemaining = currentAvgDailyKm > 0 ? f.remainingKm / currentAvgDailyKm : null;
-        const projectedDaysRemaining = projectedAvgDailyKm > 0 ? f.remainingKm / projectedAvgDailyKm : null;
-        
-        return {
-          maintenanceType: f.maintenanceType,
-          currentDueDate: currentDaysRemaining ? new Date(now.getTime() + currentDaysRemaining * 24 * 60 * 60 * 1000) : null,
-          projectedDueDate: projectedDaysRemaining ? new Date(now.getTime() + projectedDaysRemaining * 24 * 60 * 60 * 1000) : null,
-          daysDifference: (currentDaysRemaining && projectedDaysRemaining) 
-            ? Math.round(currentDaysRemaining - projectedDaysRemaining) 
-            : 0
-        };
-      });
-
-      // Risk assessment
-      let riskLevel: 'low' | 'medium' | 'high' = 'low';
-      let riskReason = 'Reassignment has minimal impact on vehicle maintenance schedule.';
-      
-      if (Math.abs(kmChangePercent) > 50) {
-        riskLevel = 'high';
-        riskReason = `Significant KM change (${kmChangePercent > 0 ? '+' : ''}${kmChangePercent.toFixed(0)}%) may significantly impact maintenance schedules.`;
-      } else if (Math.abs(kmChangePercent) > 20) {
-        riskLevel = 'medium';
-        riskReason = `Moderate KM change (${kmChangePercent > 0 ? '+' : ''}${kmChangePercent.toFixed(0)}%) will adjust maintenance timing.`;
-      }
-
-      res.json({
-        fromRepId: vehicle.assignedRepId,
-        toRepId,
-        fromRepName: fromRep?.name || null,
-        toRepName: toRep.name,
-        currentAvgDailyKm,
-        projectedAvgDailyKm,
-        kmChangePercent,
-        maintenanceImpact,
-        affectedMaintenanceItems,
-        riskAssessment: {
-          level: riskLevel,
-          reason: riskReason
-        }
-      });
-    } catch (error) {
-      console.error("Reassignment impact analysis error:", error);
-      res.status(500).json({ message: "Failed to analyze reassignment impact" });
-    }
-  });
-
   // Adjust odometer with audit logging
-  app.post("/api/vehicles/:id/adjust-odometer", async (req, res) => {
-    try {
-      const vehicleId = req.params.id;
-      const { newMileage, reason, adjustedBy, notes } = req.body;
-
-      const vehicle = await storage.getVehicle(vehicleId);
-      if (!vehicle) {
-        return res.status(404).json({ message: "Vehicle not found" });
-      }
-
-      const previousMileage = vehicle.currentMileage;
-
-      // Update vehicle mileage
-      await storage.updateVehicle(vehicleId, { currentMileage: newMileage });
-
-      // Create audit trail record as a special usage record
-      await storage.createVehicleUsageRecord({
-        vehicleId,
-        repId: adjustedBy || 'system',
-        scheduleId: null,
-        tripDate: new Date(),
-        startMileage: previousMileage,
-        endMileage: newMileage,
-        distance: newMileage - previousMileage
-      });
-      
-      res.json({
-        success: true,
-        previousMileage,
-        newMileage,
-        adjustmentReason: reason,
-        adjustedBy,
-        notes,
-        timestamp: new Date(),
-        auditTrailCreated: true
-      });
-    } catch (error) {
-      console.error("Odometer adjustment error:", error);
-      res.status(500).json({ message: "Failed to adjust odometer" });
-    }
-  });
-
   // ============================================
   // ROLE HIERARCHY MANAGEMENT
   // ============================================

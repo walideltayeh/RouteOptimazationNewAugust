@@ -6,9 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useToast } from "@/hooks/use-toast";
-import { Settings, Play, AlertCircle, Clock, Calculator } from "lucide-react";
+import { Settings, Play, AlertCircle } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import OptimizationProgressModal from "./optimization-progress-modal";
@@ -19,33 +18,73 @@ interface FileAnalysis {
   vf2: number;
   vf4: number;
   recommendedReps?: number;
-  avgTimePerVisit?: number;
 }
 
 interface DashboardMetrics {
   totalOutlets: number;
   activeReps: number;
   recommendedReps: number;
-  routeEfficiency: number;
 }
 
 interface OptimizationSettingsProps {
   disabled?: boolean;
 }
 
-type CalculationMode = 'manual' | 'time-based';
+type WeightMode = 'isolation' | 'vf' | 'value';
+
+interface CoverageSuggestion {
+  territory: string;
+  outletCount: number;
+  monthlyVisits: number;
+  isolationKm: number;
+  costPerVisitKm: number;
+  outletIds: string[];
+  sampleOutlets: string[];
+  reason: string;
+}
+
+interface TerritoryBalance {
+  targetPerRep: number;
+  tolerancePct: number;
+  maxDeviationPct: number;
+  withinTolerance: boolean;
+  perRep: { name: string; code: string; monthlyVisits: number; uniqueOutlets: number; deviationPct: number }[];
+}
+
+interface GeoOutlier {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+  distanceKm: number;
+}
 
 export default function OptimizationSettings({ disabled = false }: OptimizationSettingsProps) {
-  const [calculationMode, setCalculationMode] = useState<CalculationMode>('manual');
-  
-  // Manual mode settings
+  // Daily visit targets (actual visits per rep per day)
   const [minVisitsPerDay, setMinVisitsPerDay] = useState(25);
   const [maxVisitsPerDay, setMaxVisitsPerDay] = useState(30);
-  
-  // Time-based mode settings
-  const [maxTimePerOutlet, setMaxTimePerOutlet] = useState(45); // minutes
-  const [maxWorkingHoursPerDay, setMaxWorkingHoursPerDay] = useState(8); // hours
-  
+
+  // Coverage weighting for area-removal suggestions
+  const [weightMode, setWeightMode] = useState<WeightMode>('isolation');
+  const [distanceMode, setDistanceMode] = useState<'haversine' | 'road'>('haversine');
+  // Route compactness: the max radius a day-zone may span. Lower = tighter
+  // routes but fewer visits per day in sparse markets (more reps needed);
+  // higher = fuller days over more ground.
+  const [maxZoneRadiusKm, setMaxZoneRadiusKm] = useState(15);
+  const [coverageSuggestions, setCoverageSuggestions] = useState<CoverageSuggestion[]>([]);
+  const [territoryBalance, setTerritoryBalance] = useState<TerritoryBalance | null>(null);
+  const [weightModeUsed, setWeightModeUsed] = useState<string>('');
+  const [selectedExclusions, setSelectedExclusions] = useState<Set<string>>(new Set());
+  const [geoOutliers, setGeoOutliers] = useState<GeoOutlier[]>([]);
+  const [capacityWarning, setCapacityWarning] = useState<{
+    projectedVisitsPerDay: number;
+    minVisitsPerDay: number;
+    supportedWorkingDays: number;
+    message: string;
+  } | null>(null);
+  const [selectedGeoExclusions, setSelectedGeoExclusions] = useState<Set<string>>(new Set());
+  const [activeExcludedIds, setActiveExcludedIds] = useState<string[]>([]);
+
   // Common settings
   const [workingDaysPerWeek, setWorkingDaysPerWeek] = useState(5);
   
@@ -57,9 +96,10 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
     minVisitsPerDay: number;
     maxVisitsPerDay: number;
     workingDaysPerWeek: number;
-    calculationMode: CalculationMode;
-    maxTimePerOutlet?: number;
-    maxWorkingHoursPerDay?: number;
+    weightMode: WeightMode;
+    distanceMode: 'haversine' | 'road';
+    maxZoneRadiusKm: number;
+    excludedOutletIds?: string[];
     progressId: string;
   } | null>(null);
 
@@ -74,19 +114,6 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
     queryKey: ["/api/dashboard/metrics"],
   });
 
-  // Calculate estimated outlets per day for time-based mode
-  const calculatedOutletsPerDay = useMemo(() => {
-    if (calculationMode !== 'time-based') return null;
-    
-    const avgTravelTime = 10; // minutes between outlets
-    const maxWorkingMinutes = maxWorkingHoursPerDay * 60;
-    const effectiveTimePerOutlet = maxTimePerOutlet + avgTravelTime;
-    const maxOutlets = Math.floor(maxWorkingMinutes / effectiveTimePerOutlet);
-    const minOutlets = Math.max(1, Math.floor(maxOutlets * 0.8));
-    
-    return { min: minOutlets, max: maxOutlets };
-  }, [calculationMode, maxTimePerOutlet, maxWorkingHoursPerDay]);
-
   // Show initial estimate from file upload analysis
   const estimatedReps = analysis?.recommendedReps || 0;
 
@@ -98,48 +125,43 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
     
     if (totalOutlets === 0) return { feasible: true, message: "", warning: false };
     
-    // Calculate based on user's parameters
-    const totalWeeklyVisits = (analysis.vf1 || 0) + (analysis.vf2 * 2) + (analysis.vf4 * 4);
+    // Actual visits per week: vf is visits per 4-week cycle (VF4 weekly,
+    // VF2 biweekly, VF1 monthly), so weekly load is the monthly total / 4.
+    const totalWeeklyVisits = Math.ceil(((analysis.vf1 || 0) + (analysis.vf2 * 2) + (analysis.vf4 * 4)) / 4);
     
-    let effectiveMax: number;
-    let effectiveMin: number;
-    
-    if (calculationMode === 'time-based' && calculatedOutletsPerDay) {
-      effectiveMax = calculatedOutletsPerDay.max;
-      effectiveMin = calculatedOutletsPerDay.min;
-    } else {
-      effectiveMax = maxVisitsPerDay;
-      effectiveMin = minVisitsPerDay;
-    }
-    
-    const maxWeeklyCapacityPerRep = workingDaysPerWeek * effectiveMax;
+    const maxWeeklyCapacityPerRep = workingDaysPerWeek * maxVisitsPerDay;
     const estimatedRepsNeeded = Math.ceil(totalWeeklyVisits / maxWeeklyCapacityPerRep);
-    
-    const modeLabel = calculationMode === 'time-based' 
-      ? `(${maxTimePerOutlet} min/outlet, ${maxWorkingHoursPerDay}h/day = ${effectiveMin}-${effectiveMax} visits/day)`
-      : `(${effectiveMin}-${effectiveMax} visits/day, ${workingDaysPerWeek} days/week)`;
-    
+
     return {
       feasible: true,
-      message: `Will create ~${estimatedRepsNeeded} routes ${modeLabel}`,
+      message: `Will create ~${estimatedRepsNeeded} routes (${minVisitsPerDay}-${maxVisitsPerDay} visits/day, ${workingDaysPerWeek} days/week)`,
       warning: false
     };
-  }, [analysis, metrics, workingDaysPerWeek, minVisitsPerDay, maxVisitsPerDay, calculationMode, maxTimePerOutlet, maxWorkingHoursPerDay, calculatedOutletsPerDay]);
+  }, [analysis, metrics, workingDaysPerWeek, minVisitsPerDay, maxVisitsPerDay]);
 
   const optimizationMutation = useMutation({
-    mutationFn: async (settings: { 
-      minVisitsPerDay: number; 
-      maxVisitsPerDay: number; 
+    mutationFn: async (settings: {
+      minVisitsPerDay: number;
+      maxVisitsPerDay: number;
       workingDaysPerWeek: number;
-      calculationMode: CalculationMode;
-      maxTimePerOutlet?: number;
-      maxWorkingHoursPerDay?: number;
+      weightMode?: WeightMode;
+      distanceMode?: 'haversine' | 'road';
+      maxZoneRadiusKm?: number;
+      excludedOutletIds?: string[];
       progressId?: string;
     }) => {
       const response = await apiRequest("POST", "/api/optimize", settings);
       return response.json();
     },
     onSuccess: (data) => {
+      setCoverageSuggestions(data.coverageSuggestions || []);
+      setTerritoryBalance(data.territoryBalance || null);
+      setWeightModeUsed(data.coverageWeightModeUsed || '');
+      setGeoOutliers(data.geoOutliers || []);
+      setCapacityWarning(data.capacityWarning || null);
+      setSelectedExclusions(new Set());
+      setSelectedGeoExclusions(new Set());
+      queryClient.invalidateQueries({ queryKey: ["/api/scenarios"] });
       queryClient.invalidateQueries({ queryKey: ["/api/reps"] });
       queryClient.invalidateQueries({ queryKey: ["/api/outlets"] });
       queryClient.invalidateQueries({ queryKey: ["/api/schedules"] });
@@ -188,8 +210,8 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
     }
   }, [optimizationMutation]);
 
-  const handleOptimization = () => {
-    if (calculationMode === 'manual' && minVisitsPerDay >= maxVisitsPerDay) {
+  const handleOptimization = (excludedOutletIds: string[] = activeExcludedIds) => {
+    if (minVisitsPerDay >= maxVisitsPerDay) {
       toast({
         title: "Invalid settings",
         description: "Minimum visits must be less than maximum visits",
@@ -200,22 +222,56 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
 
     // Reset refs for new optimization
     optimizationStartedRef.current = false;
-    
+
     const newProgressId = `opt-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    
+
     pendingSettingsRef.current = {
       minVisitsPerDay,
       maxVisitsPerDay,
       workingDaysPerWeek,
-      calculationMode,
-      maxTimePerOutlet: calculationMode === 'time-based' ? maxTimePerOutlet : undefined,
-      maxWorkingHoursPerDay: calculationMode === 'time-based' ? maxWorkingHoursPerDay : undefined,
+      weightMode,
+      distanceMode,
+      maxZoneRadiusKm,
+      excludedOutletIds: excludedOutletIds.length > 0 ? excludedOutletIds : undefined,
       progressId: newProgressId,
     };
-    
+
     setProgressId(newProgressId);
     setShowProgressModal(true);
   };
+
+  // Re-run without the areas/outlets the user ticked in the suggestion and
+  // geo-outlier lists.
+  const handleExcludeAndRerun = () => {
+    const ids: string[] = [];
+    for (const s of coverageSuggestions) {
+      if (selectedExclusions.has(s.territory)) ids.push(...s.outletIds);
+    }
+    ids.push(...Array.from(selectedGeoExclusions));
+    const combined = Array.from(new Set([...activeExcludedIds, ...ids]));
+    setActiveExcludedIds(combined);
+    handleOptimization(combined);
+  };
+
+  const toggleExclusion = (territory: string) => {
+    setSelectedExclusions(prev => {
+      const next = new Set(prev);
+      if (next.has(territory)) next.delete(territory);
+      else next.add(territory);
+      return next;
+    });
+  };
+
+  const toggleGeoExclusion = (outletId: string) => {
+    setSelectedGeoExclusions(prev => {
+      const next = new Set(prev);
+      if (next.has(outletId)) next.delete(outletId);
+      else next.add(outletId);
+      return next;
+    });
+  };
+
+  const totalSelectedExclusions = selectedExclusions.size + selectedGeoExclusions.size;
 
   return (
     <Card>
@@ -226,126 +282,45 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-6">
-        <div className="space-y-3">
-          <Label className="text-base font-semibold">Calculation Mode</Label>
-          <RadioGroup
-            value={calculationMode}
-            onValueChange={(value) => setCalculationMode(value as CalculationMode)}
-            className="grid grid-cols-1 gap-3"
-            disabled={disabled}
-          >
-            <div className="flex items-start space-x-3 p-3 border rounded-lg hover:bg-gray-50 cursor-pointer" data-testid="radio-manual-mode">
-              <RadioGroupItem value="manual" id="manual" className="mt-1" />
-              <div className="flex-1">
-                <Label htmlFor="manual" className="flex items-center gap-2 cursor-pointer font-medium">
-                  <Calculator className="h-4 w-4" />
-                  Manual: Min/Max Outlets per Day
-                </Label>
-                <p className="text-sm text-gray-500 mt-1">
-                  Specify the minimum and maximum number of outlets a rep should visit each day.
-                </p>
-              </div>
+        <div className="space-y-4 p-4 bg-gray-50 rounded-lg">
+          <h4 className="font-medium text-gray-700">Daily Visit Targets</h4>
+          <p className="text-xs text-gray-500">Actual outlets a rep visits each day - zones are sized automatically from these and each outlet's visit frequency.</p>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <Label htmlFor="minVisits">Min Outlets/Day</Label>
+              <Input
+                id="minVisits"
+                type="number"
+                value={minVisitsPerDay}
+                onChange={(e) => setMinVisitsPerDay(parseInt(e.target.value) || 15)}
+                min="1"
+                max="50"
+                className="mt-1"
+                disabled={disabled}
+                data-testid="input-min-visits"
+              />
             </div>
-            <div className="flex items-start space-x-3 p-3 border rounded-lg hover:bg-gray-50 cursor-pointer" data-testid="radio-time-mode">
-              <RadioGroupItem value="time-based" id="time-based" className="mt-1" />
-              <div className="flex-1">
-                <Label htmlFor="time-based" className="flex items-center gap-2 cursor-pointer font-medium">
-                  <Clock className="h-4 w-4" />
-                  Time-Based: Auto-Calculate from Working Hours
-                </Label>
-                <p className="text-sm text-gray-500 mt-1">
-                  System calculates outlets per day based on max time per outlet and working hours.
-                </p>
-              </div>
+            <div>
+              <Label htmlFor="maxVisits">Max Outlets/Day</Label>
+              <Input
+                id="maxVisits"
+                type="number"
+                value={maxVisitsPerDay}
+                onChange={(e) => setMaxVisitsPerDay(parseInt(e.target.value) || 25)}
+                min="1"
+                max="50"
+                className="mt-1"
+                disabled={disabled}
+                data-testid="input-max-visits"
+              />
             </div>
-          </RadioGroup>
+          </div>
         </div>
-
-        {calculationMode === 'manual' ? (
-          <div className="space-y-4 p-4 bg-gray-50 rounded-lg">
-            <h4 className="font-medium text-gray-700">Manual Settings</h4>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <Label htmlFor="minVisits">Min Outlets/Day</Label>
-                <Input
-                  id="minVisits"
-                  type="number"
-                  value={minVisitsPerDay}
-                  onChange={(e) => setMinVisitsPerDay(parseInt(e.target.value) || 15)}
-                  min="1"
-                  max="50"
-                  className="mt-1"
-                  disabled={disabled}
-                  data-testid="input-min-visits"
-                />
-              </div>
-              <div>
-                <Label htmlFor="maxVisits">Max Outlets/Day</Label>
-                <Input
-                  id="maxVisits"
-                  type="number"
-                  value={maxVisitsPerDay}
-                  onChange={(e) => setMaxVisitsPerDay(parseInt(e.target.value) || 25)}
-                  min="1"
-                  max="50"
-                  className="mt-1"
-                  disabled={disabled}
-                  data-testid="input-max-visits"
-                />
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-4 p-4 bg-[#f5f5f7] dark:bg-[#2c2c2e] rounded-xl">
-            <h4 className="font-medium text-[#1d1d1f] dark:text-white">Time-Based Settings</h4>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <Label htmlFor="maxTimePerOutlet">Max Time per Outlet (min)</Label>
-                <Input
-                  id="maxTimePerOutlet"
-                  type="number"
-                  value={maxTimePerOutlet}
-                  onChange={(e) => setMaxTimePerOutlet(parseInt(e.target.value) || 30)}
-                  min="5"
-                  max="120"
-                  className="mt-1"
-                  disabled={disabled}
-                  data-testid="input-max-time"
-                />
-              </div>
-              <div>
-                <Label htmlFor="maxWorkingHours">Max Working Hours/Day</Label>
-                <Input
-                  id="maxWorkingHours"
-                  type="number"
-                  value={maxWorkingHoursPerDay}
-                  onChange={(e) => setMaxWorkingHoursPerDay(parseFloat(e.target.value) || 8)}
-                  min="1"
-                  max="12"
-                  step="0.5"
-                  className="mt-1"
-                  disabled={disabled}
-                  data-testid="input-max-hours"
-                />
-              </div>
-            </div>
-            {calculatedOutletsPerDay && (
-              <div className="mt-3 p-3 bg-white rounded border border-blue-200">
-                <p className="text-sm text-blue-800">
-                  <strong>Calculated:</strong> {calculatedOutletsPerDay.min}-{calculatedOutletsPerDay.max} outlets/day
-                  <span className="text-xs block text-gray-500 mt-1">
-                    ({maxWorkingHoursPerDay * 60} min / ({maxTimePerOutlet} min visit + ~10 min travel))
-                  </span>
-                </p>
-              </div>
-            )}
-          </div>
-        )}
 
         <div>
           <Label htmlFor="workingDays">Working Days/Week</Label>
-          <Select 
-            value={workingDaysPerWeek.toString()} 
+          <Select
+            value={workingDaysPerWeek.toString()}
             onValueChange={(value) => setWorkingDaysPerWeek(parseInt(value))}
             disabled={disabled}
           >
@@ -358,6 +333,69 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
               <SelectItem value="7">7 Days</SelectItem>
             </SelectContent>
           </Select>
+        </div>
+
+        <div>
+          <Label htmlFor="weightMode">Coverage Weighting (for area suggestions)</Label>
+          <Select
+            value={weightMode}
+            onValueChange={(value) => setWeightMode(value as WeightMode)}
+            disabled={disabled}
+          >
+            <SelectTrigger className="mt-1" disabled={disabled} data-testid="select-weight-mode">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="isolation">Geographic isolation (no extra data needed)</SelectItem>
+              <SelectItem value="vf">Visit frequency weighted</SelectItem>
+              <SelectItem value="value">Commercial value (VC/volume column in file)</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-gray-500 mt-1">
+            Decides how areas are judged when suggesting low-worth pockets to move to indirect coverage. Suggestions never remove anything automatically.
+          </p>
+        </div>
+
+        <div>
+          <Label htmlFor="distanceMode">Distance Model</Label>
+          <Select
+            value={distanceMode}
+            onValueChange={(value) => setDistanceMode(value as 'haversine' | 'road')}
+            disabled={disabled}
+          >
+            <SelectTrigger className="mt-1" disabled={disabled} data-testid="select-distance-mode">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="haversine">Straight-line (fastest)</SelectItem>
+              <SelectItem value="road">Road-aware (urban detours + river crossings)</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-gray-500 mt-1">
+            Road-aware mode penalizes routes that cross major barriers (e.g. the Tigris) and approximates real driving distance; connects to an OSRM server for true road distances when configured.
+          </p>
+        </div>
+
+        <div>
+          <Label htmlFor="compactness">Route Compactness</Label>
+          <Select
+            value={String(maxZoneRadiusKm)}
+            onValueChange={(v) => setMaxZoneRadiusKm(parseInt(v))}
+            disabled={disabled}
+          >
+            <SelectTrigger className="mt-1" disabled={disabled} data-testid="select-compactness">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="5">Very tight — 5 km max zone radius</SelectItem>
+              <SelectItem value="10">Tight — 10 km</SelectItem>
+              <SelectItem value="15">Balanced — 15 km (default)</SelectItem>
+              <SelectItem value="25">Wide — 25 km</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-gray-500 mt-1">
+            In dense cities you can keep routes very tight and still fill each day. In sparse markets the two pull against each other: tighter routes mean fewer visits per day and more reps. Loosen this if days come out under target.
+          </p>
         </div>
 
         {feasibilityCheck.message && (
@@ -377,9 +415,6 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
               <div>VF1 (Monthly): <span className="font-medium">{analysis.vf1 || 0}</span></div>
               <div>VF2 (Bi-weekly): <span className="font-medium">{analysis.vf2}</span></div>
               <div>VF4 (Weekly): <span className="font-medium">{analysis.vf4}</span></div>
-              {analysis.avgTimePerVisit && (
-                <div>Avg Time/Visit: <span className="font-medium">{analysis.avgTimePerVisit} min</span></div>
-              )}
               <div className="pt-2 border-t border-blue-300">
                 <strong>Initial Estimate: ~{estimatedReps} reps</strong>
                 <p className="text-xs mt-1">Final recommendation after optimization</p>
@@ -388,8 +423,8 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
           </div>
         )}
 
-        <Button 
-          onClick={handleOptimization} 
+        <Button
+          onClick={() => handleOptimization()}
           disabled={disabled || optimizationMutation.isPending}
           className="w-full"
           data-testid="button-run-optimization"
@@ -403,6 +438,123 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
             "Run Optimization"
           )}
         </Button>
+
+        {activeExcludedIds.length > 0 && (
+          <Alert className="border-gray-300 bg-gray-50">
+            <AlertCircle className="h-4 w-4 text-gray-600" />
+            <AlertDescription className="text-gray-700 flex items-center justify-between gap-2">
+              <span>{activeExcludedIds.length} outlets are excluded from optimization (indirect coverage).</span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => { setActiveExcludedIds([]); }}
+                data-testid="button-clear-exclusions"
+              >
+                Clear
+              </Button>
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {territoryBalance && (
+          <Alert className={territoryBalance.withinTolerance ? "border-green-200 bg-green-50" : "border-amber-200 bg-amber-50"}>
+            <AlertCircle className={`h-4 w-4 ${territoryBalance.withinTolerance ? "text-green-600" : "text-amber-600"}`} />
+            <AlertDescription className={territoryBalance.withinTolerance ? "text-green-800" : "text-amber-800"}>
+              <strong>Territory balance:</strong> target ~{territoryBalance.targetPerRep} visits/month per rep,
+              max deviation {territoryBalance.maxDeviationPct}% (band ±{territoryBalance.tolerancePct}%).
+              {!territoryBalance.withinTolerance && " Residual imbalance kept to avoid forcing long drives between disconnected regions."}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {coverageSuggestions.length > 0 && (
+          <div className="p-4 bg-amber-50 rounded-lg border border-amber-200 space-y-3" data-testid="coverage-suggestions">
+            <h4 className="font-semibold text-amber-900">
+              Suggested areas for indirect coverage ({weightModeUsed})
+            </h4>
+            <p className="text-xs text-amber-800">
+              These pockets cost disproportionate driving for the visits they generate. Tick the ones to drop and re-run — nothing is removed unless you choose to.
+            </p>
+            <div className="space-y-2 max-h-64 overflow-y-auto">
+              {coverageSuggestions.map((s) => (
+                <label key={s.territory} className="flex items-start gap-2 text-sm text-amber-900 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked={selectedExclusions.has(s.territory)}
+                    onChange={() => toggleExclusion(s.territory)}
+                    data-testid={`checkbox-exclude-${s.territory.replace(/\s+/g, '-').toLowerCase()}`}
+                  />
+                  <span>
+                    <strong>{s.territory}</strong> — {s.outletCount} outlet{s.outletCount === 1 ? '' : 's'}, {s.monthlyVisits} visits/mo,
+                    ~{s.costPerVisitKm}km drive per visit (e.g. {s.sampleOutlets.join(', ')})
+                    <span className="block text-xs text-amber-700">{s.reason}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+            <Button
+              variant="outline"
+              className="w-full border-amber-400 text-amber-900"
+              disabled={disabled || optimizationMutation.isPending || totalSelectedExclusions === 0}
+              onClick={handleExcludeAndRerun}
+              data-testid="button-exclude-rerun"
+            >
+              Re-optimize without {totalSelectedExclusions} selected item{totalSelectedExclusions === 1 ? '' : 's'}
+            </Button>
+          </div>
+        )}
+
+        {capacityWarning && (
+          <div className="p-4 bg-amber-50 rounded-lg border border-amber-200 space-y-2" data-testid="capacity-warning">
+            <h4 className="font-semibold text-amber-900">Not enough work to fill the week</h4>
+            <p className="text-sm text-amber-900">{capacityWarning.message}</p>
+            <p className="text-xs text-amber-800">
+              Days will come out at roughly {capacityWarning.projectedVisitsPerDay} visits instead of{" "}
+              {capacityWarning.minVisitsPerDay}. This volume supports about{" "}
+              <strong>{capacityWarning.supportedWorkingDays} working day
+              {capacityWarning.supportedWorkingDays === 1 ? "" : "s"} per week</strong> at your minimum -
+              either lower the working days, lower the minimum visits/day, or add more outlets.
+            </p>
+          </div>
+        )}
+
+        {geoOutliers.length > 0 && (
+          <div className="p-4 bg-red-50 rounded-lg border border-red-200 space-y-3" data-testid="geo-outliers">
+            <h4 className="font-semibold text-red-900">
+              Outlets outside the core coverage area ({geoOutliers.length})
+            </h4>
+            <p className="text-xs text-red-800">
+              These outlets sit far outside the market and its rural belt — usually wrong GPS data or outlets that belong to another region. They are <strong>held out of the day-routes</strong> so one bad coordinate cannot turn a rep's day into a cross-country drive; nothing has been deleted. Fix their coordinates, or tick the ones to remove for good and re-run.
+            </p>
+            <div className="space-y-2 max-h-64 overflow-y-auto">
+              {geoOutliers.map((g) => (
+                <label key={g.id} className="flex items-start gap-2 text-sm text-red-900 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked={selectedGeoExclusions.has(g.id)}
+                    onChange={() => toggleGeoExclusion(g.id)}
+                    data-testid={`checkbox-geo-${g.id}`}
+                  />
+                  <span>
+                    <strong>{g.name}</strong> — {g.distanceKm}km from the core area
+                    <span className="block text-xs text-red-700">({g.latitude.toFixed(4)}, {g.longitude.toFixed(4)})</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+            <Button
+              variant="outline"
+              className="w-full border-red-400 text-red-900"
+              disabled={disabled || optimizationMutation.isPending || totalSelectedExclusions === 0}
+              onClick={handleExcludeAndRerun}
+              data-testid="button-geo-exclude-rerun"
+            >
+              Re-optimize without {totalSelectedExclusions} selected item{totalSelectedExclusions === 1 ? '' : 's'}
+            </Button>
+          </div>
+        )}
       </CardContent>
       
       <OptimizationProgressModal
