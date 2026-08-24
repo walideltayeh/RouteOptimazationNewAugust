@@ -194,6 +194,20 @@ export default function Dashboard() {
     },
   });
 
+  // The button is always on the dashboard, so it has to work in both states.
+  // With data loaded it confirms first, because starting over throws that data
+  // away. On an empty dashboard there is nothing to destroy, so it just takes
+  // you straight to the upload step.
+  const handleStartNewOptimization = () => {
+    if (hasOutlets || hasOptimization) {
+      setResetScenariosToo(false);
+      setShowResetConfirm(true);
+      return;
+    }
+    setCurrentStep(1);
+    document.getElementById("upload-step")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
   // Re-running on the same data belongs on the Scenarios page: it keeps the
   // previous plan alongside the new one and shows the KPI differences, instead
   // of silently replacing what you already have. (Every run is captured either way.)
@@ -223,9 +237,9 @@ export default function Dashboard() {
               <p className="text-sm text-[#86868b] mt-1">Manage your sales rep territories and optimize routes</p>
             </div>
             <div className="flex items-center space-x-4">
-              {authStatus?.isSuperuser && (hasOutlets || hasOptimization) && (
+              {authStatus?.isSuperuser && (
                 <Button
-                  onClick={() => { setResetScenariosToo(false); setShowResetConfirm(true); }}
+                  onClick={handleStartNewOptimization}
                   disabled={resetAllMutation.isPending}
                   data-testid="button-new-optimization"
                 >
@@ -364,7 +378,9 @@ export default function Dashboard() {
         {/* Step-by-step process */}
         <div className="space-y-6">
           {/* Step 1: File Upload */}
-          <FileUpload key={resetNonce} />
+          <div id="upload-step">
+            <FileUpload key={resetNonce} />
+          </div>
 
           {/* File Analysis Summary (shown after upload) */}
           {hasOutlets && (
