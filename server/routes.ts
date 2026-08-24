@@ -5,7 +5,7 @@ import * as path from "path";
 import { createHash, randomUUID } from "crypto";
 import { storage } from "./storage";
 import { isAdminConfigured, verifyAdmin, adminCredentialSource } from "./admin-credentials";
-import { dealEvenly, totalWeeklyLoad, partitionByLoad, tidyBoundaries, swapForCompactness, weeklyLoadOf } from "./day-balancer";
+import { dealEvenly, totalWeeklyLoad, growBalancedRegions, swapForCompactness, weeklyLoadOf } from "./day-balancer";
 import { 
   insertOptimizationRunSchema, 
   insertOutletSchema, 
@@ -2880,7 +2880,7 @@ function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[][]): I
   // merely add up to the right workload. Capacity-driven clustering balanced
   // the numbers but let days interleave across the whole city.
   const dailyClusters = swapForCompactness(
-    tidyBoundaries(partitionByLoad(repOutlets, numDays, weeklyLoadOf), weeklyLoadOf, 0.04),
+    growBalancedRegions(repOutlets, numDays, weeklyLoadOf),
     weeklyLoadOf,
   );
   while (dailyClusters.length < numDays) dailyClusters.push([]);
@@ -4507,11 +4507,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // and the balance comes from where each cut falls.
       const monthlyVisitsOf = (o: Outlet) => o.visitFrequency ?? 1;
       const repOutletGroups = swapForCompactness(
-        tidyBoundaries(
-          partitionByLoad(outlets, allReps.length, monthlyVisitsOf),
-          monthlyVisitsOf,
-          Math.min(balanceTolerance, 0.04),
-        ),
+        growBalancedRegions(outlets, allReps.length, monthlyVisitsOf),
         monthlyVisitsOf,
       );
       const zoneAssignments = assignZonesToRepsBalanced(clusters, allReps, balanceTolerance);

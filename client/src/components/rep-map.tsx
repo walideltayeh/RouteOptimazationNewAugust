@@ -32,15 +32,24 @@ if (MAPBOX_TOKEN && MAPBOX_TOKEN !== 'demo_token' && !MAPBOX_TOKEN.includes('you
   mapboxgl.accessToken = MAPBOX_TOKEN;
 }
 
-// Color palette for different days
+// Colours for the days of the week.
+//
+// These must be told apart at a glance on a dense map. The previous palette
+// could not be: Monday and Saturday were both red (RGB distance 47) and
+// Tuesday, Wednesday and Friday were three shades of the same cyan (27-43
+// apart). A six-day plan therefore rendered in three visible colours, which
+// made three tight, well-separated days look like one day scattered across the
+// whole city - the grouping was fine, the map was lying about it.
+//
+// Maximally distinct hues, all readable on a light basemap.
 const DAY_COLORS = [
-  '#FF6B6B', // Monday - Red
-  '#4ECDC4', // Tuesday - Teal
-  '#45B7D1', // Wednesday - Blue
-  '#FED766', // Thursday - Yellow
-  '#2AB7CA', // Friday - Light Blue
-  '#FE4A49', // Saturday - Pink
-  '#6C5CE7'  // Sunday - Purple
+  '#E6194B', // Monday - crimson
+  '#3CB44B', // Tuesday - green
+  '#4363D8', // Wednesday - blue
+  '#F58231', // Thursday - orange
+  '#911EB4', // Friday - purple
+  '#00B8B8', // Saturday - teal
+  '#9A6324'  // Sunday - brown
 ];
 
 const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
