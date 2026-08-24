@@ -5,6 +5,7 @@ import * as path from "path";
 import { createHash, randomUUID } from "crypto";
 import { storage } from "./storage";
 import { isAdminConfigured, verifyAdmin, adminCredentialSource } from "./admin-credentials";
+import { balanceIntoDayGroups, dealEvenly, totalWeeklyLoad, refineRepBalance } from "./day-balancer";
 import { 
   insertOptimizationRunSchema, 
   insertOutletSchema, 
@@ -2016,19 +2017,6 @@ function detectGeoOutliers(
   return flagged;
 }
 
-function generateZoneBasedSchedules(rep: Rep, zones: GeographicCluster[], allClusters: GeographicCluster[]): InsertSchedule[] {
-  const zoneGroups = zones.map(zone => zone.outlets);
-  if (zoneGroups.every(g => g.length === 0)) return [];
-  // Delegate to the zone-preserving anchor-aware scheduler: it keeps each
-  // pre-computed geographic zone as its own day-route (merging/splitting only
-  // when the zone count doesn't match workingDaysPerWeek) instead of
-  // flattening every zone into one pool and re-deriving daily groups from
-  // scratch, which was free to blend outlets from unrelated, distant zones
-  // onto the same day. Still handles VF1/VF2/VF3/VF4 with same-day-of-week
-  // guarantee and balanced weekly load.
-  return buildAnchorAwareSchedulesFromZones(rep, zoneGroups);
-}
-
 function clusterOutletsIntoDailyGroups(outlets: Outlet[], k: number): Outlet[][] {
   if (outlets.length === 0) return [];
   if (k <= 0) k = 1;
@@ -2887,8 +2875,16 @@ function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[][]): I
   const repOutlets = zoneGroups.flat();
   if (repOutlets.length === 0) return [];
 
-  const dailyClusters = buildDailyClustersFromZones(zoneGroups, numDays, rep.maxDailyVisits || undefined);
+  // Zones are sized for geographic tightness, not for a day's workload, so
+  // handing one zone to each day produced days of 24, 26, 1, 11, 1, 1 visits.
+  // Rebalance the rep's outlets into equal-load days instead. Zone boundaries
+  // still shape the result: the balancer is seeded by geography and keeps
+  // days compact, it just refuses to leave a day with an hour of work in it.
+  const dailyClusters = balanceIntoDayGroups(repOutlets, numDays);
   while (dailyClusters.length < numDays) dailyClusters.push([]);
+
+  const loads = dailyClusters.map(g => Math.round(totalWeeklyLoad(g) * 10) / 10);
+  console.log(`[days] ${rep.name}: ${repOutlets.length} outlets -> weekly visits/day ${loads.join(', ')}`);
 
   return scheduleFromDailyClusters(rep, dailyClusters, repOutlets);
 }
@@ -2942,9 +2938,14 @@ function scheduleFromDailyClusters(rep: Rep, dailyClusters: Outlet[][], repOutle
     const vf2 = dayOutlets.filter(o => o.visitFrequency === 2);
     const vf1 = dayOutlets.filter(o => (o.visitFrequency ?? 1) === 1);
 
-    const vf3Buckets = subCluster(vf3, 4);
-    const vf2Buckets = subCluster(vf2, 2);
-    const vf1Buckets = subCluster(vf1, 4);
+    // Split each frequency band into equal-sized buckets, one per week it can
+    // fall on. Clustering these by geography made some weeks far heavier than
+    // others within the same day; dealing them along a route-order walk keeps
+    // the four weeks the same size without meaningfully hurting compactness
+    // (they are all inside one day-route's area already).
+    const vf3Buckets = dealEvenly(vf3, 4);
+    const vf2Buckets = dealEvenly(vf2, 2);
+    const vf1Buckets = dealEvenly(vf1, 4);
 
     for (let week = 1; week <= 4; week++) {
       const weekOutlets: Outlet[] = [...vf4];
@@ -4259,10 +4260,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ? req.body.excludedOutletIds.filter((x: unknown) => typeof x === 'string')
         : [];
       const excludedSet = new Set(excludedOutletIds);
-      const outlets = allStoredOutlets.filter(o => !excludedSet.has(o.id));
+      const selectedOutlets = allStoredOutlets.filter(o => !excludedSet.has(o.id));
       for (const o of allStoredOutlets) {
         if (excludedSet.has(o.id)) {
           await storage.updateOutlet(o.id, { territory: 'Excluded', cluster: null, repId: null });
+        }
+      }
+
+      // Geographic outliers are found BEFORE routing, not after.
+      //
+      // Detecting them afterwards meant every first run routed them: a single
+      // bad record in the Erbil file ("warehouse difference after unloading",
+      // 412km from the city) turned one rep's day into a 430km round trip.
+      // They are held out of the day-routes and reported for review instead -
+      // the user fixes the coordinates or deletes the row, and nothing is
+      // deleted on their behalf. Pass includeGeoOutliers to route them anyway.
+      const geoOutlierRadiusKm = req.body.geoOutlierRadiusKm || 30;
+      const includeGeoOutliers = req.body.includeGeoOutliers === true;
+      const detectedOutliers = detectGeoOutliers(selectedOutlets, geoOutlierRadiusKm);
+      const outlierIds = new Set(detectedOutliers.map(o => o.id));
+
+      // Clear stale flags first so a fixed outlet stops being flagged.
+      for (const o of selectedOutlets) {
+        const shouldFlag = outlierIds.has(o.id);
+        if (shouldFlag && o.geoStatus !== 'offset') {
+          await storage.updateOutlet(o.id, { geoStatus: 'offset' });
+        } else if (!shouldFlag && o.geoStatus === 'offset') {
+          await storage.updateOutlet(o.id, { geoStatus: null });
+        }
+      }
+
+      const outlets = includeGeoOutliers
+        ? selectedOutlets
+        : selectedOutlets.filter(o => !outlierIds.has(o.id));
+
+      if (!includeGeoOutliers && outlierIds.size > 0) {
+        console.log(`[geo] Holding ${outlierIds.size} far-flung outlet(s) out of the routes for review (>${geoOutlierRadiusKm}km from the core area).`);
+        for (const o of detectedOutliers) {
+          await storage.updateOutlet(o.id, { territory: 'Needs Review', cluster: null, repId: null });
         }
       }
 
@@ -4395,13 +4430,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
       
-      // Calculate how many reps we need based on actual zones created.
-      // Each rep covers one zone per working day (zonesPerRep), the same
-      // ratio used above to size targetZones and below to assign zones to
-      // reps - previously this was a hardcoded "10 zones per rep" constant
-      // that ignored workingDaysPerWeek, silently dropping any zones beyond
-      // reps.length * zonesPerRep (they were never assigned to any rep).
-      const requiredRepCount = Math.ceil(actualZoneCount / zonesPerRep);
+      // How many reps the work actually needs.
+      //
+      // This used to be ceil(zoneCount / workingDays), which made headcount a
+      // side effect of how finely the geographic splitter happened to cut the
+      // map. Tightening the radius cap created more zones, and more zones
+      // silently "required" more reps: real Erbil data (2,302 visits/month)
+      // asked for 10 reps to do 4 reps' work, then spread it so thinly that
+      // days came out with one outlet on them.
+      //
+      // Headcount follows demand instead: total monthly visits divided by what
+      // one rep can do in a month. Zones are then distributed across that many
+      // reps, however many zones there happen to be.
+      const dayslotsPerRep = workingDaysPerWeek * 4; // working days in a 4-week cycle
+
+      // Fewest reps that can carry the load without breaking maxVisitsPerDay,
+      // and the most that can be kept busy at minVisitsPerDay.
+      const fewestReps = Math.max(1, Math.ceil(totalMonthlyVisits / (dayslotsPerRep * maxVisitsPerDay)));
+      const mostReps = Math.max(1, Math.floor(totalMonthlyVisits / (dayslotsPerRep * minVisitsPerDay)));
+
+      // Aim for the middle of the requested range so a normal day sits
+      // comfortably inside it rather than pinned to either end, then clamp
+      // into the feasible band.
+      const midTargetPerDay = (minVisitsPerDay + maxVisitsPerDay) / 2;
+      const idealReps = Math.round(totalMonthlyVisits / (dayslotsPerRep * midTargetPerDay));
+      const requiredRepCount = Math.min(Math.max(idealReps, fewestReps), Math.max(fewestReps, mostReps));
+
+      const projectedVisitsPerDay = totalMonthlyVisits / (requiredRepCount * dayslotsPerRep);
+      console.log(`Headcount from demand: ${totalMonthlyVisits} monthly visits, ${dayslotsPerRep} day-slots/rep -> ${requiredRepCount} reps (~${projectedVisitsPerDay.toFixed(1)} visits/day each; feasible band ${fewestReps}-${mostReps})`);
+      if (projectedVisitsPerDay < minVisitsPerDay) {
+        console.warn(`[headcount] ${projectedVisitsPerDay.toFixed(1)} visits/day is below the ${minVisitsPerDay} minimum - this dataset cannot fill ${requiredRepCount} reps at ${workingDaysPerWeek} days/week.`);
+      }
 
       await emitProgress(55, 'Assigning', `Assigning ${outlets.length} outlets to ${actualZoneCount} zones...`);
       console.log(`Need ${requiredRepCount} reps to cover ${actualZoneCount} zones (${zonesPerRep} zones per rep)`);
@@ -4437,6 +4496,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ? Math.min(0.5, Math.max(0.01, req.body.balanceTolerancePct / 100))
         : 0.10;
       const zoneAssignments = assignZonesToRepsBalanced(clusters, allReps, balanceTolerance);
+
+      // Whole zones can only get territories so even - a zone is 40-50 outlets,
+      // so the best zone-level split still left reps ~16% apart on monthly
+      // visits. Trade individual boundary outlets to close the rest of the gap.
+      const repOutletGroups = refineRepBalance(
+        zoneAssignments.map(zones => zones.flatMap(z => z.outlets)),
+        balanceTolerance,
+      );
+      {
+        const visitsOf = (g: Outlet[]) => g.reduce((sum, o) => sum + (o.visitFrequency ?? 1), 0);
+        const loads = repOutletGroups.map(visitsOf);
+        const mean = loads.reduce((a, b) => a + b, 0) / (loads.length || 1);
+        const spread = mean > 0 ? ((Math.max(...loads) - Math.min(...loads)) / mean) * 100 : 0;
+        console.log(`[balance] monthly visits per rep: ${loads.join(', ')} (spread ${spread.toFixed(1)}% of mean, tolerance ${(balanceTolerance * 100).toFixed(0)}%)`);
+      }
       
       await emitProgress(70, 'Scheduling', `Generating schedules for ${allReps.length} reps...`);
       
@@ -4445,20 +4519,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
       for (let repIndex = 0; repIndex < allReps.length; repIndex++) {
         const rep = allReps[repIndex];
         const repZones = zoneAssignments[repIndex] || [];
-        
-        if (repZones.length > 0) {
-          console.log(`${rep.name} will cover zones: ${repZones.map(z => z.id + 1).join(', ')}`);
+        const repOutlets = repOutletGroups[repIndex] || [];
+
+        if (repOutlets.length > 0) {
+          console.log(`${rep.name} will cover zones: ${repZones.map(z => z.id + 1).join(', ')} (${repOutlets.length} outlets after balancing)`);
 
           // Record ownership: repId on the outlet is the source of truth
           // that reassignment and targeted re-optimization rely on.
-          for (const zone of repZones) {
-            for (const outlet of zone.outlets) {
-              await storage.updateOutlet(outlet.id, { repId: rep.id });
-            }
+          for (const outlet of repOutlets) {
+            await storage.updateOutlet(outlet.id, { repId: rep.id });
           }
 
-          // Generate schedule where rep visits one complete zone per day
-          const repSchedules = generateZoneBasedSchedules(rep, repZones, clusters);
+          // Schedule from the rep's balanced outlet set. Passing repZones here
+          // would re-introduce the pre-balance membership and undo the boundary
+          // trades made just above.
+          const repSchedules = buildAnchorAwareSchedulesFromZones(rep, [repOutlets]);
           console.log(`Generated ${repSchedules.length} schedules for ${rep.name}`);
 
           for (const schedule of repSchedules) {
@@ -4566,14 +4641,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         req.body.weightMode === 'value' || req.body.weightMode === 'vf' ? req.body.weightMode : 'isolation';
       const coverage = analyzeCoverageWorthiness(clusters, weightMode);
 
-      // Geographic outliers: outlets far outside the core coverage area,
-      // highlighted for the user to review before deciding on removal.
-      const geoOutlierRadiusKm = req.body.geoOutlierRadiusKm || 30;
-      const geoOutliers = detectGeoOutliers(outlets, geoOutlierRadiusKm);
-      for (const g of geoOutliers) {
-        await storage.updateOutlet(g.id, { geoStatus: 'offset' });
-      }
-
       // Every optimization is captured as a scenario automatically. A run
       // replaces the live plan, so without this the previous plan would be
       // gone for good - capturing means you can always compare against it
@@ -4596,6 +4663,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
         requiredReps: finalRequiredReps,
         assignedOutlets: updatedOutlets.filter(o => o.repId !== null).length,
         excludedOutlets: excludedOutletIds.length,
+        // Far-flung records held out of the routes, for the review panel.
+        outletsNeedingReview: includeGeoOutliers ? 0 : outlierIds.size,
+        // When the data simply cannot fill the requested week, say so instead
+        // of quietly emitting near-empty days. A rep with 1-2 calls a day is a
+        // staffing question, not a routing result.
+        capacityWarning: projectedVisitsPerDay < minVisitsPerDay
+          ? {
+              projectedVisitsPerDay: Math.round(projectedVisitsPerDay * 10) / 10,
+              minVisitsPerDay,
+              // Days per week this volume can actually keep busy at the minimum.
+              supportedWorkingDays: Math.max(1, Math.floor(totalMonthlyVisits / (requiredRepCount * 4 * minVisitsPerDay))),
+              message: `${totalMonthlyVisits} monthly visits across ${requiredRepCount} rep(s) is about ${projectedVisitsPerDay.toFixed(1)} visits/day - below the ${minVisitsPerDay}/day minimum. There is not enough work here to fill ${workingDaysPerWeek} days a week.`,
+            }
+          : null,
         totalWeeklyVisits,
         maxWeeklyCapacityPerRep,
         minWeeklyCapacityPerRep,
@@ -4610,7 +4691,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         },
         coverageSuggestions: coverage.suggestions,
         coverageWeightModeUsed: coverage.weightModeUsed,
-        geoOutliers,
+        geoOutliers: detectedOutliers,
         geoOutlierRadiusKm,
         distanceMode,
         calculation: {

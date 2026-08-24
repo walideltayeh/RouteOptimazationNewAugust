@@ -76,6 +76,12 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
   const [weightModeUsed, setWeightModeUsed] = useState<string>('');
   const [selectedExclusions, setSelectedExclusions] = useState<Set<string>>(new Set());
   const [geoOutliers, setGeoOutliers] = useState<GeoOutlier[]>([]);
+  const [capacityWarning, setCapacityWarning] = useState<{
+    projectedVisitsPerDay: number;
+    minVisitsPerDay: number;
+    supportedWorkingDays: number;
+    message: string;
+  } | null>(null);
   const [selectedGeoExclusions, setSelectedGeoExclusions] = useState<Set<string>>(new Set());
   const [activeExcludedIds, setActiveExcludedIds] = useState<string[]>([]);
 
@@ -152,6 +158,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       setTerritoryBalance(data.territoryBalance || null);
       setWeightModeUsed(data.coverageWeightModeUsed || '');
       setGeoOutliers(data.geoOutliers || []);
+      setCapacityWarning(data.capacityWarning || null);
       setSelectedExclusions(new Set());
       setSelectedGeoExclusions(new Set());
       queryClient.invalidateQueries({ queryKey: ["/api/scenarios"] });
@@ -498,13 +505,27 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
           </div>
         )}
 
+        {capacityWarning && (
+          <div className="p-4 bg-amber-50 rounded-lg border border-amber-200 space-y-2" data-testid="capacity-warning">
+            <h4 className="font-semibold text-amber-900">Not enough work to fill the week</h4>
+            <p className="text-sm text-amber-900">{capacityWarning.message}</p>
+            <p className="text-xs text-amber-800">
+              Days will come out at roughly {capacityWarning.projectedVisitsPerDay} visits instead of{" "}
+              {capacityWarning.minVisitsPerDay}. This volume supports about{" "}
+              <strong>{capacityWarning.supportedWorkingDays} working day
+              {capacityWarning.supportedWorkingDays === 1 ? "" : "s"} per week</strong> at your minimum -
+              either lower the working days, lower the minimum visits/day, or add more outlets.
+            </p>
+          </div>
+        )}
+
         {geoOutliers.length > 0 && (
           <div className="p-4 bg-red-50 rounded-lg border border-red-200 space-y-3" data-testid="geo-outliers">
             <h4 className="font-semibold text-red-900">
               Outlets outside the core coverage area ({geoOutliers.length})
             </h4>
             <p className="text-xs text-red-800">
-              These outlets sit far outside the market and its rural belt — usually wrong GPS data or outlets that belong to another region. Review them before deciding: tick the ones to exclude and re-run.
+              These outlets sit far outside the market and its rural belt — usually wrong GPS data or outlets that belong to another region. They are <strong>held out of the day-routes</strong> so one bad coordinate cannot turn a rep's day into a cross-country drive; nothing has been deleted. Fix their coordinates, or tick the ones to remove for good and re-run.
             </p>
             <div className="space-y-2 max-h-64 overflow-y-auto">
               {geoOutliers.map((g) => (
