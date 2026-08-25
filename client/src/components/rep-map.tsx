@@ -127,6 +127,11 @@ export function RepMap() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
+  const { data: mapboxConfig } = useQuery<{ token?: string }>({
+    queryKey: ["/api/config/mapbox"],
+  });
+  const resolvedMapboxToken = mapboxConfig?.token || MAPBOX_TOKEN;
+
   const { data: reps = [] } = useQuery<Rep[]>({ 
     queryKey: ["/api/reps"] 
   });
@@ -737,7 +742,8 @@ export function RepMap() {
 
   // Initialize map
   useEffect(() => {
-    if (!mapContainer.current || !MAPBOX_TOKEN || map.current) return;
+    if (!mapContainer.current || !resolvedMapboxToken || map.current) return;
+    mapboxgl.accessToken = resolvedMapboxToken;
 
     try {
       const mapInstance = new mapboxgl.Map({
@@ -762,7 +768,7 @@ export function RepMap() {
         map.current = null;
       }
     };
-  }, []);
+  }, [resolvedMapboxToken]);
 
   useEffect(() => {
     const handler = () => {
@@ -1344,7 +1350,7 @@ export function RepMap() {
 
 
 
-  if (!MAPBOX_TOKEN) {
+  if (!resolvedMapboxToken) {
     return (
       <Card className="h-full">
         <CardHeader>

@@ -44,6 +44,11 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
+  const { data: mapboxConfig, isLoading: isMapboxConfigLoading } = useQuery<{ token?: string }>({
+    queryKey: ['/api/config/mapbox'],
+  });
+  const resolvedMapboxToken = mapboxConfig?.token || MAPBOX_TOKEN;
+
   const { data: outlets = [] } = useQuery<Outlet[]>({
     queryKey: ['/api/outlets'],
   });
@@ -102,13 +107,14 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
 
   // Initialize map
   useEffect(() => {
-    if (map.current || !mapContainer.current) return;
+    if (map.current || !mapContainer.current || isMapboxConfigLoading) return;
 
     try {
-      if (!MAPBOX_TOKEN || MAPBOX_TOKEN === 'demo_token' || MAPBOX_TOKEN.includes('your_') || MAPBOX_TOKEN.length <= 10) {
-        setMapError('Mapbox token not configured. Please set VITE_MAPBOX_PUBLIC_KEY environment variable.');
+      if (!resolvedMapboxToken || resolvedMapboxToken === 'demo_token' || resolvedMapboxToken.includes('your_') || resolvedMapboxToken.length <= 10) {
+        setMapError('Mapbox token is not configured.');
         return;
       }
+      mapboxgl.accessToken = resolvedMapboxToken;
 
       // Set Lebanon as default center since that's the data we're working with
       const lebanonCenter: [number, number] = [35.8623, 33.8938]; // Beirut coordinates
@@ -138,7 +144,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
       console.error('Failed to initialize map:', error);
       setMapError('Failed to initialize map. Please check your configuration.');
     }
-  }, []);
+  }, [isMapboxConfigLoading, resolvedMapboxToken]);
 
   // Cluster-based rendering for massive datasets
   useEffect(() => {
@@ -399,7 +405,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     return reps.find(rep => rep.territory === territory);
   };
 
-  if (!MAPBOX_TOKEN || MAPBOX_TOKEN.includes('demo_token')) {
+  if (!isMapboxConfigLoading && (!resolvedMapboxToken || resolvedMapboxToken.includes('demo_token'))) {
     return (
       <div className="flex flex-col h-full ${className}">
         {/* Map Header */}
@@ -411,7 +417,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                 <div className="w-full h-[500px] rounded-lg bg-gray-100 flex items-center justify-center">
                   <div className="text-center p-4">
                     <p className="text-gray-600 mb-2">Map requires Mapbox API token</p>
-                    <p className="text-sm text-gray-500">Set VITE_MAPBOX_TOKEN in your environment</p>
+                    <p className="text-sm text-gray-500">Mapbox is not configured for this app.</p>
                   </div>
                 </div>
 
