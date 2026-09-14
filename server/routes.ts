@@ -3155,6 +3155,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
     next();
   });
 
+  // A Mapbox public token is intentionally usable by browsers. The workspace
+  // stores it without Vite's client-only prefix, so provide it through this
+  // same-origin configuration endpoint for map components.
+  app.get("/api/config/mapbox", (_req: Request, res: Response) => {
+    res.json({
+      token: process.env.MAPBOX_PUBLIC_KEY || process.env.VITE_MAPBOX_PUBLIC_KEY || '',
+    });
+  });
+
   // Superuser login endpoint
   app.post("/api/auth/login", async (req: Request, res: Response) => {
     try {

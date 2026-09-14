@@ -1,0 +1,1 @@
+- [Client-side public secrets](client-public-secrets.md) — Vite only exposes `VITE_` variables; existing public keys without that prefix need intentional server-backed configuration.
