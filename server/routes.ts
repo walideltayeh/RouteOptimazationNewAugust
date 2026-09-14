@@ -5,7 +5,7 @@ import * as path from "path";
 import { createHash, randomUUID } from "crypto";
 import { storage } from "./storage";
 import { isAdminConfigured, verifyAdmin, adminCredentialSource } from "./admin-credentials";
-import { dealEvenly, totalWeeklyLoad, growBalancedRegions, swapForCompactness, weeklyLoadOf } from "./day-balancer";
+import { totalWeeklyLoad, growBalancedRegions, repairLoads, swapForCompactness, polishByCohesion, weeklyLoadOf } from "./day-balancer";
 import { 
   insertOptimizationRunSchema, 
   insertOutletSchema, 
@@ -2879,8 +2879,18 @@ function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[][]): I
   // day is a contiguous piece of the map rather than a set of outlets that
   // merely add up to the right workload. Capacity-driven clustering balanced
   // the numbers but let days interleave across the whole city.
-  const dailyClusters = swapForCompactness(
-    growBalancedRegions(repOutlets, numDays, weeklyLoadOf),
+  // Grow contiguous regions, even out the loads, then two improvement passes:
+  // equal-weight swaps (load-neutral, so they can run freely) followed by
+  // straggler relocation. A final repair re-seats any load the relocation
+  // shifted.
+  const dailyClusters = repairLoads(
+    polishByCohesion(
+      swapForCompactness(
+        repairLoads(growBalancedRegions(repOutlets, numDays, weeklyLoadOf), weeklyLoadOf),
+        weeklyLoadOf,
+      ),
+      weeklyLoadOf,
+    ),
     weeklyLoadOf,
   );
   while (dailyClusters.length < numDays) dailyClusters.push([]);
@@ -2940,14 +2950,19 @@ function scheduleFromDailyClusters(rep: Rep, dailyClusters: Outlet[][], repOutle
     const vf2 = dayOutlets.filter(o => o.visitFrequency === 2);
     const vf1 = dayOutlets.filter(o => (o.visitFrequency ?? 1) === 1);
 
-    // Split each frequency band into equal-sized buckets, one per week it can
-    // fall on. Clustering these by geography made some weeks far heavier than
-    // others within the same day; dealing them along a route-order walk keeps
-    // the four weeks the same size without meaningfully hurting compactness
-    // (they are all inside one day-route's area already).
-    const vf3Buckets = dealEvenly(vf3, 4);
-    const vf2Buckets = dealEvenly(vf2, 2);
-    const vf1Buckets = dealEvenly(vf1, 4);
+    // Split each frequency band into buckets, one per week it can fall on.
+    //
+    // These must be equal-sized AND geographically tight. Dealing them along a
+    // route-order walk kept the weeks even but scattered each one across the
+    // whole day-group: where outlets are visited monthly, a day-group holds
+    // four weeks of work, so every actual day-route ended up covering four
+    // times the ground it needed to. Growing balanced sub-regions gives each
+    // week its own compact corner of the day instead - same size, quarter of
+    // the area. Every outlet counts as one visit here, so unit weight.
+    const oneVisit = () => 1;
+    const vf3Buckets = repairLoads(growBalancedRegions(vf3, 4, oneVisit), oneVisit);
+    const vf2Buckets = repairLoads(growBalancedRegions(vf2, 2, oneVisit), oneVisit);
+    const vf1Buckets = repairLoads(growBalancedRegions(vf1, 4, oneVisit), oneVisit);
 
     for (let week = 1; week <= 4; week++) {
       const weekOutlets: Outlet[] = [...vf4];
@@ -3250,6 +3265,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { buffer, originalname, mimetype } = req.file;
       let data: any[] = [];
 
+      // Visit frequency for rows whose file does not carry one. 1 = monthly,
+      // 2 = biweekly, 3 = three weeks in four, 4 = weekly.
+      const requestedDefaultVf = parseInt(String((req.body as any)?.defaultVisitFrequency ?? ""), 10);
+      const defaultVisitFrequency = [1, 2, 3, 4].includes(requestedDefaultVf) ? requestedDefaultVf : 2;
+      let rowsUsingDefaultVf = 0;
+
       // Parse file based on type
       if (mimetype === "text/csv" || originalname.endsWith(".csv")) {
         const csvText = buffer.toString("utf-8");
@@ -3360,6 +3381,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   row['Outlet Name'] || row['Shop Name'] || row['Store Name'] || row['Customer Name'] ||
                   row.Name || row.name || row.Outlet || row.outlet || "";
 
+          const hasVfColumn = (normalizedRow['vf'] ?? normalizedRow['visitfrequency'] ??
+            row.vf ?? row.VF ?? row.visit_frequency ?? row["Visit Frequency"]) != null;
+          if (!hasVfColumn) rowsUsingDefaultVf++;
+
           const parsedLat = parseFloat(latValue);
           const parsedLng = parseFloat(lngValue);
 
@@ -3396,8 +3421,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
                     row.address || row.Address || "",
             latitude: parsedLat,
             longitude: parsedLng,
+            // A file with no frequency column is not a file that means
+            // "biweekly" - it is a file that has not said. Defaulting silently
+            // doubled the headcount on a 2,693-outlet Damascus file (VF2 needs
+            // 10 reps where VF1 needs 5) with nothing in the UI to show for it,
+            // so the count of assumed rows is reported back and the caller can
+            // set the policy with defaultVisitFrequency.
             visitFrequency: parseInt(normalizedRow['vf'] || normalizedRow['visitfrequency'] ||
-                                    row.vf || row.VF || row.visit_frequency || row["Visit Frequency"] || "2"),
+                                    row.vf || row.VF || row.visit_frequency || row["Visit Frequency"] ||
+                                    String(defaultVisitFrequency)),
             timePerVisit: isNaN(timePerVisit) ? 30 : Math.max(5, Math.min(120, timePerVisit)),
             value: (() => {
               // Commercial weight of the outlet (VC / volume class / sales value)
@@ -3500,7 +3532,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
           vf4Count,
           recommendedReps,
           geoOutliers: geoOutliers.length,
-          geoOutlierDetails: geoOutliers.slice(0, 25)
+          geoOutlierDetails: geoOutliers.slice(0, 25),
+          // How many rows had no visit frequency of their own, and what was
+          // assumed for them. Drives the "we guessed this" notice on upload.
+          rowsUsingDefaultVf,
+          defaultVisitFrequencyUsed: defaultVisitFrequency
         }
       });
 
@@ -4506,8 +4542,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // straight lines instead, so territories tile it without overlapping,
       // and the balance comes from where each cut falls.
       const monthlyVisitsOf = (o: Outlet) => o.visitFrequency ?? 1;
-      const repOutletGroups = swapForCompactness(
-        growBalancedRegions(outlets, allReps.length, monthlyVisitsOf),
+      const repOutletGroups = repairLoads(
+        swapForCompactness(
+          repairLoads(growBalancedRegions(outlets, allReps.length, monthlyVisitsOf), monthlyVisitsOf),
+          monthlyVisitsOf,
+        ),
         monthlyVisitsOf,
       );
       const zoneAssignments = assignZonesToRepsBalanced(clusters, allReps, balanceTolerance);
