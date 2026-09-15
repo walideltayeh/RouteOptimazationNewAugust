@@ -16,7 +16,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { Check, ChevronsUpDown, Zap, Save, Download, GripVertical, Edit2, Trash2, RefreshCw, MapPin, Upload, BarChart3, Search, Maximize2, Minimize2 } from "lucide-react";
+import { Check, ChevronsUpDown, Zap, Save, Download, GripVertical, Edit2, Trash2, RefreshCw, MapPin, Upload, BarChart3, Search, Maximize2, Minimize2, ChevronUp, ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -32,15 +32,24 @@ if (MAPBOX_TOKEN && MAPBOX_TOKEN !== 'demo_token' && !MAPBOX_TOKEN.includes('you
   mapboxgl.accessToken = MAPBOX_TOKEN;
 }
 
-// Color palette for different days
+// Colours for the days of the week.
+//
+// These must be told apart at a glance on a dense map. The previous palette
+// could not be: Monday and Saturday were both red (RGB distance 47) and
+// Tuesday, Wednesday and Friday were three shades of the same cyan (27-43
+// apart). A six-day plan therefore rendered in three visible colours, which
+// made three tight, well-separated days look like one day scattered across the
+// whole city - the grouping was fine, the map was lying about it.
+//
+// Maximally distinct hues, all readable on a light basemap.
 const DAY_COLORS = [
-  '#FF6B6B', // Monday - Red
-  '#4ECDC4', // Tuesday - Teal
-  '#45B7D1', // Wednesday - Blue
-  '#FED766', // Thursday - Yellow
-  '#2AB7CA', // Friday - Light Blue
-  '#FE4A49', // Saturday - Pink
-  '#6C5CE7'  // Sunday - Purple
+  '#E6194B', // Monday - crimson
+  '#3CB44B', // Tuesday - green
+  '#4363D8', // Wednesday - blue
+  '#F58231', // Thursday - orange
+  '#911EB4', // Friday - purple
+  '#00B8B8', // Saturday - teal
+  '#9A6324'  // Sunday - brown
 ];
 
 const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
@@ -74,8 +83,14 @@ export function RepMap() {
   const [selectedReps, setSelectedReps] = useState<string[]>([]);
   const [open, setOpen] = useState(false);
   const [viewMode, setViewMode] = useState<'schedule' | 'universe'>('schedule'); // Schedule view or Universe (all zones) view
-  const [selectedDays, setSelectedDays] = useState<number[]>([1, 2, 3, 4, 5]); // Default to weekdays
-  const [selectedWeeks, setSelectedWeeks] = useState<number[]>([1, 2, 3, 4]); // Default to all weeks so VF1/VF2 outlets are visible
+  // All seven, not Mon-Fri: a six-day operation had its Saturday routes
+  // silently hidden on first load, which looked like missing outlets.
+  const [selectedDays, setSelectedDays] = useState<number[]>([1, 2, 3, 4, 5, 6, 7]);
+  // One week at a time. Drawing all four at once stacks four copies of every
+  // route on top of each other - the map reads as tangled spaghetti crossing
+  // the city even when each day is a tight, sensible cluster. Week 1 shows a
+  // realistic week's work; the week buttons add the rest on demand.
+  const [selectedWeeks, setSelectedWeeks] = useState<number[]>([1]);
   const [selectedRoles, setSelectedRoles] = useState<string[]>(['rep']); // Default to Sales Rep, now multi-select
   const [selectedVfs, setSelectedVfs] = useState<number[]>([1, 2, 3, 4]); // VF filter
   const [colorBy, setColorBy] = useState<'day' | 'vf'>('day'); // Marker coloring mode
@@ -95,9 +110,16 @@ export function RepMap() {
   } | null>(null);
   const [newZone, setNewZone] = useState<string>('');
   const [newRepId, setNewRepId] = useState<string>('');
+  // Rep reassignments queued on the map; nothing executes until the user
+  // hits "Apply & Reoptimize", then affected reps' schedules rework in one
+  // batch instead of once per edited outlet.
+  const [pendingReassignments, setPendingReassignments] = useState<Record<string, { name: string; toRepId: string; toRepName: string }>>({});
   const [needsReoptimization, setNeedsReoptimization] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [fullscreenFiltersOpen, setFullscreenFiltersOpen] = useState(true);
+  const [misfitsOpen, setMisfitsOpen] = useState(false);
+  const [fullscreenRepOpen, setFullscreenRepOpen] = useState(false);
   const [outletSearchOpen, setOutletSearchOpen] = useState(false);
   const [outletSearchQuery, setOutletSearchQuery] = useState("");
   const mapContainerWrapperRef = useRef<HTMLDivElement>(null);
@@ -108,14 +130,22 @@ export function RepMap() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
+  const { data: mapboxConfig } = useQuery<{ token?: string }>({
+    queryKey: ["/api/config/mapbox"],
+  });
+  const resolvedMapboxToken = mapboxConfig?.token || MAPBOX_TOKEN;
+
   const { data: reps = [] } = useQuery<Rep[]>({ 
     queryKey: ["/api/reps"] 
   });
 
-  // Auto-select all reps the first time they load so the map isn't blank after upload+optimize.
+  // Auto-select the first rep when reps load so the map isn't blank after
+  // upload+optimize. Selecting ALL reps by default painted thousands of
+  // markers in 28+ colors at once - unreadable and slow; "Select All"
+  // remains one click away for whoever wants the full picture.
   useEffect(() => {
     if (reps.length > 0 && selectedReps.length === 0) {
-      setSelectedReps(reps.map(r => r.id));
+      setSelectedReps([reps[0].id]);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reps.length]);
@@ -609,9 +639,114 @@ export function RepMap() {
     });
   };
 
+  // --- Rep reassignment queue + misfit detection ---
+
+  const haversineKm = (lat1: number, lng1: number, lat2: number, lng2: number) => {
+    const R = 6371;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLng = (lng2 - lng1) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) ** 2 +
+      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(a));
+  };
+
+  // Territory centers per rep (mean of owned outlets)
+  const repCentroids = useMemo(() => {
+    const acc = new Map<string, { lat: number; lng: number; n: number }>();
+    for (const o of outlets) {
+      if (!o.repId || o.territory === 'Excluded') continue;
+      const c = acc.get(o.repId) || { lat: 0, lng: 0, n: 0 };
+      c.lat += o.latitude; c.lng += o.longitude; c.n++;
+      acc.set(o.repId, c);
+    }
+    const out = new Map<string, { lat: number; lng: number }>();
+    acc.forEach((c, id) => out.set(id, { lat: c.lat / c.n, lng: c.lng / c.n }));
+    return out;
+  }, [outlets]);
+
+  // Reps ranked by distance from the outlet being edited - answers "which
+  // rep's territory is this outlet actually closest to?" with numbers.
+  const rankedRepOptions = useMemo(() => {
+    if (!editingOutlet) return [];
+    return reps
+      .map(rep => {
+        const c = repCentroids.get(rep.id);
+        return { rep, distKm: c ? haversineKm(editingOutlet.lat, editingOutlet.lng, c.lat, c.lng) : Infinity };
+      })
+      .filter(r => r.distKm !== Infinity)
+      .sort((a, b) => a.distKm - b.distKm);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingOutlet, reps, repCentroids]);
+
+  interface MisfitOutlet {
+    outletId: string; name: string;
+    currentRepId: string; currentRepName: string; distCurrentKm: number;
+    suggestedRepId: string; suggestedRepName: string; distSuggestedKm: number;
+    savingsKm: number;
+  }
+  const { data: misfitData } = useQuery<{ misfits: MisfitOutlet[]; total: number }>({
+    queryKey: ["/api/reps/misfit-outlets"],
+    enabled: reps.length > 0,
+  });
+  const misfits = (misfitData?.misfits || []).filter(m => !pendingReassignments[m.outletId]);
+
+  const queueReassignment = (outletId: string, name: string, toRepId: string) => {
+    const toRep = reps.find(r => r.id === toRepId);
+    if (!toRep) return;
+    setPendingReassignments(prev => ({ ...prev, [outletId]: { name, toRepId, toRepName: toRep.name } }));
+  };
+
+  const handleQueueFromDialog = () => {
+    if (!editingOutlet || !newRepId || newRepId === 'keep-current') return;
+    queueReassignment(editingOutlet.id, editingOutlet.name, newRepId);
+    toast({ title: "Queued", description: `${editingOutlet.name} → ${reps.find(r => r.id === newRepId)?.name}. Apply & Reoptimize when ready.` });
+    setEditingOutlet(null);
+    setNewZone('');
+    setNewRepId('');
+  };
+
+  // Execute the whole queue: one reassignment call per target rep, so the
+  // affected reps' schedules rework once each instead of per outlet.
+  const applyPendingMutation = useMutation({
+    mutationFn: async () => {
+      const byRep = new Map<string, string[]>();
+      Object.entries(pendingReassignments).forEach(([outletId, p]) => {
+        if (!byRep.has(p.toRepId)) byRep.set(p.toRepId, []);
+        byRep.get(p.toRepId)!.push(outletId);
+      });
+      const warnings: string[] = [];
+      let moved = 0;
+      for (const [toRepId, outletIds] of Array.from(byRep.entries())) {
+        const res = await apiRequest("POST", "/api/reps/reassign-outlets", { outletIds, toRepId });
+        if (!res.ok) throw new Error((await res.json()).message || "Reassignment failed");
+        const data = await res.json();
+        moved += data.movedOutlets;
+        warnings.push(...(data.warnings || []));
+      }
+      return { moved, warnings };
+    },
+    onSuccess: (r) => {
+      setPendingReassignments({});
+      queryClient.invalidateQueries({ queryKey: ['/api/outlets'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/schedules'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/reps'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/reps/misfit-outlets'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/dashboard/metrics'] });
+      toast({
+        title: "Reoptimized",
+        description: `${r.moved} outlet(s) moved and schedules reworked.${r.warnings.length > 0 ? ' ' + r.warnings.join(' ') : ''}`,
+        variant: r.warnings.length > 0 ? "destructive" : "default",
+      });
+    },
+    onError: (e: Error) => toast({ title: "Apply failed", description: e.message, variant: "destructive" }),
+  });
+
+  const pendingCount = Object.keys(pendingReassignments).length;
+
   // Initialize map
   useEffect(() => {
-    if (!mapContainer.current || !MAPBOX_TOKEN || map.current) return;
+    if (!mapContainer.current || !resolvedMapboxToken || map.current) return;
+    mapboxgl.accessToken = resolvedMapboxToken;
 
     try {
       const mapInstance = new mapboxgl.Map({
@@ -636,28 +771,303 @@ export function RepMap() {
         map.current = null;
       }
     };
-  }, []);
+  }, [resolvedMapboxToken]);
 
+  // Expanding the map is deliberately NOT the browser's Fullscreen API.
+  //
+  // Under native fullscreen the browser paints only the fullscreen element's
+  // subtree. Radix portals popovers and dialogs to document.body, which sits
+  // outside it, so the rep picker opened into nothing: ten items and a 300x384
+  // box present in the DOM, zero pixels on screen. The same went for the outlet
+  // search, the reassignment dialog and the route editor - everything portalled
+  // inside the expanded map. Fixing it per component would mean threading a
+  // portal container through each one, and breaking again on the next one added.
+  //
+  // A fixed inset-0 overlay fills the viewport just as well, keeps the markup in
+  // the normal document so portals land where they are expected, and behaves
+  // the same inside an embedded preview frame (where the Fullscreen API is
+  // blocked outright) as in a standalone tab. The only thing given up is hiding
+  // the browser's own chrome.
   useEffect(() => {
-    const handler = () => {
-      setIsFullscreen(!!document.fullscreenElement);
-      // Call map.resize when fullscreen state changes
-      setTimeout(() => { map.current?.resize(); }, 100);
+    if (!isFullscreen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      // One Escape closes one thing: with a dropdown or dialog open it belongs
+      // to that, not to the map.
+      if (document.querySelector('[data-radix-popper-content-wrapper], [role="dialog"]')) return;
+      setIsFullscreen(false);
     };
-    document.addEventListener('fullscreenchange', handler);
-    return () => document.removeEventListener('fullscreenchange', handler);
-  }, []);
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [isFullscreen]);
 
-  const toggleFullscreen = () => {
-    if (!mapContainerWrapperRef.current) return;
-    if (!document.fullscreenElement) {
-      mapContainerWrapperRef.current.requestFullscreen();
-    } else {
-      document.exitFullscreen();
-    }
-    // Call map.resize after fullscreen state change
-    setTimeout(() => { map.current?.resize(); }, 100);
-  };
+  // Mapbox has to be told when its container changes size.
+  useEffect(() => {
+    const t = setTimeout(() => { map.current?.resize(); }, 120);
+    return () => clearTimeout(t);
+  }, [isFullscreen]);
+
+  const toggleFullscreen = () => setIsFullscreen(v => !v);
+
+  // The rep picker, shared by the toolbar and the fullscreen panel.
+  //
+  // Each caller passes its own open state: both copies stay mounted (the
+  // fullscreen overlay covers the toolbar rather than unmounting it), and a
+  // shared flag would open both popovers at once - two identical listboxes
+  // portalled onto the page.
+  const renderRepSelector = (
+    isOpen: boolean,
+    setIsOpen: (v: boolean) => void,
+    /**
+     * Extra classes for the dropdown panel. The fullscreen copy needs a
+     * z-index above the fullscreen overlay: popovers portal to the end of the
+     * document at z-50, so against an overlay at z-60 the list rendered behind
+     * it - visible through nothing, and every click on a rep swallowed by the
+     * overlay.
+     */
+    contentClassName?: string,
+  ) => (
+          <Popover open={isOpen} onOpenChange={setIsOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                variant="outline"
+                role="combobox"
+                aria-expanded={isOpen}
+                className="w-full justify-between"
+              >
+                {selectedReps.length === 0
+                  ? "Select reps..."
+                  : `${selectedReps.length} rep${selectedReps.length === 1 ? "" : "s"} selected`}
+                <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className={cn("w-[300px] p-0", contentClassName)}>
+              <Command>
+                <CommandInput placeholder="Search reps..." />
+                <div className="flex items-center justify-between gap-2 px-2 py-1.5 border-b">
+                  <span className="text-xs text-muted-foreground">
+                    {selectedReps.length} of {reps.length} selected
+                  </span>
+                  <div className="flex gap-1">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 px-2 text-xs"
+                      onClick={() => setSelectedReps(reps.map(r => r.id))}
+                      data-testid="button-reps-select-all"
+                    >
+                      Select all
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 px-2 text-xs"
+                      onClick={() => setSelectedReps([])}
+                      data-testid="button-reps-select-none"
+                    >
+                      Select none
+                    </Button>
+                  </div>
+                </div>
+                <CommandEmpty>No rep found.</CommandEmpty>
+                <CommandGroup className="max-h-[300px] overflow-y-auto">
+                  {reps.map((rep) => {
+                    return (
+                      <CommandItem
+                        key={rep.id}
+                        value={rep.name}
+                        onSelect={() => toggleRep(rep.id)}
+                      >
+                        <Check
+                          className={cn(
+                            "mr-2 h-4 w-4",
+                            selectedReps.includes(rep.id) ? "opacity-100" : "opacity-0"
+                          )}
+                        />
+                        <div className="flex items-center gap-2 flex-1">
+                          <span>{rep.name} - {rep.territory}</span>
+                        </div>
+                      </CommandItem>
+                    );
+                  })}
+                </CommandGroup>
+              </Command>
+            </PopoverContent>
+          </Popover>
+  );
+
+  // The day/week/frequency filters, rendered both in the card header and as a
+  // floating panel over the fullscreen map. Fullscreen only expands the map
+  // element, so without this the filters are left behind in the collapsed card
+  // and there is no way to change day or week without exiting fullscreen -
+  // which is exactly when you most want to flick between days.
+  //
+  // A plain function rather than a component: called inline it keeps the same
+  // element identity across renders, so the checkboxes do not remount and lose
+  // focus on every toggle.
+  const renderMapFilters = () => (
+    <>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Days</label>
+              <div className="flex items-center gap-1">
+                <button type="button" className="text-xs text-muted-foreground hover:text-foreground"
+                  onClick={() => setSelectedDays([1, 2, 3, 4, 5, 6, 7])}>All</button>
+                <span className="text-xs text-muted-foreground">·</span>
+                <button type="button" className="text-xs text-muted-foreground hover:text-foreground"
+                  onClick={() => setSelectedDays([])}>None</button>
+              </div>
+            </div>
+            {/* The filter IS the legend: each chip carries its own day's route
+                colour, so there is no separate swatch list to cross-reference
+                and no way for the two to drift apart. Filled = showing. */}
+            <div className="flex flex-wrap gap-1.5">
+              {daysOfWeek.map((day, index) => {
+                const dayNumber = index + 1;
+                const on = selectedDays.includes(dayNumber);
+                return (
+                  <button
+                    key={day}
+                    type="button"
+                    onClick={() => setSelectedDays(
+                      on ? selectedDays.filter(d => d !== dayNumber) : [...selectedDays, dayNumber],
+                    )}
+                    aria-pressed={on}
+                    title={day}
+                    data-testid={`chip-day-${dayNumber}`}
+                    className={cn(
+                      "rounded-full border px-2.5 py-1 text-xs font-medium transition-colors",
+                      on ? "border-transparent text-white" : "border-border text-muted-foreground hover:bg-muted",
+                    )}
+                    style={on ? { backgroundColor: DAY_COLORS[index] } : undefined}
+                  >
+                    {day.slice(0, 3)}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Weeks</label>
+            {/* A 4-week cycle is a sequence, so it reads as a segmented row
+                rather than a column of checkboxes. */}
+            <div className="flex gap-1.5">
+              {[1, 2, 3, 4].map((week) => {
+                const on = selectedWeeks.includes(week);
+                return (
+                  <button
+                    key={week}
+                    type="button"
+                    onClick={() => setSelectedWeeks(
+                      on ? selectedWeeks.filter(w => w !== week) : [...selectedWeeks, week],
+                    )}
+                    aria-pressed={on}
+                    data-testid={`chip-week-${week}`}
+                    className={cn(
+                      "flex-1 rounded-lg border px-2 py-1.5 text-xs font-medium transition-colors",
+                      on ? "border-transparent bg-foreground text-background"
+                         : "border-border text-muted-foreground hover:bg-muted",
+                    )}
+                  >
+                    W{week}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" className="text-xs text-muted-foreground hover:text-foreground"
+                onClick={() => setSelectedWeeks([1, 3])}>Weeks 1 &amp; 3</button>
+              <button type="button" className="text-xs text-muted-foreground hover:text-foreground"
+                onClick={() => setSelectedWeeks([2, 4])}>Weeks 2 &amp; 4</button>
+              <button type="button" className="text-xs text-muted-foreground hover:text-foreground"
+                onClick={() => setSelectedWeeks([1, 2, 3, 4])}>All</button>
+            </div>
+          </div>
+
+    </>
+  );
+
+  // Visit frequency and colour-by are useful but not per-glance controls, so
+  // they live behind "More options" and the primary rail fits one screen.
+  const renderSecondaryFilters = () => (
+    <>
+          {/* Visit Frequency Filter */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-medium">Visit Frequency</label>
+              <div className="flex gap-1">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setSelectedVfs([1, 2, 3, 4])}
+                  className="h-6 px-2 text-xs"
+                  data-testid="button-vf-all"
+                >
+                  All
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setSelectedVfs([])}
+                  className="h-6 px-2 text-xs"
+                  data-testid="button-vf-none"
+                >
+                  None
+                </Button>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {[1, 2, 3, 4].map((vf) => (
+                <label key={vf} className="flex items-center space-x-2" data-testid={`checkbox-vf-${vf}`}>
+                  <input
+                    type="checkbox"
+                    checked={selectedVfs.includes(vf)}
+                    onChange={(e) => {
+                      if (e.target.checked) setSelectedVfs([...selectedVfs, vf].sort());
+                      else setSelectedVfs(selectedVfs.filter(x => x !== vf));
+                    }}
+                    className="rounded border-gray-300"
+                  />
+                  <div className="flex items-center gap-1.5">
+                    <div
+                      className="w-3 h-3 rounded-full"
+                      style={{ backgroundColor: VF_COLORS[vf] }}
+                    />
+                    <span className="text-sm">{VF_LABELS[vf]}</span>
+                  </div>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {/* Color By toggle */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Color outlets by</label>
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                variant={colorBy === 'day' ? 'default' : 'outline'}
+                onClick={() => setColorBy('day')}
+                className="flex-1"
+                data-testid="button-color-by-day"
+              >
+                Day
+              </Button>
+              <Button
+                size="sm"
+                variant={colorBy === 'vf' ? 'default' : 'outline'}
+                onClick={() => setColorBy('vf')}
+                className="flex-1"
+                data-testid="button-color-by-vf"
+              >
+                Visit Frequency
+              </Button>
+            </div>
+          </div>
+    </>
+  );
 
   const handleOutletSearch = (outlet: Outlet) => {
     if (map.current) {
@@ -1218,7 +1628,7 @@ export function RepMap() {
 
 
 
-  if (!MAPBOX_TOKEN) {
+  if (!resolvedMapboxToken) {
     return (
       <Card className="h-full">
         <CardHeader>
@@ -1234,9 +1644,23 @@ export function RepMap() {
   }
 
   return (
-    <Card className="h-full flex flex-col">
-      <CardHeader className="pb-4">
-        <CardTitle>Sales Rep Routes</CardTitle>
+    <div className="flex h-full flex-col gap-3">
+      {/* Toolbar: who we are looking at, and the actions. One row, so the map
+          starts near the top of the viewport instead of 1,200px down it. */}
+      <div className="flex flex-wrap items-center gap-3 rounded-xl border bg-card px-4 py-3">
+        <div className="mr-auto min-w-[180px]">
+          <h2 className="text-lg font-semibold leading-tight">Sales Rep Routes</h2>
+          <p className="text-xs text-muted-foreground">
+            {selectedReps.length === 0
+              ? "Choose a rep to see their week"
+              : `${selectedReps.length} rep${selectedReps.length === 1 ? "" : "s"} · ${selectedDays.length} day${selectedDays.length === 1 ? "" : "s"} · week${selectedWeeks.length === 1 ? "" : "s"} ${selectedWeeks.join(", ")}`}
+          </p>
+        </div>
+
+        <div className="w-full sm:w-[260px]">
+          {renderRepSelector(open, setOpen)}
+        </div>
+
         {/* Action Buttons */}
         {selectedReps.length > 0 && (
           <div className="flex gap-2 mt-4">
@@ -1287,6 +1711,89 @@ export function RepMap() {
           </div>
         )}
         
+      </div>
+
+      {/* Things needing a decision sit between the toolbar and the map: visible,
+          but they collapse away once dealt with instead of permanently holding
+          the top of the page. */}
+        {/* Pending rep reassignments queued from the map */}
+        {pendingCount > 0 && (
+          <div className="mt-4 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-xl border border-blue-200 dark:border-blue-800" data-testid="pending-reassignments">
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-sm text-blue-900 dark:text-blue-200 min-w-0">
+                <span className="font-semibold">{pendingCount} outlet{pendingCount === 1 ? '' : 's'} queued for reassignment.</span>{' '}
+                <span className="text-blue-700 dark:text-blue-300 truncate">
+                  {Object.values(pendingReassignments).slice(0, 3).map(p => `${p.name} → ${p.toRepName}`).join(' · ')}
+                  {pendingCount > 3 ? ` · +${pendingCount - 3} more` : ''}
+                </span>
+              </div>
+              <div className="flex gap-2 shrink-0">
+                <Button variant="outline" size="sm" onClick={() => setPendingReassignments({})} disabled={applyPendingMutation.isPending} data-testid="button-discard-pending">
+                  Discard
+                </Button>
+                <Button size="sm" onClick={() => applyPendingMutation.mutate()} disabled={applyPendingMutation.isPending} data-testid="button-apply-reoptimize">
+                  {applyPendingMutation.isPending ? (
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                  ) : (
+                    <RefreshCw className="h-4 w-4 mr-2" />
+                  )}
+                  Apply & Reoptimize
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
+
+        {/* Misfit detection: outlets probably assigned to the wrong rep.
+            Collapsed by default. Expanded it took ~190px of the page's best
+            real estate, permanently, for a list most sessions only skim - and
+            it sat between the user and the map they came for. The headline
+            count is the part that matters; the detail is one click away. */}
+        {misfits.length > 0 && (
+          <div
+            className="rounded-xl border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-900/20"
+            data-testid="misfit-outlets"
+          >
+            <div className="flex flex-wrap items-center gap-2 px-3 py-2">
+              <button
+                type="button"
+                onClick={() => setMisfitsOpen(o => !o)}
+                className="flex items-center gap-2 text-sm font-semibold text-amber-900 dark:text-amber-200"
+                aria-expanded={misfitsOpen}
+                data-testid="button-toggle-misfits"
+              >
+                {misfitsOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                {misfitData?.total} outlet{(misfitData?.total || 0) === 1 ? ' looks' : 's look'} closer to another rep
+              </button>
+              <Button
+                variant="outline" size="sm" className="ml-auto border-amber-400 text-amber-900"
+                onClick={() => misfits.forEach(m => queueReassignment(m.outletId, m.name, m.suggestedRepId))}
+                data-testid="button-queue-all-misfits"
+              >
+                Queue all fixes
+              </Button>
+            </div>
+            {misfitsOpen && (
+              <div className="max-h-40 space-y-1 overflow-y-auto border-t border-amber-200 px-3 py-2 dark:border-amber-800">
+                {misfits.slice(0, 8).map(m => (
+                  <div key={m.outletId} className="flex items-center justify-between gap-2 text-xs text-amber-800 dark:text-amber-300">
+                    <span className="truncate" title={m.name}>
+                      {m.name} — {m.distCurrentKm}km from {m.currentRepName}, {m.distSuggestedKm}km from {m.suggestedRepName}
+                    </span>
+                    <Button
+                      variant="ghost" size="sm" className="h-6 shrink-0 px-2 text-amber-900"
+                      onClick={() => queueReassignment(m.outletId, m.name, m.suggestedRepId)}
+                    >
+                      Queue → {m.suggestedRepName}
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Reoptimize Button - appears after changes */}
         {needsReoptimization && (
           <div className="mt-4 p-3 bg-amber-50 dark:bg-amber-900/20 rounded-xl border border-amber-200 dark:border-amber-800">
@@ -1315,95 +1822,39 @@ export function RepMap() {
           </div>
         )}
         
-        <div className="flex flex-col gap-4 mt-4">
-          <Popover open={open} onOpenChange={setOpen}>
-            <PopoverTrigger asChild>
-              <Button
-                variant="outline"
-                role="combobox"
-                aria-expanded={open}
-                className="w-full justify-between"
-              >
-                {selectedReps.length === 0
-                  ? "Select reps..."
-                  : `${selectedReps.length} rep${selectedReps.length === 1 ? "" : "s"} selected`}
-                <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent className="w-[300px] p-0">
-              <Command>
-                <CommandInput placeholder="Search reps..." />
-                <div className="flex items-center justify-between gap-2 px-2 py-1.5 border-b">
-                  <span className="text-xs text-muted-foreground">
-                    {selectedReps.length} of {reps.length} selected
-                  </span>
-                  <div className="flex gap-1">
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-6 px-2 text-xs"
-                      onClick={() => setSelectedReps(reps.map(r => r.id))}
-                      data-testid="button-reps-select-all"
-                    >
-                      Select all
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-6 px-2 text-xs"
-                      onClick={() => setSelectedReps([])}
-                      data-testid="button-reps-select-none"
-                    >
-                      Select none
-                    </Button>
-                  </div>
-                </div>
-                <CommandEmpty>No rep found.</CommandEmpty>
-                <CommandGroup className="max-h-[300px] overflow-y-auto">
-                  {reps.map((rep) => {
-                    return (
-                      <CommandItem
-                        key={rep.id}
-                        value={rep.name}
-                        onSelect={() => toggleRep(rep.id)}
-                      >
-                        <Check
-                          className={cn(
-                            "mr-2 h-4 w-4",
-                            selectedReps.includes(rep.id) ? "opacity-100" : "opacity-0"
-                          )}
-                        />
-                        <div className="flex items-center gap-2 flex-1">
-                          <span>{rep.name} - {rep.territory}</span>
-                        </div>
-                      </CommandItem>
-                    );
-                  })}
-                </CommandGroup>
-              </Command>
-            </PopoverContent>
-          </Popover>
 
+      {/* Controls beside the map, not stacked above it. The map is what the
+          page is for, so it gets the room. */}
+      <div className="flex min-h-0 flex-1 flex-col gap-3 lg:flex-row">
+        <aside className="w-full shrink-0 space-y-4 overflow-y-auto rounded-xl border bg-card p-4 lg:w-[268px]">
           {selectedReps.length > 0 && (
             <div className="space-y-2">
-              <label className="text-sm font-medium">View Mode</label>
-              <div className="flex gap-2">
-                <Button
-                  variant={viewMode === 'schedule' ? 'default' : 'outline'}
-                  size="sm"
+              <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">View</label>
+              {/* Segmented control rather than two full-width buttons, which
+                  overflowed the rail and clipped the second label. */}
+              <div className="grid grid-cols-2 gap-1 rounded-lg bg-muted p-1">
+                <button
+                  type="button"
                   onClick={() => setViewMode('schedule')}
-                  className="flex-1"
+                  aria-pressed={viewMode === 'schedule'}
+                  className={cn(
+                    "rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
+                    viewMode === 'schedule' ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground",
+                  )}
                 >
-                  Schedule View
-                </Button>
-                <Button
-                  variant={viewMode === 'universe' ? 'default' : 'outline'}
-                  size="sm"
+                  Schedule
+                </button>
+                <button
+                  type="button"
                   onClick={() => setViewMode('universe')}
-                  className="flex-1"
+                  aria-pressed={viewMode === 'universe'}
+                  className={cn(
+                    "rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
+                    viewMode === 'universe' ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground",
+                  )}
                 >
-                  Universe View
-                </Button>
+                  Universe
+                </button>
               </div>
               {viewMode === 'universe' && (
                 <p className="text-xs text-muted-foreground">
@@ -1413,6 +1864,17 @@ export function RepMap() {
             </div>
           )}
 
+
+          {renderMapFilters()}
+
+          {/* Secondary controls, folded away: roles only matter once a
+              hierarchy exists, and most sessions never touch them. */}
+          <details className="rounded-lg border">
+            <summary className="cursor-pointer list-none px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              More options
+            </summary>
+            <div className="space-y-4 border-t px-3 py-3">
+              {renderSecondaryFilters()}
           <div className="space-y-2">
             <label className="text-sm font-medium">Select Roles</label>
             <div className="grid grid-cols-2 gap-2">
@@ -1466,156 +1928,12 @@ export function RepMap() {
               </p>
             )}
           </div>
+            </div>
+          </details>
+        </aside>
 
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Select Days</label>
-            <div className="grid grid-cols-2 gap-2">
-              {daysOfWeek.map((day, index) => {
-                const dayNumber = index + 1; // Convert 0-based index to 1-based dayOfWeek
-                return (
-                  <label key={day} className="flex items-center space-x-2">
-                    <input
-                      type="checkbox"
-                      checked={selectedDays.includes(dayNumber)}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          setSelectedDays([...selectedDays, dayNumber]);
-                        } else {
-                          setSelectedDays(selectedDays.filter(d => d !== dayNumber));
-                        }
-                      }}
-                      className="rounded border-gray-300"
-                    />
-                    <div className="flex items-center gap-1">
-                      <div 
-                        className="w-3 h-3 rounded-full" 
-                        style={{ backgroundColor: DAY_COLORS[index] }}
-                      />
-                      <span className="text-sm">{day}</span>
-                    </div>
-                  </label>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Select Weeks</label>
-            <div className="grid grid-cols-2 gap-2">
-              {[1, 2, 3, 4].map((week) => (
-                <label key={week} className="flex items-center space-x-2">
-                  <input
-                    type="checkbox"
-                    checked={selectedWeeks.includes(week)}
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        setSelectedWeeks([...selectedWeeks, week]);
-                      } else {
-                        setSelectedWeeks(selectedWeeks.filter(w => w !== week));
-                      }
-                    }}
-                    className="rounded border-gray-300"
-                  />
-                  <span className="text-sm">Week {week}</span>
-                </label>
-              ))}
-            </div>
-            <div className="flex gap-2 text-xs text-muted-foreground">
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => setSelectedWeeks([1, 3])}
-                className="h-6 px-2"
-              >
-                Select Week 1/3
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => setSelectedWeeks([2, 4])}
-                className="h-6 px-2"
-              >
-                Select Week 2/4
-              </Button>
-            </div>
-          </div>
-
-          {/* Visit Frequency Filter */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <label className="text-sm font-medium">Visit Frequency</label>
-              <div className="flex gap-1">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => setSelectedVfs([1, 2, 3, 4])}
-                  className="h-6 px-2 text-xs"
-                  data-testid="button-vf-all"
-                >
-                  All
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => setSelectedVfs([])}
-                  className="h-6 px-2 text-xs"
-                  data-testid="button-vf-none"
-                >
-                  None
-                </Button>
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              {[1, 2, 3, 4].map((vf) => (
-                <label key={vf} className="flex items-center space-x-2" data-testid={`checkbox-vf-${vf}`}>
-                  <input
-                    type="checkbox"
-                    checked={selectedVfs.includes(vf)}
-                    onChange={(e) => {
-                      if (e.target.checked) setSelectedVfs([...selectedVfs, vf].sort());
-                      else setSelectedVfs(selectedVfs.filter(x => x !== vf));
-                    }}
-                    className="rounded border-gray-300"
-                  />
-                  <div className="flex items-center gap-1.5">
-                    <div
-                      className="w-3 h-3 rounded-full"
-                      style={{ backgroundColor: VF_COLORS[vf] }}
-                    />
-                    <span className="text-sm">{VF_LABELS[vf]}</span>
-                  </div>
-                </label>
-              ))}
-            </div>
-          </div>
-
-          {/* Color By toggle */}
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Color outlets by</label>
-            <div className="flex gap-2">
-              <Button
-                size="sm"
-                variant={colorBy === 'day' ? 'default' : 'outline'}
-                onClick={() => setColorBy('day')}
-                className="flex-1"
-                data-testid="button-color-by-day"
-              >
-                Day
-              </Button>
-              <Button
-                size="sm"
-                variant={colorBy === 'vf' ? 'default' : 'outline'}
-                onClick={() => setColorBy('vf')}
-                className="flex-1"
-                data-testid="button-color-by-vf"
-              >
-                Visit Frequency
-              </Button>
-            </div>
-          </div>
-        </div>
-      </CardHeader>
-      <CardContent className="flex-1 p-4">
+        <div className="flex min-h-[420px] flex-1 flex-col">
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
         {/* Outlet Search */}
         <div className="mb-3">
           <Popover open={outletSearchOpen} onOpenChange={setOutletSearchOpen}>
@@ -1656,7 +1974,14 @@ export function RepMap() {
         {/* Map Container with fullscreen and loading overlay */}
         <div
           ref={mapContainerWrapperRef}
-          className={cn("relative", isFullscreen ? "fixed inset-0 z-50 bg-white" : "")}
+          className={cn(
+            "relative",
+            isFullscreen
+              ? "fixed inset-0 z-[60] bg-white dark:bg-[#1c1c1e] p-2"
+              // Grow into whatever the toolbar and notices leave behind, with a
+              // floor so the map is still usable on a short laptop screen.
+              : "flex-1 min-h-[520px]",
+          )}
         >
           <div ref={mapContainer} className={cn("rounded-lg overflow-hidden border", isFullscreen ? "h-full" : "h-full min-h-[400px]")} />
 
@@ -1664,12 +1989,52 @@ export function RepMap() {
           <Button
             variant="secondary"
             size="icon"
-            className="absolute top-3 right-3 z-10 shadow-md"
+            className="absolute top-3 right-3 z-30 shadow-md"
             onClick={toggleFullscreen}
             title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
           >
             {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
           </Button>
+
+          {/* Filters, carried into fullscreen. Collapsible, because on a phone
+              an always-open panel would cover the map it is meant to filter. */}
+          {isFullscreen && (
+            <div className="absolute top-3 left-3 z-30 w-[min(20rem,calc(100vw-5.5rem))]">
+              <div className="rounded-xl border bg-white/95 dark:bg-[#1c1c1e]/95 backdrop-blur shadow-lg">
+                <button
+                  type="button"
+                  onClick={() => setFullscreenFiltersOpen(o => !o)}
+                  className="flex w-full items-center justify-between px-3 py-2 text-sm font-medium"
+                  data-testid="button-toggle-fullscreen-filters"
+                >
+                  <span>Filters</span>
+                  {fullscreenFiltersOpen
+                    ? <ChevronUp className="h-4 w-4" />
+                    : <ChevronDown className="h-4 w-4" />}
+                </button>
+                {fullscreenFiltersOpen && (
+                  <div
+                    className="max-h-[calc(100vh-7rem)] space-y-4 overflow-y-auto border-t px-3 py-3"
+                    data-testid="fullscreen-filters"
+                  >
+                    {/* Which reps to show is the filter that changes the map
+                        most, so it leads here just as it does in the toolbar -
+                        otherwise the only way to switch rep in fullscreen was
+                        to leave fullscreen. */}
+                    <div className="space-y-2">
+                      <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        Reps
+                      </label>
+                      <div data-testid="fullscreen-rep-selector">
+                        {renderRepSelector(fullscreenRepOpen, setFullscreenRepOpen, "z-[70]")}
+                      </div>
+                    </div>
+                    {renderMapFilters()}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Loading Skeleton */}
           {(schedulesLoading || !isMapLoaded) && (
@@ -1877,25 +2242,30 @@ export function RepMap() {
                 </Select>
               </div>
               <div>
-                <p className="text-sm text-gray-600 mb-2">New Rep (optional):</p>
+                <p className="text-sm text-gray-600 mb-2">Reassign to Rep (sorted by distance to this outlet):</p>
                 <Select value={newRepId} onValueChange={setNewRepId}>
-                  <SelectTrigger>
+                  <SelectTrigger data-testid="select-reassign-rep">
                     <SelectValue placeholder="Keep current rep or select new" />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="keep-current">Keep Current Rep</SelectItem>
-                    {reps.map(rep => (
-                      <SelectItem key={rep.id} value={rep.id}>
-                        {getRecommendations.reps.includes(rep.id) ? `Recommended - ${rep.name}` : rep.name}
-                      </SelectItem>
-                    ))}
+                    {rankedRepOptions
+                      .filter(({ rep }) => rep.id !== editingOutlet?.currentRepId)
+                      .map(({ rep, distKm }, idx) => (
+                        <SelectItem key={rep.id} value={rep.id}>
+                          {rep.name} — {distKm.toFixed(1)} km{idx === 0 ? ' (closest)' : ''}
+                        </SelectItem>
+                      ))}
                   </SelectContent>
                 </Select>
+                <p className="text-xs text-gray-500 mt-1">
+                  Rep changes are queued — hit "Apply &amp; Reoptimize" on the map when you're done editing.
+                </p>
               </div>
             </div>
             <DialogFooter className="flex justify-between sm:justify-between">
-              <Button 
-                variant="destructive" 
+              <Button
+                variant="destructive"
                 onClick={() => setShowDeleteConfirm(true)}
                 disabled={deleteMutation.isPending}
               >
@@ -1906,12 +2276,18 @@ export function RepMap() {
                 <Button variant="outline" onClick={() => { setEditingOutlet(null); setNewZone(''); setNewRepId(''); setShowDeleteConfirm(false); }}>
                   Cancel
                 </Button>
-                <Button 
-                  onClick={handleReassignOutlet} 
-                  disabled={!newZone || reassignMutation.isPending}
-                >
-                  {reassignMutation.isPending ? "Reassigning..." : "Reassign"}
-                </Button>
+                {newRepId && newRepId !== 'keep-current' ? (
+                  <Button onClick={handleQueueFromDialog} data-testid="button-queue-reassign">
+                    Queue Reassignment
+                  </Button>
+                ) : (
+                  <Button
+                    onClick={handleReassignOutlet}
+                    disabled={!newZone || reassignMutation.isPending}
+                  >
+                    {reassignMutation.isPending ? "Reassigning..." : "Move Zone"}
+                  </Button>
+                )}
               </div>
             </DialogFooter>
             
@@ -1938,7 +2314,9 @@ export function RepMap() {
             )}
           </DialogContent>
         </Dialog>
-      </CardContent>
-    </Card>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }

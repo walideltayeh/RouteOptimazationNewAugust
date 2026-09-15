@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useLocation } from "wouter";
 import FileUpload from "@/components/file-upload";
 import RepScheduleTable from "@/components/rep-schedule-table";
 import OptimizationSettings from "@/components/optimization-settings";
@@ -14,7 +15,9 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { ArrowUp, Store, Users, CalendarCheck, TrendingUp, Download, Plus, Brain, Trash2, Map, Edit3, ChevronDown, ChevronRight, UserCog, ArrowDown, Save } from "lucide-react";
+import { ArrowUp, Store, Users, CalendarCheck, TrendingUp, Download, Plus, Brain, Trash2, Map, Edit3, ChevronDown, ChevronRight, UserCog, ArrowDown, Save, RotateCcw, GitCompare } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import type { DashboardMetrics, Rep, Outlet, Schedule, RoleHierarchy } from "@shared/schema";
@@ -48,6 +51,12 @@ export default function Dashboard() {
   const [roleHierarchyExpanded, setRoleHierarchyExpanded] = useState(false);
   const [roles, setRoles] = useState<RoleConfig[]>(DEFAULT_ROLES);
   const [hierarchySaved, setHierarchySaved] = useState(false);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [resetScenariosToo, setResetScenariosToo] = useState(false);
+  // Bumped on a full reset so <FileUpload /> remounts and drops its own
+  // "last upload" state along with the server data.
+  const [resetNonce, setResetNonce] = useState(0);
+  const [, setLocation] = useLocation();
   const [offsetMode, setOffsetMode] = useState<OffsetMode>('global');
   const [selectedRepIds, setSelectedRepIds] = useState<string[]>([]);
 
@@ -138,32 +147,72 @@ export default function Dashboard() {
     });
   };
 
-  const clearAllMutation = useMutation({
-    mutationFn: () => fetch("/api/clear", { method: "DELETE" }).then(res => res.json()),
-    onSuccess: () => {
-      // Invalidate all queries to refresh the data
+  // Full reset: clears outlets, reps, schedules and role hierarchies on the
+  // server, then puts the dashboard back to its first-run state so the next
+  // optimization genuinely starts from scratch.
+  const resetAllMutation = useMutation({
+    mutationFn: async (includeScenarios: boolean) => {
+      const response = await apiRequest("POST", "/api/reset", { includeScenarios });
+      return response.json() as Promise<{ success: boolean; scenariosRemoved: number }>;
+    },
+    onSuccess: (data) => {
+      // Reset every piece of dashboard-local wizard state too, otherwise the
+      // page keeps showing role config and territory panels from the old plan.
+      setCurrentStep(1);
+      setRoles(DEFAULT_ROLES);
+      setHierarchySaved(false);
+      setShowTerritoryCustomization(false);
+      setSelectedRepIds([]);
+      setOffsetMode('global');
+      setRoleHierarchyExpanded(false);
+      setResetNonce(n => n + 1);
+
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard/metrics"] });
       queryClient.invalidateQueries({ queryKey: ["/api/reps"] });
       queryClient.invalidateQueries({ queryKey: ["/api/outlets"] });
       queryClient.invalidateQueries({ queryKey: ["/api/schedules"] });
       queryClient.invalidateQueries({ queryKey: ["/api/analysis"] });
-      
+      queryClient.invalidateQueries({ queryKey: ["/api/role-hierarchies"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/plan/kpis"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/scenarios"] });
+
+      window.scrollTo({ top: 0, behavior: "smooth" });
+
       toast({
-        title: "Success!",
-        description: "All data cleared successfully. Ready for new optimization.",
+        title: "Ready for a new optimization",
+        description: data.scenariosRemoved > 0
+          ? `Everything cleared, including ${data.scenariosRemoved} saved scenario${data.scenariosRemoved === 1 ? "" : "s"}. Upload a file to begin.`
+          : "Everything cleared. Upload a file to begin. Saved scenarios were kept.",
       });
     },
     onError: () => {
       toast({
         title: "Error",
-        description: "Failed to clear data. Please try again.",
+        description: "Failed to reset. Please try again.",
         variant: "destructive",
       });
     },
   });
 
-  const handleNewOptimization = () => {
-    clearAllMutation.mutate();
+  // The button is always on the dashboard, so it has to work in both states.
+  // With data loaded it confirms first, because starting over throws that data
+  // away. On an empty dashboard there is nothing to destroy, so it just takes
+  // you straight to the upload step.
+  const handleStartNewOptimization = () => {
+    if (hasOutlets || hasOptimization) {
+      setResetScenariosToo(false);
+      setShowResetConfirm(true);
+      return;
+    }
+    setCurrentStep(1);
+    document.getElementById("upload-step")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  // Re-running on the same data belongs on the Scenarios page: it keeps the
+  // previous plan alongside the new one and shows the KPI differences, instead
+  // of silently replacing what you already have. (Every run is captured either way.)
+  const handleCompareScenarios = () => {
+    setLocation("/scenarios");
   };
 
   if (isLoading) {
@@ -189,16 +238,23 @@ export default function Dashboard() {
             </div>
             <div className="flex items-center space-x-4">
               {authStatus?.isSuperuser && (
-                <Button 
-                  onClick={handleNewOptimization}
-                  disabled={clearAllMutation.isPending}
+                <Button
+                  onClick={handleStartNewOptimization}
+                  disabled={resetAllMutation.isPending}
+                  data-testid="button-new-optimization"
                 >
-                  {clearAllMutation.isPending ? (
+                  {resetAllMutation.isPending ? (
                     <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
                   ) : (
-                    <Plus className="mr-2 h-4 w-4" />
+                    <RotateCcw className="mr-2 h-4 w-4" />
                   )}
-                  New Optimization
+                  Start New Optimization
+                </Button>
+              )}
+              {authStatus?.isSuperuser && hasOutlets && (
+                <Button variant="outline" onClick={handleCompareScenarios} data-testid="button-compare-scenarios">
+                  <GitCompare className="mr-2 h-4 w-4" />
+                  Re-run &amp; Compare
                 </Button>
               )}
               {hasOptimization && (
@@ -249,9 +305,8 @@ export default function Dashboard() {
                   <p className="text-3xl font-bold text-gray-900 mt-1">
                     {metrics?.totalOutlets.toLocaleString() || 0}
                   </p>
-                  <p className="text-sm text-green-600 mt-2 flex items-center">
-                    <ArrowUp className="mr-1 h-3 w-3" />
-                    12% vs last month
+                  <p className="text-sm text-gray-500 mt-2">
+                    Across <span className="font-semibold">{metrics?.activeReps || 0}</span> territories
                   </p>
                 </div>
                 <div className="w-12 h-12 bg-primary/10 rounded-xl flex items-center justify-center">
@@ -289,7 +344,7 @@ export default function Dashboard() {
                     {metrics?.avgDailyVisits || 0}
                   </p>
                   <p className="text-sm text-gray-500 mt-2">
-                    Range: <span className="font-semibold">25-30</span> per rep
+                    Target: <span className="font-semibold">{metrics?.minDailyVisits || 0}-{metrics?.maxDailyVisits || 0}</span> per rep
                   </p>
                 </div>
                 <div className="w-12 h-12 bg-yellow-100 rounded-xl flex items-center justify-center">
@@ -305,11 +360,10 @@ export default function Dashboard() {
                 <div>
                   <p className="text-sm font-medium text-gray-600">Territory Balance</p>
                   <p className="text-3xl font-bold text-gray-900 mt-1">
-                    {metrics?.territoryBalance || 95}%
+                    {metrics?.territoryBalance ?? 0}%
                   </p>
-                  <p className="text-sm text-green-600 mt-2 flex items-center">
-                    <ArrowUp className="mr-1 h-3 w-3" />
-                    Optimized zones
+                  <p className="text-sm text-gray-500 mt-2">
+                    Workload evenness across reps
                   </p>
                 </div>
                 <div className="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center">
@@ -324,7 +378,9 @@ export default function Dashboard() {
         {/* Step-by-step process */}
         <div className="space-y-6">
           {/* Step 1: File Upload */}
-          <FileUpload />
+          <div id="upload-step">
+            <FileUpload key={resetNonce} />
+          </div>
 
           {/* File Analysis Summary (shown after upload) */}
           {hasOutlets && (
@@ -364,7 +420,7 @@ export default function Dashboard() {
           )}
 
           {/* Step 2: Initial Optimization */}
-          <div className={`${!hasOutlets ? 'opacity-50 pointer-events-none' : 'animate-in fade-in slide-in-from-bottom-3 duration-500'}`}>
+          <div id="optimization-settings" className={`transition-all ${!hasOutlets ? 'opacity-50 pointer-events-none' : 'animate-in fade-in slide-in-from-bottom-3 duration-500'}`}>
             <OptimizationSettings disabled={!hasOutlets} />
           </div>
 
@@ -740,6 +796,49 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+
+      <Dialog open={showResetConfirm} onOpenChange={setShowResetConfirm}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Start a new optimization from scratch?</DialogTitle>
+            <DialogDescription>
+              This permanently deletes {outlets.length.toLocaleString()} outlet{outlets.length === 1 ? "" : "s"}
+              {hasOptimization ? `, ${reps.length} rep${reps.length === 1 ? "" : "s"}, every schedule and the role hierarchy` : ""}, and
+              returns the dashboard to Step 1 so you can upload a new file. This cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex items-start space-x-3 rounded-lg border border-[#e5e5e5] dark:border-[#38383a] p-3">
+            <Checkbox
+              id="reset-scenarios"
+              checked={resetScenariosToo}
+              onCheckedChange={(checked) => setResetScenariosToo(checked === true)}
+              data-testid="checkbox-reset-scenarios"
+            />
+            <div className="space-y-1">
+              <Label htmlFor="reset-scenarios" className="text-sm font-medium cursor-pointer">
+                Also delete saved scenarios
+              </Label>
+              <p className="text-xs text-[#86868b]">
+                Leave this off to keep your saved runs on the Scenarios page, so you can still
+                compare the new plan against the old KPIs.
+              </p>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowResetConfirm(false)}>Cancel</Button>
+            <Button
+              className="bg-red-600 hover:bg-red-700 text-white"
+              onClick={() => { setShowResetConfirm(false); resetAllMutation.mutate(resetScenariosToo); }}
+              data-testid="button-confirm-reset"
+            >
+              <Trash2 className="mr-2 h-4 w-4" />
+              Yes, start from scratch
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

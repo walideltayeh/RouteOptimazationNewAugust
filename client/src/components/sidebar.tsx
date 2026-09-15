@@ -10,7 +10,8 @@ import {
   Map, 
   FileText,
   Route,
-  Car,
+  CalendarDays,
+  FlaskConical,
   Users,
   LogIn,
   LogOut,
@@ -24,13 +25,13 @@ const navigation = [
   { name: "Dashboard", href: "/", icon: BarChart3 },
   { name: "Territory Map", href: "/territories", icon: Map },
   { name: "Rep Map", href: "/rep-map", icon: Route },
-  { name: "Vehicles", href: "/vehicles", icon: Car },
+  { name: "Schedules", href: "/schedules", icon: CalendarDays },
+  { name: "Scenarios", href: "/scenarios", icon: FlaskConical },
 ];
 
 interface AuthStatus {
   isAuthenticated: boolean;
   isSuperuser: boolean;
-  isTrialMode: boolean;
 }
 
 export default function Sidebar() {
@@ -47,7 +48,6 @@ export default function Sidebar() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/auth/status"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/trial/status"] });
       window.location.reload();
     }
   });

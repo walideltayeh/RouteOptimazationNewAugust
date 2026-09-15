@@ -71,10 +71,7 @@ export default function TerritoryCustomization({ onClose }: TerritoryCustomizati
         territory: newTerritory,
       }));
       
-      return apiRequest('/api/outlets/bulk-update-territory', {
-        method: 'PATCH',
-        body: JSON.stringify({ updates }),
-      });
+      return apiRequest('PATCH', '/api/outlets/bulk-update-territory', { updates });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/outlets'] });
