@@ -771,25 +771,61 @@ export function RepMap() {
     };
   }, [resolvedMapboxToken]);
 
+  // Expanding the map is driven by React state, not by the browser's
+  // Fullscreen API.
+  //
+  // It used to be the other way round: isFullscreen was set only by the
+  // fullscreenchange event. Inside an embedded preview frame (how the app is
+  // normally viewed on Replit) requestFullscreen is blocked unless the frame
+  // opts in, so the promise rejected silently, no event ever fired, and the
+  // button did nothing at all - no expansion and no filters. Driving the layout
+  // from state makes the button work everywhere; real fullscreen is then
+  // requested as a bonus where the browser allows it.
+  const usingNativeFullscreen = useRef(false);
+
   useEffect(() => {
     const handler = () => {
-      setIsFullscreen(!!document.fullscreenElement);
-      // Call map.resize when fullscreen state changes
+      const active = !!document.fullscreenElement;
+      // Only follow the browser out of fullscreen if we were the ones who put
+      // it there - otherwise an unrelated fullscreen exit elsewhere on the page
+      // would collapse the map.
+      if (!active && usingNativeFullscreen.current) {
+        usingNativeFullscreen.current = false;
+        setIsFullscreen(false);
+      }
       setTimeout(() => { map.current?.resize(); }, 100);
     };
     document.addEventListener('fullscreenchange', handler);
     return () => document.removeEventListener('fullscreenchange', handler);
   }, []);
 
+  // Escape closes the expanded map, matching what fullscreen would do.
+  useEffect(() => {
+    if (!isFullscreen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !document.fullscreenElement) setIsFullscreen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [isFullscreen]);
+
   const toggleFullscreen = () => {
-    if (!mapContainerWrapperRef.current) return;
-    if (!document.fullscreenElement) {
-      mapContainerWrapperRef.current.requestFullscreen();
-    } else {
-      document.exitFullscreen();
+    const next = !isFullscreen;
+    setIsFullscreen(next);
+
+    const el = mapContainerWrapperRef.current;
+    if (next) {
+      // Best effort only: if the frame forbids it, the state-driven layout
+      // above has already expanded the map.
+      el?.requestFullscreen?.()
+        .then(() => { usingNativeFullscreen.current = true; })
+        .catch(() => { usingNativeFullscreen.current = false; });
+    } else if (document.fullscreenElement) {
+      document.exitFullscreen?.().catch(() => {});
+      usingNativeFullscreen.current = false;
     }
-    // Call map.resize after fullscreen state change
-    setTimeout(() => { map.current?.resize(); }, 100);
+
+    setTimeout(() => { map.current?.resize(); }, 120);
   };
 
   // The day/week/frequency filters, rendered both in the card header and as a
@@ -1865,7 +1901,7 @@ export function RepMap() {
         {/* Map Container with fullscreen and loading overlay */}
         <div
           ref={mapContainerWrapperRef}
-          className={cn("relative", isFullscreen ? "fixed inset-0 z-50 bg-white" : "")}
+          className={cn("relative", isFullscreen ? "fixed inset-0 z-[60] bg-white dark:bg-[#1c1c1e] p-2" : "")}
         >
           <div ref={mapContainer} className={cn("rounded-lg overflow-hidden border", isFullscreen ? "h-full" : "h-full min-h-[400px]")} />
 
