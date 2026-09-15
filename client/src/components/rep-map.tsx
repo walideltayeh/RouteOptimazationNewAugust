@@ -119,6 +119,7 @@ export function RepMap() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [fullscreenFiltersOpen, setFullscreenFiltersOpen] = useState(true);
   const [misfitsOpen, setMisfitsOpen] = useState(false);
+  const [fullscreenRepOpen, setFullscreenRepOpen] = useState(false);
   const [outletSearchOpen, setOutletSearchOpen] = useState(false);
   const [outletSearchQuery, setOutletSearchQuery] = useState("");
   const mapContainerWrapperRef = useRef<HTMLDivElement>(null);
@@ -804,7 +805,12 @@ export function RepMap() {
   useEffect(() => {
     if (!isFullscreen) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !document.fullscreenElement) setIsFullscreen(false);
+      if (e.key !== 'Escape' || document.fullscreenElement) return;
+      // One Escape should close one thing. With a dropdown or dialog open it
+      // belongs to that, not to the map - otherwise dismissing the rep picker
+      // also threw the user out of fullscreen.
+      if (document.querySelector('[data-radix-popper-content-wrapper], [role="dialog"]')) return;
+      setIsFullscreen(false);
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
@@ -828,6 +834,93 @@ export function RepMap() {
 
     setTimeout(() => { map.current?.resize(); }, 120);
   };
+
+  // The rep picker, shared by the toolbar and the fullscreen panel.
+  //
+  // Each caller passes its own open state: both copies stay mounted (the
+  // fullscreen overlay covers the toolbar rather than unmounting it), and a
+  // shared flag would open both popovers at once - two identical listboxes
+  // portalled onto the page.
+  const renderRepSelector = (
+    isOpen: boolean,
+    setIsOpen: (v: boolean) => void,
+    /**
+     * Extra classes for the dropdown panel. The fullscreen copy needs a
+     * z-index above the fullscreen overlay: popovers portal to the end of the
+     * document at z-50, so against an overlay at z-60 the list rendered behind
+     * it - visible through nothing, and every click on a rep swallowed by the
+     * overlay.
+     */
+    contentClassName?: string,
+  ) => (
+          <Popover open={isOpen} onOpenChange={setIsOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                variant="outline"
+                role="combobox"
+                aria-expanded={isOpen}
+                className="w-full justify-between"
+              >
+                {selectedReps.length === 0
+                  ? "Select reps..."
+                  : `${selectedReps.length} rep${selectedReps.length === 1 ? "" : "s"} selected`}
+                <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className={cn("w-[300px] p-0", contentClassName)}>
+              <Command>
+                <CommandInput placeholder="Search reps..." />
+                <div className="flex items-center justify-between gap-2 px-2 py-1.5 border-b">
+                  <span className="text-xs text-muted-foreground">
+                    {selectedReps.length} of {reps.length} selected
+                  </span>
+                  <div className="flex gap-1">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 px-2 text-xs"
+                      onClick={() => setSelectedReps(reps.map(r => r.id))}
+                      data-testid="button-reps-select-all"
+                    >
+                      Select all
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 px-2 text-xs"
+                      onClick={() => setSelectedReps([])}
+                      data-testid="button-reps-select-none"
+                    >
+                      Select none
+                    </Button>
+                  </div>
+                </div>
+                <CommandEmpty>No rep found.</CommandEmpty>
+                <CommandGroup className="max-h-[300px] overflow-y-auto">
+                  {reps.map((rep) => {
+                    return (
+                      <CommandItem
+                        key={rep.id}
+                        value={rep.name}
+                        onSelect={() => toggleRep(rep.id)}
+                      >
+                        <Check
+                          className={cn(
+                            "mr-2 h-4 w-4",
+                            selectedReps.includes(rep.id) ? "opacity-100" : "opacity-0"
+                          )}
+                        />
+                        <div className="flex items-center gap-2 flex-1">
+                          <span>{rep.name} - {rep.territory}</span>
+                        </div>
+                      </CommandItem>
+                    );
+                  })}
+                </CommandGroup>
+              </Command>
+            </PopoverContent>
+          </Popover>
+  );
 
   // The day/week/frequency filters, rendered both in the card header and as a
   // floating panel over the fullscreen map. Fullscreen only expands the map
@@ -1591,73 +1684,7 @@ export function RepMap() {
         </div>
 
         <div className="w-full sm:w-[260px]">
-          <Popover open={open} onOpenChange={setOpen}>
-            <PopoverTrigger asChild>
-              <Button
-                variant="outline"
-                role="combobox"
-                aria-expanded={open}
-                className="w-full justify-between"
-              >
-                {selectedReps.length === 0
-                  ? "Select reps..."
-                  : `${selectedReps.length} rep${selectedReps.length === 1 ? "" : "s"} selected`}
-                <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent className="w-[300px] p-0">
-              <Command>
-                <CommandInput placeholder="Search reps..." />
-                <div className="flex items-center justify-between gap-2 px-2 py-1.5 border-b">
-                  <span className="text-xs text-muted-foreground">
-                    {selectedReps.length} of {reps.length} selected
-                  </span>
-                  <div className="flex gap-1">
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-6 px-2 text-xs"
-                      onClick={() => setSelectedReps(reps.map(r => r.id))}
-                      data-testid="button-reps-select-all"
-                    >
-                      Select all
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-6 px-2 text-xs"
-                      onClick={() => setSelectedReps([])}
-                      data-testid="button-reps-select-none"
-                    >
-                      Select none
-                    </Button>
-                  </div>
-                </div>
-                <CommandEmpty>No rep found.</CommandEmpty>
-                <CommandGroup className="max-h-[300px] overflow-y-auto">
-                  {reps.map((rep) => {
-                    return (
-                      <CommandItem
-                        key={rep.id}
-                        value={rep.name}
-                        onSelect={() => toggleRep(rep.id)}
-                      >
-                        <Check
-                          className={cn(
-                            "mr-2 h-4 w-4",
-                            selectedReps.includes(rep.id) ? "opacity-100" : "opacity-0"
-                          )}
-                        />
-                        <div className="flex items-center gap-2 flex-1">
-                          <span>{rep.name} - {rep.territory}</span>
-                        </div>
-                      </CommandItem>
-                    );
-                  })}
-                </CommandGroup>
-              </Command>
-            </PopoverContent>
-          </Popover>
+          {renderRepSelector(open, setOpen)}
         </div>
 
         {/* Action Buttons */}
@@ -2016,6 +2043,18 @@ export function RepMap() {
                     className="max-h-[calc(100vh-7rem)] space-y-4 overflow-y-auto border-t px-3 py-3"
                     data-testid="fullscreen-filters"
                   >
+                    {/* Which reps to show is the filter that changes the map
+                        most, so it leads here just as it does in the toolbar -
+                        otherwise the only way to switch rep in fullscreen was
+                        to leave fullscreen. */}
+                    <div className="space-y-2">
+                      <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        Reps
+                      </label>
+                      <div data-testid="fullscreen-rep-selector">
+                        {renderRepSelector(fullscreenRepOpen, setFullscreenRepOpen, "z-[70]")}
+                      </div>
+                    </div>
                     {renderMapFilters()}
                   </div>
                 )}
