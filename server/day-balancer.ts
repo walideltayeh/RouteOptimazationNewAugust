@@ -554,3 +554,111 @@ export function polishByTourLength(
 
   return working;
 }
+
+/* ------------------------------------------------------------------ *
+ * Space-filling-curve partition
+ * ------------------------------------------------------------------ */
+
+/**
+ * Position along a Hilbert curve for a point on an integer grid.
+ *
+ * A Hilbert curve visits every cell of a square so that cells close together
+ * on the curve are close together on the ground. That property is what makes
+ * it useful here: cut the curve anywhere and both sides are compact regions.
+ */
+function hilbertIndex(order: number, px: number, py: number): number {
+  let x = px, y = py, d = 0;
+  for (let s = order / 2; s >= 1; s /= 2) {
+    const rx = (x & s) > 0 ? 1 : 0;
+    const ry = (y & s) > 0 ? 1 : 0;
+    d += s * s * ((3 * rx) ^ ry);
+    // Rotate the quadrant so the curve stays continuous across it.
+    if (ry === 0) {
+      if (rx === 1) { x = s - 1 - x; y = s - 1 - y; }
+      const t = x; x = y; y = t;
+    }
+  }
+  return d;
+}
+
+/**
+ * Splits outlets into `k` groups of equal visit load, each a contiguous piece
+ * of the map, by walking a Hilbert curve and cutting it into equal-load runs.
+ *
+ * This replaces greedy region growing, which had a structural flaw no amount of
+ * tuning could fix: a region stopped the moment it reached its quota and
+ * dropped out of the running, so the outlets left over at the end - scattered
+ * singles that the dense, early-finishing regions had no room for - could only
+ * go to whichever regions were still under quota. The last region standing
+ * inherited the remainder. Measured across ten Damascus reps, five days came
+ * out tight (often under 1km) and the sixth sprawled across 72% of the rep's
+ * whole territory. It had the right number of visits, which is why every count
+ * check passed; it simply was not a place.
+ *
+ * Cutting a space-filling curve cannot produce a leftover bin. Every outlet
+ * takes its position from where it is, the cuts fall where the cumulative load
+ * says, and no group can finish early and leave others to sweep up.
+ */
+export function partitionByHilbert(
+  outlets: Outlet[],
+  k: number,
+  weightFn: (o: Outlet) => number,
+): Outlet[][] {
+  if (k <= 1 || outlets.length === 0) return [outlets];
+  if (outlets.length <= k) {
+    const groups: Outlet[][] = Array.from({ length: k }, () => []);
+    outlets.forEach((o, i) => groups[i].push(o));
+    return groups;
+  }
+
+  // Project to local kilometres so latitude and longitude are comparable, then
+  // onto a square grid. 2^16 cells a side is far finer than any two outlets are
+  // apart, so the ordering is decided by geography rather than by rounding.
+  const ORDER = 1 << 16;
+  const lats = outlets.map(o => o.latitude);
+  const lngs = outlets.map(o => o.longitude);
+  const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+  const minLng = Math.min(...lngs), maxLng = Math.max(...lngs);
+  const midLat = (minLat + maxLat) / 2;
+  const kmPerLng = 111.32 * Math.cos((midLat * Math.PI) / 180);
+  const spanX = Math.max((maxLng - minLng) * kmPerLng, 1e-9);
+  const spanY = Math.max((maxLat - minLat) * 110.57, 1e-9);
+  // One square grid over the bounding box, so a kilometre means the same in
+  // both directions and the curve is not stretched along the longer axis.
+  const span = Math.max(spanX, spanY);
+
+  const ordered = outlets
+    .map(o => {
+      const x = Math.min(ORDER - 1, Math.floor((((o.longitude - minLng) * kmPerLng) / span) * (ORDER - 1)));
+      const y = Math.min(ORDER - 1, Math.floor((((o.latitude - minLat) * 110.57) / span) * (ORDER - 1)));
+      return { o, d: hilbertIndex(ORDER, x, y) };
+    })
+    .sort((a, b) => a.d - b.d)
+    .map(e => e.o);
+
+  // Cut into k runs whose loads match as closely as the outlets allow.
+  const total = ordered.reduce((s, o) => s + weightFn(o), 0);
+  const groups: Outlet[][] = Array.from({ length: k }, () => []);
+  let running = 0;
+  let g = 0;
+  for (let i = 0; i < ordered.length; i++) {
+    const w = weightFn(ordered[i]);
+    // Advance to the next group when this one has had its share, while leaving
+    // at least one outlet for every group still to come.
+    const remainingGroups = k - g - 1;
+    const remainingOutlets = ordered.length - i;
+    const boundary = (total * (g + 1)) / k;
+    if (g < k - 1 && running + w / 2 > boundary && remainingOutlets > remainingGroups) {
+      g++;
+    }
+    groups[g].push(ordered[i]);
+    running += w;
+  }
+  return groups;
+}
+
+/* ------------------------------------------------------------------ *
+ * Balanced k-means with regret-ordered assignment
+ * ------------------------------------------------------------------ */
+
+

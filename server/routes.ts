@@ -5,7 +5,7 @@ import * as path from "path";
 import { createHash, randomUUID } from "crypto";
 import { storage } from "./storage";
 import { isAdminConfigured, verifyAdmin, adminCredentialSource } from "./admin-credentials";
-import { totalWeeklyLoad, growBalancedRegions, repairLoads, swapForCompactness, polishByCohesion, polishByTourLength, weeklyLoadOf } from "./day-balancer";
+import { totalWeeklyLoad, growBalancedRegions, partitionByHilbert, repairLoads, swapForCompactness, polishByCohesion, polishByTourLength, weeklyLoadOf } from "./day-balancer";
 import { 
   insertOptimizationRunSchema, 
   insertOutletSchema, 
@@ -2886,6 +2886,7 @@ let dayRouteWidthCapKm = 0;
 // across town for them - so the band the user states is the band that is used.
 let dayLoadTolerance = 0.06;
 
+
 function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[][]): InsertSchedule[] {
   const numDays = rep.workingDaysPerWeek || 5;
   const repOutlets = zoneGroups.flat();
@@ -2899,14 +2900,19 @@ function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[][]): I
   // equal-weight swaps (load-neutral, so they can run freely) followed by
   // straggler relocation. A final repair re-seats any load the relocation
   // shifted.
+  // Cut a space-filling curve into equal-load runs, then improve the seams.
+  //
+  // Greedy growing produced five tight days and one that swept up whatever the
+  // others had no room for; see partitionByHilbert for the measurements. The
+  // curve cannot strand leftovers, but its cuts fall wherever the load happens
+  // to reach a boundary, so the polishing passes matter more here: they move
+  // outlets across a seam when doing so shortens the day actually driven.
   const dailyClusters = repairLoads(
-    // Last pass scores the real objective - kilometres driven - after the
-    // earlier passes have done the cheap structural work on proxies.
     polishByTourLength(
       polishByCohesion(
         swapForCompactness(
           repairLoads(
-            growBalancedRegions(repOutlets, numDays, weeklyLoadOf, dayRouteWidthCapKm),
+            partitionByHilbert(repOutlets, numDays, weeklyLoadOf),
             weeklyLoadOf,
             dayLoadTolerance,
           ),
@@ -2921,6 +2927,33 @@ function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[][]): I
     weeklyLoadOf,
     dayLoadTolerance,
   );
+
+  // Guardrail. The failure this replaced looked perfect on every count-based
+  // check and on the median route, because only one day in six was wrong. The
+  // measurement that catches it is the WIDEST day against the rep's own
+  // territory - log it so a future change cannot quietly reintroduce it.
+  {
+    const spreadOf = (g: Outlet[]) => {
+      let worst = 0;
+      for (let i = 0; i < g.length; i++) {
+        for (let j = i + 1; j < g.length; j++) {
+          const d = geoDist(g[i].latitude, g[i].longitude, g[j].latitude, g[j].longitude);
+          if (d > worst) worst = d;
+        }
+      }
+      return worst;
+    };
+    const territory = spreadOf(repOutlets);
+    if (territory > 0.5) {
+      const widest = Math.max(...dailyClusters.filter(g => g.length > 1).map(spreadOf));
+      const ratio = widest / territory;
+      // Both conditions matter. A ratio alone cries wolf on a tight territory
+      // (2.6km of 4.7km is a fine day); a width alone cries wolf on genuinely
+      // sparse ground, where every day is wide because the outlets are.
+      const flag = ratio > 0.7 && widest > 4 ? '  <-- one day may be sweeping up the rest' : '';
+      console.log(`[days] ${rep.name}: widest day ${widest.toFixed(1)}km of a ${territory.toFixed(1)}km territory (${(ratio * 100).toFixed(0)}%)${flag}`);
+    }
+  }
   while (dailyClusters.length < numDays) dailyClusters.push([]);
 
   const loads = dailyClusters.map(g => Math.round(totalWeeklyLoad(g) * 10) / 10);
@@ -4602,9 +4635,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // straight lines instead, so territories tile it without overlapping,
       // and the balance comes from where each cut falls.
       const monthlyVisitsOf = (o: Outlet) => o.visitFrequency ?? 1;
+      // Territories are cut from a space-filling curve for the same reason the
+      // days are: greedy growing gave some reps a tidy 3.5km patch and others
+      // a 22km sprawl across most of the metro, because whichever territory
+      // filled last inherited every outlet the others had no room for. A rep
+      // left holding a dense core plus scattered strays cannot be rescued by
+      // any day-grouping underneath it - someone still has to drive to them.
       const repOutletGroups = repairLoads(
-        swapForCompactness(
-          repairLoads(growBalancedRegions(outlets, allReps.length, monthlyVisitsOf), monthlyVisitsOf),
+        polishByTourLength(
+          // Hand back outlets that sit inside a neighbour's patch. Without this
+          // a rep can end up holding a tight core plus a handful of strays 8km
+          // away, and no day-grouping underneath can rescue that: the strays
+          // have to land on some day, and that day becomes the sprawling one.
+          // This is the same judgement the "closer to another rep" panel makes,
+          // applied during the run rather than left for the user to click.
+          polishByCohesion(
+            swapForCompactness(
+              repairLoads(growBalancedRegions(outlets, allReps.length, monthlyVisitsOf), monthlyVisitsOf),
+              monthlyVisitsOf,
+            ),
+            monthlyVisitsOf,
+          ),
           monthlyVisitsOf,
         ),
         monthlyVisitsOf,
