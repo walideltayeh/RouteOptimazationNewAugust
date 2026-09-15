@@ -5,6 +5,7 @@ import * as path from "path";
 import { createHash, randomUUID } from "crypto";
 import { storage } from "./storage";
 import { isAdminConfigured, verifyAdmin, adminCredentialSource } from "./admin-credentials";
+import { solveBalancedGroups } from "./balanced-solver";
 import { totalWeeklyLoad, growBalancedRegions, partitionByHilbert, repairLoads, swapForCompactness, polishByCohesion, polishByTourLength, weeklyLoadOf } from "./day-balancer";
 import { 
   insertOptimizationRunSchema, 
@@ -2887,7 +2888,7 @@ let dayRouteWidthCapKm = 0;
 let dayLoadTolerance = 0.06;
 
 
-function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[][]): InsertSchedule[] {
+async function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[][]): Promise<InsertSchedule[]> {
   const numDays = rep.workingDaysPerWeek || 5;
   const repOutlets = zoneGroups.flat();
   if (repOutlets.length === 0) return [];
@@ -2912,7 +2913,9 @@ function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[][]): I
       polishByCohesion(
         swapForCompactness(
           repairLoads(
-            partitionByHilbert(repOutlets, numDays, weeklyLoadOf),
+            // Exact assignment when the solver is there; the curve when it is not.
+            (await solveBalancedGroups(repOutlets, numDays, o => o.visitFrequency ?? 1, dayLoadTolerance))
+              ?? partitionByHilbert(repOutlets, numDays, weeklyLoadOf),
             weeklyLoadOf,
             dayLoadTolerance,
           ),
@@ -4651,7 +4654,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // applied during the run rather than left for the user to click.
           polishByCohesion(
             swapForCompactness(
-              repairLoads(growBalancedRegions(outlets, allReps.length, monthlyVisitsOf), monthlyVisitsOf),
+              repairLoads(
+              (await solveBalancedGroups(outlets, allReps.length, monthlyVisitsOf, balanceTolerance))
+                ?? growBalancedRegions(outlets, allReps.length, monthlyVisitsOf),
+              monthlyVisitsOf,
+            ),
               monthlyVisitsOf,
             ),
             monthlyVisitsOf,
@@ -4690,7 +4697,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // Schedule from the rep's balanced outlet set. Passing repZones here
           // would re-introduce the pre-balance membership and undo the boundary
           // trades made just above.
-          const repSchedules = buildAnchorAwareSchedulesFromZones(rep, [repOutlets]);
+          const repSchedules = await buildAnchorAwareSchedulesFromZones(rep, [repOutlets]);
           console.log(`Generated ${repSchedules.length} schedules for ${rep.name}`);
 
           for (const schedule of repSchedules) {
@@ -5531,7 +5538,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           if (!byZone.has(key)) byZone.set(key, []);
           byZone.get(key)!.push(o);
         }
-        const schedules = buildAnchorAwareSchedulesFromZones(rep, Array.from(byZone.values()));
+        const schedules = await buildAnchorAwareSchedulesFromZones(rep, Array.from(byZone.values()));
         for (const s of schedules) await storage.createSchedule(s);
         created = schedules.length;
 
@@ -5865,7 +5872,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           if (!byZone.has(key)) byZone.set(key, []);
           byZone.get(key)!.push(o);
         }
-        const repSchedules = buildAnchorAwareSchedulesFromZones(
+        const repSchedules = await buildAnchorAwareSchedulesFromZones(
           { ...rep, workingDaysPerWeek: rep.workingDaysPerWeek || workingDaysPerWeek } as Rep,
           Array.from(byZone.values())
         );
