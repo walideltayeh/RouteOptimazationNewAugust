@@ -16,7 +16,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { Check, ChevronsUpDown, Zap, Save, Download, GripVertical, Edit2, Trash2, RefreshCw, MapPin, Upload, BarChart3, Search, Maximize2, Minimize2 } from "lucide-react";
+import { Check, ChevronsUpDown, Zap, Save, Download, GripVertical, Edit2, Trash2, RefreshCw, MapPin, Upload, BarChart3, Search, Maximize2, Minimize2, ChevronUp, ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -117,6 +117,7 @@ export function RepMap() {
   const [needsReoptimization, setNeedsReoptimization] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [fullscreenFiltersOpen, setFullscreenFiltersOpen] = useState(true);
   const [outletSearchOpen, setOutletSearchOpen] = useState(false);
   const [outletSearchQuery, setOutletSearchQuery] = useState("");
   const mapContainerWrapperRef = useRef<HTMLDivElement>(null);
@@ -790,6 +791,167 @@ export function RepMap() {
     // Call map.resize after fullscreen state change
     setTimeout(() => { map.current?.resize(); }, 100);
   };
+
+  // The day/week/frequency filters, rendered both in the card header and as a
+  // floating panel over the fullscreen map. Fullscreen only expands the map
+  // element, so without this the filters are left behind in the collapsed card
+  // and there is no way to change day or week without exiting fullscreen -
+  // which is exactly when you most want to flick between days.
+  //
+  // A plain function rather than a component: called inline it keeps the same
+  // element identity across renders, so the checkboxes do not remount and lose
+  // focus on every toggle.
+  const renderMapFilters = () => (
+    <>
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Select Days</label>
+            <div className="grid grid-cols-2 gap-2">
+              {daysOfWeek.map((day, index) => {
+                const dayNumber = index + 1; // Convert 0-based index to 1-based dayOfWeek
+                return (
+                  <label key={day} className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      checked={selectedDays.includes(dayNumber)}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setSelectedDays([...selectedDays, dayNumber]);
+                        } else {
+                          setSelectedDays(selectedDays.filter(d => d !== dayNumber));
+                        }
+                      }}
+                      className="rounded border-gray-300"
+                    />
+                    <div className="flex items-center gap-1">
+                      <div 
+                        className="w-3 h-3 rounded-full" 
+                        style={{ backgroundColor: DAY_COLORS[index] }}
+                      />
+                      <span className="text-sm">{day}</span>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Select Weeks</label>
+            <div className="grid grid-cols-2 gap-2">
+              {[1, 2, 3, 4].map((week) => (
+                <label key={week} className="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    checked={selectedWeeks.includes(week)}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setSelectedWeeks([...selectedWeeks, week]);
+                      } else {
+                        setSelectedWeeks(selectedWeeks.filter(w => w !== week));
+                      }
+                    }}
+                    className="rounded border-gray-300"
+                  />
+                  <span className="text-sm">Week {week}</span>
+                </label>
+              ))}
+            </div>
+            <div className="flex gap-2 text-xs text-muted-foreground">
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setSelectedWeeks([1, 3])}
+                className="h-6 px-2"
+              >
+                Select Week 1/3
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setSelectedWeeks([2, 4])}
+                className="h-6 px-2"
+              >
+                Select Week 2/4
+              </Button>
+            </div>
+          </div>
+
+          {/* Visit Frequency Filter */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-medium">Visit Frequency</label>
+              <div className="flex gap-1">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setSelectedVfs([1, 2, 3, 4])}
+                  className="h-6 px-2 text-xs"
+                  data-testid="button-vf-all"
+                >
+                  All
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setSelectedVfs([])}
+                  className="h-6 px-2 text-xs"
+                  data-testid="button-vf-none"
+                >
+                  None
+                </Button>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {[1, 2, 3, 4].map((vf) => (
+                <label key={vf} className="flex items-center space-x-2" data-testid={`checkbox-vf-${vf}`}>
+                  <input
+                    type="checkbox"
+                    checked={selectedVfs.includes(vf)}
+                    onChange={(e) => {
+                      if (e.target.checked) setSelectedVfs([...selectedVfs, vf].sort());
+                      else setSelectedVfs(selectedVfs.filter(x => x !== vf));
+                    }}
+                    className="rounded border-gray-300"
+                  />
+                  <div className="flex items-center gap-1.5">
+                    <div
+                      className="w-3 h-3 rounded-full"
+                      style={{ backgroundColor: VF_COLORS[vf] }}
+                    />
+                    <span className="text-sm">{VF_LABELS[vf]}</span>
+                  </div>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {/* Color By toggle */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Color outlets by</label>
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                variant={colorBy === 'day' ? 'default' : 'outline'}
+                onClick={() => setColorBy('day')}
+                className="flex-1"
+                data-testid="button-color-by-day"
+              >
+                Day
+              </Button>
+              <Button
+                size="sm"
+                variant={colorBy === 'vf' ? 'default' : 'outline'}
+                onClick={() => setColorBy('vf')}
+                className="flex-1"
+                data-testid="button-color-by-vf"
+              >
+                Visit Frequency
+              </Button>
+            </div>
+          </div>
+    </>
+  );
 
   const handleOutletSearch = (outlet: Outlet) => {
     if (map.current) {
@@ -1659,153 +1821,7 @@ export function RepMap() {
               </p>
             )}
           </div>
-
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Select Days</label>
-            <div className="grid grid-cols-2 gap-2">
-              {daysOfWeek.map((day, index) => {
-                const dayNumber = index + 1; // Convert 0-based index to 1-based dayOfWeek
-                return (
-                  <label key={day} className="flex items-center space-x-2">
-                    <input
-                      type="checkbox"
-                      checked={selectedDays.includes(dayNumber)}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          setSelectedDays([...selectedDays, dayNumber]);
-                        } else {
-                          setSelectedDays(selectedDays.filter(d => d !== dayNumber));
-                        }
-                      }}
-                      className="rounded border-gray-300"
-                    />
-                    <div className="flex items-center gap-1">
-                      <div 
-                        className="w-3 h-3 rounded-full" 
-                        style={{ backgroundColor: DAY_COLORS[index] }}
-                      />
-                      <span className="text-sm">{day}</span>
-                    </div>
-                  </label>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Select Weeks</label>
-            <div className="grid grid-cols-2 gap-2">
-              {[1, 2, 3, 4].map((week) => (
-                <label key={week} className="flex items-center space-x-2">
-                  <input
-                    type="checkbox"
-                    checked={selectedWeeks.includes(week)}
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        setSelectedWeeks([...selectedWeeks, week]);
-                      } else {
-                        setSelectedWeeks(selectedWeeks.filter(w => w !== week));
-                      }
-                    }}
-                    className="rounded border-gray-300"
-                  />
-                  <span className="text-sm">Week {week}</span>
-                </label>
-              ))}
-            </div>
-            <div className="flex gap-2 text-xs text-muted-foreground">
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => setSelectedWeeks([1, 3])}
-                className="h-6 px-2"
-              >
-                Select Week 1/3
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => setSelectedWeeks([2, 4])}
-                className="h-6 px-2"
-              >
-                Select Week 2/4
-              </Button>
-            </div>
-          </div>
-
-          {/* Visit Frequency Filter */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <label className="text-sm font-medium">Visit Frequency</label>
-              <div className="flex gap-1">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => setSelectedVfs([1, 2, 3, 4])}
-                  className="h-6 px-2 text-xs"
-                  data-testid="button-vf-all"
-                >
-                  All
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => setSelectedVfs([])}
-                  className="h-6 px-2 text-xs"
-                  data-testid="button-vf-none"
-                >
-                  None
-                </Button>
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              {[1, 2, 3, 4].map((vf) => (
-                <label key={vf} className="flex items-center space-x-2" data-testid={`checkbox-vf-${vf}`}>
-                  <input
-                    type="checkbox"
-                    checked={selectedVfs.includes(vf)}
-                    onChange={(e) => {
-                      if (e.target.checked) setSelectedVfs([...selectedVfs, vf].sort());
-                      else setSelectedVfs(selectedVfs.filter(x => x !== vf));
-                    }}
-                    className="rounded border-gray-300"
-                  />
-                  <div className="flex items-center gap-1.5">
-                    <div
-                      className="w-3 h-3 rounded-full"
-                      style={{ backgroundColor: VF_COLORS[vf] }}
-                    />
-                    <span className="text-sm">{VF_LABELS[vf]}</span>
-                  </div>
-                </label>
-              ))}
-            </div>
-          </div>
-
-          {/* Color By toggle */}
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Color outlets by</label>
-            <div className="flex gap-2">
-              <Button
-                size="sm"
-                variant={colorBy === 'day' ? 'default' : 'outline'}
-                onClick={() => setColorBy('day')}
-                className="flex-1"
-                data-testid="button-color-by-day"
-              >
-                Day
-              </Button>
-              <Button
-                size="sm"
-                variant={colorBy === 'vf' ? 'default' : 'outline'}
-                onClick={() => setColorBy('vf')}
-                className="flex-1"
-                data-testid="button-color-by-vf"
-              >
-                Visit Frequency
-              </Button>
-            </div>
-          </div>
+          {renderMapFilters()}
         </div>
       </CardHeader>
       <CardContent className="flex-1 p-4">
@@ -1857,12 +1873,40 @@ export function RepMap() {
           <Button
             variant="secondary"
             size="icon"
-            className="absolute top-3 right-3 z-10 shadow-md"
+            className="absolute top-3 right-3 z-30 shadow-md"
             onClick={toggleFullscreen}
             title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
           >
             {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
           </Button>
+
+          {/* Filters, carried into fullscreen. Collapsible, because on a phone
+              an always-open panel would cover the map it is meant to filter. */}
+          {isFullscreen && (
+            <div className="absolute top-3 left-3 z-30 w-[min(20rem,calc(100vw-5.5rem))]">
+              <div className="rounded-xl border bg-white/95 dark:bg-[#1c1c1e]/95 backdrop-blur shadow-lg">
+                <button
+                  type="button"
+                  onClick={() => setFullscreenFiltersOpen(o => !o)}
+                  className="flex w-full items-center justify-between px-3 py-2 text-sm font-medium"
+                  data-testid="button-toggle-fullscreen-filters"
+                >
+                  <span>Filters</span>
+                  {fullscreenFiltersOpen
+                    ? <ChevronUp className="h-4 w-4" />
+                    : <ChevronDown className="h-4 w-4" />}
+                </button>
+                {fullscreenFiltersOpen && (
+                  <div
+                    className="max-h-[calc(100vh-7rem)] space-y-4 overflow-y-auto border-t px-3 py-3"
+                    data-testid="fullscreen-filters"
+                  >
+                    {renderMapFilters()}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Loading Skeleton */}
           {(schedulesLoading || !isMapLoaded) && (

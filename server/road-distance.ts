@@ -2,6 +2,17 @@
 //
 // Modes:
 //   'haversine' - straight-line distance (default; what the app always used).
+//   'grid'      - street-grid distance: a rep cannot drive diagonally through
+//                 a city block, so two outlets one block east and one block
+//                 north of each other are two blocks apart, not 1.41. Scaling
+//                 the straight line by a flat detour factor (as 'road' does)
+//                 cannot express that, because it rescales every pair equally
+//                 and so never changes which outlets look closest - the
+//                 ranking, and therefore the grouping, comes out identical.
+//                 Octile distance does change the ranking: it charges the
+//                 diagonal part of a move at the true cost of cutting the
+//                 corner and the rest at street cost, which favours outlets
+//                 along the same street over ones catty-corner across a block.
 //   'road'      - road-aware estimate: haversine x urban detour factor, plus
 //                 a fixed penalty each time the straight segment crosses a
 //                 configured barrier (a river needs a bridge detour). This is
@@ -13,7 +24,7 @@
 // prefetchRoadMatrix(); geoDist consults that cache first in 'road' mode and
 // falls back to the detour estimate for uncached pairs.
 
-export type DistanceMode = 'haversine' | 'road';
+export type DistanceMode = 'haversine' | 'road' | 'grid';
 
 let currentMode: DistanceMode = 'haversine';
 
@@ -146,10 +157,24 @@ export function clearRoadMatrix(): void {
   osrmCache.clear();
 }
 
+// Octile distance: travel the diagonal while both axes still have ground to
+// cover, then straight along the remaining axis. The classic grid metric, and
+// a much better match for city driving than either the straight line (too
+// optimistic, and diagonally biased) or Manhattan (too pessimistic - real
+// street networks do let you cut across on through-roads).
+function octileKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const dy = haversineKm(lat1, lng1, lat2, lng1); // north-south leg
+  const dx = haversineKm(lat1, lng1, lat1, lng2); // east-west leg
+  const short = Math.min(dx, dy);
+  const long = Math.max(dx, dy);
+  return (long - short) + Math.SQRT2 * short;
+}
+
 // The distance every grouping decision should use.
 export function geoDist(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const straight = haversineKm(lat1, lng1, lat2, lng2);
   if (currentMode === 'haversine') return straight;
+  if (currentMode === 'grid') return octileKm(lat1, lng1, lat2, lng2);
 
   const cached = osrmCache.get(cacheKey(lat1, lng1, lat2, lng2));
   if (cached !== undefined) return cached;

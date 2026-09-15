@@ -59,6 +59,8 @@ interface GeoOutlier {
   distanceKm: number;
 }
 
+type DistanceModel = 'haversine' | 'grid' | 'road';
+
 export default function OptimizationSettings({ disabled = false }: OptimizationSettingsProps) {
   // Daily visit targets (actual visits per rep per day)
   const [minVisitsPerDay, setMinVisitsPerDay] = useState(25);
@@ -66,7 +68,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
 
   // Coverage weighting for area-removal suggestions
   const [weightMode, setWeightMode] = useState<WeightMode>('isolation');
-  const [distanceMode, setDistanceMode] = useState<'haversine' | 'road'>('haversine');
+  const [distanceMode, setDistanceMode] = useState<DistanceModel>('haversine');
   // Route compactness: the max radius a day-zone may span. Lower = tighter
   // routes but fewer visits per day in sparse markets (more reps needed);
   // higher = fuller days over more ground.
@@ -97,7 +99,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
     maxVisitsPerDay: number;
     workingDaysPerWeek: number;
     weightMode: WeightMode;
-    distanceMode: 'haversine' | 'road';
+    distanceMode: DistanceModel;
     maxZoneRadiusKm: number;
     excludedOutletIds?: string[];
     progressId: string;
@@ -145,7 +147,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       maxVisitsPerDay: number;
       workingDaysPerWeek: number;
       weightMode?: WeightMode;
-      distanceMode?: 'haversine' | 'road';
+      distanceMode?: DistanceModel;
       maxZoneRadiusKm?: number;
       excludedOutletIds?: string[];
       progressId?: string;
@@ -360,19 +362,20 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
           <Label htmlFor="distanceMode">Distance Model</Label>
           <Select
             value={distanceMode}
-            onValueChange={(value) => setDistanceMode(value as 'haversine' | 'road')}
+            onValueChange={(value) => setDistanceMode(value as DistanceModel)}
             disabled={disabled}
           >
             <SelectTrigger className="mt-1" disabled={disabled} data-testid="select-distance-mode">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="haversine">Straight-line (fastest)</SelectItem>
-              <SelectItem value="road">Road-aware (urban detours + river crossings)</SelectItem>
+              <SelectItem value="haversine">Straight-line (recommended)</SelectItem>
+              <SelectItem value="grid">Street-grid (for grid-planned cities)</SelectItem>
+              <SelectItem value="road">Road-aware (river/barrier crossings)</SelectItem>
             </SelectContent>
           </Select>
           <p className="text-xs text-gray-500 mt-1">
-            Road-aware mode penalizes routes that cross major barriers (e.g. the Tigris) and approximates real driving distance; connects to an OSRM server for true road distances when configured.
+            Straight-line suits most markets. Street-grid charges diagonal moves at the cost of going round the block, which helps in grid-planned cities but tested worse on Damascus's organic street layout. Road-aware only changes grouping where a barrier (e.g. the Tigris) is configured, or when an OSRM server supplies true road distances — a flat detour factor alone rescales every pair equally and so leaves the grouping unchanged.
           </p>
         </div>
 

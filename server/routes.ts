@@ -5,7 +5,7 @@ import * as path from "path";
 import { createHash, randomUUID } from "crypto";
 import { storage } from "./storage";
 import { isAdminConfigured, verifyAdmin, adminCredentialSource } from "./admin-credentials";
-import { totalWeeklyLoad, growBalancedRegions, repairLoads, swapForCompactness, polishByCohesion, weeklyLoadOf } from "./day-balancer";
+import { totalWeeklyLoad, growBalancedRegions, repairLoads, swapForCompactness, polishByCohesion, polishByTourLength, weeklyLoadOf } from "./day-balancer";
 import { 
   insertOptimizationRunSchema, 
   insertOutletSchema, 
@@ -2870,6 +2870,22 @@ function buildDailyClustersFromZones(zoneGroups: Outlet[][], numDays: number, ma
 // takes pre-computed geographic zones (one per working day, ideally) instead
 // of a flat outlet pool, so the already-tight zone boundaries from the
 // clustering step survive into the final day-routes.
+// Set per optimization run from the "Route Compactness" setting; read by the
+// day-route builder below. Module scope because the builder is called from
+// several entry points (a fresh run, a targeted rebuild after reassignment)
+// that should all honour the same setting.
+let dayRouteWidthCapKm = 0;
+
+// How far a single day's visit count may sit from the average, as a fraction.
+//
+// Derived from the min/max visits-per-day the user asked for. It used to be
+// hardcoded near-equal, which quietly made those two numbers headcount inputs
+// and nothing more: asking for 17-28 produced exactly the same 21-23 days as
+// asking for 21-24. Slack is worth real compactness - a day in a dense pocket
+// can absorb a couple of extra calls instead of a neighbouring day reaching
+// across town for them - so the band the user states is the band that is used.
+let dayLoadTolerance = 0.06;
+
 function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[][]): InsertSchedule[] {
   const numDays = rep.workingDaysPerWeek || 5;
   const repOutlets = zoneGroups.flat();
@@ -2884,14 +2900,26 @@ function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[][]): I
   // straggler relocation. A final repair re-seats any load the relocation
   // shifted.
   const dailyClusters = repairLoads(
-    polishByCohesion(
-      swapForCompactness(
-        repairLoads(growBalancedRegions(repOutlets, numDays, weeklyLoadOf), weeklyLoadOf),
+    // Last pass scores the real objective - kilometres driven - after the
+    // earlier passes have done the cheap structural work on proxies.
+    polishByTourLength(
+      polishByCohesion(
+        swapForCompactness(
+          repairLoads(
+            growBalancedRegions(repOutlets, numDays, weeklyLoadOf, dayRouteWidthCapKm),
+            weeklyLoadOf,
+            dayLoadTolerance,
+          ),
+          weeklyLoadOf,
+        ),
         weeklyLoadOf,
+        dayLoadTolerance,
       ),
       weeklyLoadOf,
+      dayLoadTolerance,
     ),
     weeklyLoadOf,
+    dayLoadTolerance,
   );
   while (dailyClusters.length < numDays) dailyClusters.push([]);
 
@@ -2959,10 +2987,19 @@ function scheduleFromDailyClusters(rep: Rep, dailyClusters: Outlet[][], repOutle
     // times the ground it needed to. Growing balanced sub-regions gives each
     // week its own compact corner of the day instead - same size, quarter of
     // the area. Every outlet counts as one visit here, so unit weight.
+    //
+    // These buckets ARE the actual day-routes the rep drives, so the tour-length
+    // polish belongs here as well as at the day-group level above: polishing the
+    // group only shapes the pool that the weeks are then drawn from.
     const oneVisit = () => 1;
-    const vf3Buckets = repairLoads(growBalancedRegions(vf3, 4, oneVisit), oneVisit);
-    const vf2Buckets = repairLoads(growBalancedRegions(vf2, 2, oneVisit), oneVisit);
-    const vf1Buckets = repairLoads(growBalancedRegions(vf1, 4, oneVisit), oneVisit);
+    const splitWeeks = (pool: Outlet[], buckets: number) =>
+      repairLoads(
+        polishByTourLength(growBalancedRegions(pool, buckets, oneVisit), oneVisit),
+        oneVisit,
+      );
+    const vf3Buckets = splitWeeks(vf3, 4);
+    const vf2Buckets = splitWeeks(vf2, 2);
+    const vf1Buckets = splitWeeks(vf1, 4);
 
     for (let week = 1; week <= 4; week++) {
       const weekOutlets: Outlet[] = [...vf4];
@@ -4362,7 +4399,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // (default) or road-aware (urban detour factor + river-crossing
       // penalties, upgraded to true road distances for zone pairs when an
       // OSRM_URL server is configured).
-      const distanceMode: DistanceMode = req.body.distanceMode === 'road' ? 'road' : 'haversine';
+      const distanceMode: DistanceMode =
+        req.body.distanceMode === 'road' ? 'road'
+        : req.body.distanceMode === 'grid' ? 'grid'
+        : 'haversine';
       setDistanceMode(distanceMode);
       clearRoadMatrix();
 
@@ -4439,6 +4479,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // matter how well its outlet count matches minVisitsPerDay/maxVisitsPerDay,
       // so oversized zones get split into tighter sub-zones here.
       const maxZoneRadiusKm = req.body.maxZoneRadiusKm || 15;
+      // "Route Compactness" now caps the width of a DAY-ROUTE, which is what it
+      // reads as on screen. It used to cap zone radius, and once day-routes
+      // stopped being built from zones it silently stopped mattering: 5km and
+      // 25km produced identical plans.
+      dayRouteWidthCapKm = maxZoneRadiusKm;
+      {
+        const midPoint = (minVisitsPerDay + maxVisitsPerDay) / 2;
+        dayLoadTolerance = midPoint > 0
+          ? Math.min(0.35, Math.max(0.02, ((maxVisitsPerDay - minVisitsPerDay) / 2) / midPoint))
+          : 0.06;
+      }
       const splitClusters = splitOversizedZones(rawClusters, maxZoneRadiusKm);
       // Then merge the under-target zones splitting left behind, so days
       // still carry the requested visit load wherever geography allows.
