@@ -773,42 +773,27 @@ export function RepMap() {
     };
   }, [resolvedMapboxToken]);
 
-  // Expanding the map is driven by React state, not by the browser's
-  // Fullscreen API.
+  // Expanding the map is deliberately NOT the browser's Fullscreen API.
   //
-  // It used to be the other way round: isFullscreen was set only by the
-  // fullscreenchange event. Inside an embedded preview frame (how the app is
-  // normally viewed on Replit) requestFullscreen is blocked unless the frame
-  // opts in, so the promise rejected silently, no event ever fired, and the
-  // button did nothing at all - no expansion and no filters. Driving the layout
-  // from state makes the button work everywhere; real fullscreen is then
-  // requested as a bonus where the browser allows it.
-  const usingNativeFullscreen = useRef(false);
-
-  useEffect(() => {
-    const handler = () => {
-      const active = !!document.fullscreenElement;
-      // Only follow the browser out of fullscreen if we were the ones who put
-      // it there - otherwise an unrelated fullscreen exit elsewhere on the page
-      // would collapse the map.
-      if (!active && usingNativeFullscreen.current) {
-        usingNativeFullscreen.current = false;
-        setIsFullscreen(false);
-      }
-      setTimeout(() => { map.current?.resize(); }, 100);
-    };
-    document.addEventListener('fullscreenchange', handler);
-    return () => document.removeEventListener('fullscreenchange', handler);
-  }, []);
-
-  // Escape closes the expanded map, matching what fullscreen would do.
+  // Under native fullscreen the browser paints only the fullscreen element's
+  // subtree. Radix portals popovers and dialogs to document.body, which sits
+  // outside it, so the rep picker opened into nothing: ten items and a 300x384
+  // box present in the DOM, zero pixels on screen. The same went for the outlet
+  // search, the reassignment dialog and the route editor - everything portalled
+  // inside the expanded map. Fixing it per component would mean threading a
+  // portal container through each one, and breaking again on the next one added.
+  //
+  // A fixed inset-0 overlay fills the viewport just as well, keeps the markup in
+  // the normal document so portals land where they are expected, and behaves
+  // the same inside an embedded preview frame (where the Fullscreen API is
+  // blocked outright) as in a standalone tab. The only thing given up is hiding
+  // the browser's own chrome.
   useEffect(() => {
     if (!isFullscreen) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || document.fullscreenElement) return;
-      // One Escape should close one thing. With a dropdown or dialog open it
-      // belongs to that, not to the map - otherwise dismissing the rep picker
-      // also threw the user out of fullscreen.
+      if (e.key !== 'Escape') return;
+      // One Escape closes one thing: with a dropdown or dialog open it belongs
+      // to that, not to the map.
       if (document.querySelector('[data-radix-popper-content-wrapper], [role="dialog"]')) return;
       setIsFullscreen(false);
     };
@@ -816,24 +801,13 @@ export function RepMap() {
     return () => document.removeEventListener('keydown', onKey);
   }, [isFullscreen]);
 
-  const toggleFullscreen = () => {
-    const next = !isFullscreen;
-    setIsFullscreen(next);
+  // Mapbox has to be told when its container changes size.
+  useEffect(() => {
+    const t = setTimeout(() => { map.current?.resize(); }, 120);
+    return () => clearTimeout(t);
+  }, [isFullscreen]);
 
-    const el = mapContainerWrapperRef.current;
-    if (next) {
-      // Best effort only: if the frame forbids it, the state-driven layout
-      // above has already expanded the map.
-      el?.requestFullscreen?.()
-        .then(() => { usingNativeFullscreen.current = true; })
-        .catch(() => { usingNativeFullscreen.current = false; });
-    } else if (document.fullscreenElement) {
-      document.exitFullscreen?.().catch(() => {});
-      usingNativeFullscreen.current = false;
-    }
-
-    setTimeout(() => { map.current?.resize(); }, 120);
-  };
+  const toggleFullscreen = () => setIsFullscreen(v => !v);
 
   // The rep picker, shared by the toolbar and the fullscreen panel.
   //
