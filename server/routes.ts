@@ -3455,12 +3455,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
           
           const rowNum = outlets.length + skippedRows.length + 2;
 
+          // "Client Name" / "Client Code" are what the trade-census exports
+          // actually use; without them every row of a real route-plan file was
+          // rejected for a missing name.
           const outletName = normalizedRow['outletname'] || normalizedRow['name'] || normalizedRow['outlet'] ||
+                  normalizedRow['clientname'] || normalizedRow['client'] ||
                   normalizedRow['shopname'] || normalizedRow['shop'] ||
                   normalizedRow['storename'] || normalizedRow['store'] ||
                   normalizedRow['customername'] || normalizedRow['customer'] ||
                   normalizedRow['location'] || normalizedRow['site'] || normalizedRow['account'] ||
+                  normalizedRow['clientcode'] || normalizedRow['outletcode'] || normalizedRow['code'] ||
                   row['Outlet Name'] || row['Shop Name'] || row['Store Name'] || row['Customer Name'] ||
+                  row['Client Name'] || row['Client Code'] ||
                   row.Name || row.name || row.Outlet || row.outlet || "";
 
           const hasVfColumn = (normalizedRow['vf'] ?? normalizedRow['visitfrequency'] ??
