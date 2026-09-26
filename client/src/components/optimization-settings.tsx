@@ -171,7 +171,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
   const [selectedGeoExclusions, setSelectedGeoExclusions] = useState<Set<string>>(new Set());
   // Possible duplicate outlets, suggested by GPS and name and confirmed by the
   // user before anything leaves the plan.
-  interface DuplicateMember { id: string; name: string; address: string; latitude: number; longitude: number; visitFrequency: number; repId: string | null }
+  interface DuplicateMember { id: string; name: string; code: string | null; address: string; latitude: number; longitude: number; visitFrequency: number; repId: string | null }
   interface DuplicateCluster { confidence: 'high' | 'medium' | 'low'; reason: string; maxDistanceM: number; keepId: string; members: DuplicateMember[]; suggestedRemoveIds: string[] }
   const { data: duplicateScan } = useQuery<{ radiusM: number; clusters: DuplicateCluster[]; counts: { high: number; medium: number; low: number } }>({
     queryKey: ['/api/outlets/duplicates'],
@@ -842,7 +842,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
                       <label key={m.id} className="flex items-start gap-2 py-0.5 cursor-pointer">
                         <input type="checkbox" className="mt-1" checked={selectedDupExclusions.has(m.id)} onChange={() => toggleDupExclusion(m.id)} data-testid={`checkbox-dup-${m.id}`} />
                         <span className={selectedDupExclusions.has(m.id) ? 'line-through text-gray-500' : ''}>
-                          <strong>{m.name}</strong> · VF{m.visitFrequency}
+                          <strong>{m.name}</strong>{m.code ? <span className="ml-1 font-mono text-xs text-gray-500">{m.code}</span> : null} · VF{m.visitFrequency}
                           {m.id === c.keepId && !selectedDupExclusions.has(m.id) && <span className="ml-1 text-xs text-green-700">keep</span>}
                           <span className="block text-xs text-gray-500">{m.address} · ({m.latitude.toFixed(5)}, {m.longitude.toFixed(5)})</span>
                         </span>
