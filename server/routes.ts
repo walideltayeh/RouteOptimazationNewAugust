@@ -3528,6 +3528,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // File upload and processing
+  // Last resort when none of the column names above matched: take any column
+  // whose name LOOKS like a coordinate and whose value actually IS one.
+  //
+  // The list above is a list of spellings somebody thought of, so it keeps
+  // meeting files it does not cover - a real 1,938-outlet file headed
+  // "Lattitude" was rejected in full, every row reported as missing a latitude
+  // it plainly had. Requiring the value to parse and to sit inside the valid
+  // range is what makes guessing by name safe: a column called "Plate" or
+  // "Translation" contains "lat" but cannot produce a number between -90 and 90
+  // by accident.
+  function coordinateFallback(normalizedRow: Record<string, any>, kind: 'lat' | 'lng'): string | undefined {
+    const looksRight = kind === 'lat' ? /lat/ : /(long|lng|lon)/;
+    const looksWrong = kind === 'lat' ? /(long|lng)/ : /lat/;
+    const limit = kind === 'lat' ? 90 : 180;
+    for (const [key, value] of Object.entries(normalizedRow)) {
+      if (!looksRight.test(key) || looksWrong.test(key)) continue;
+      const n = parseFloat(String(value));
+      if (!Number.isFinite(n) || n === 0 || Math.abs(n) > limit) continue;
+      return String(value);
+    }
+    return undefined;
+  }
+
   app.post("/api/upload", upload.single("file"), async (req: MulterRequest, res) => {
     try {
       if (!req.file) {
@@ -3596,8 +3619,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "File is empty or could not be parsed" });
       }
 
-      // Clear existing outlets
-      await storage.deleteAllOutlets();
+      // NOTE: the existing outlets are NOT cleared here. Clearing first meant a
+      // file the parser could not read destroyed the data already loaded - the
+      // user saw "no valid outlets found" AND lost the 1,938 outlets they had,
+      // with the schedules left pointing at rows that no longer existed. The
+      // delete now happens below, once at least one valid outlet is in hand.
 
       // Process and validate data
       const outlets = [];
@@ -3630,7 +3656,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
                           normalizedRow['poslat'] || normalizedRow['posy'] ||
                           row.latitude || row.Latitude || row.lat || row.Lat || row.LAT ||
                           row.Y || row.y || row['GPS Lat'] || row['GPS Latitude'] || 
-                          row['Geo Lat'] || row['Geo Latitude'] || "0";
+                          row['Geo Lat'] || row['Geo Latitude'] ||
+                          coordinateFallback(normalizedRow, 'lat') || "0";
           
           // Parse longitude - support many common column name variations  
           const lngValue = normalizedRow['longitude'] || normalizedRow['lng'] || normalizedRow['lon'] ||
@@ -3641,7 +3668,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
                           row.longitude || row.Longitude || row.lng || row.Lng || row.LNG ||
                           row.lon || row.Lon || row.LON ||
                           row.X || row.x || row['GPS Long'] || row['GPS Longitude'] || row['GPS Lng'] ||
-                          row['Geo Long'] || row['Geo Longitude'] || row['Geo Lng'] || "0";
+                          row['Geo Long'] || row['Geo Longitude'] || row['Geo Lng'] ||
+                          coordinateFallback(normalizedRow, 'lng') || "0";
           
           const rowNum = outlets.length + skippedRows.length + 2;
 
@@ -3737,12 +3765,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       if (outlets.length === 0) {
         const topReasons = skippedRows.slice(0, 5).map(s => s.reason).join('; ');
+        // Name the columns the file actually has. Without this the message says
+        // a row is missing a latitude while the user is looking at a latitude
+        // column, and there is nothing in the UI to tell them the header is the
+        // problem - they have to read the server log to find out.
+        const columnsFound = data.length > 0 ? Object.keys(data[0]) : [];
+        const columnHint = columnsFound.length > 0
+          ? ` Columns found in your file: ${columnsFound.join(', ')}.`
+          : '';
         return res.status(400).json({ 
-          message: `No valid outlets found. Each row must have Outlet Name, Latitude, and Longitude. ${topReasons ? 'Issues found: ' + topReasons : ''}`,
+          message: `No valid outlets found. Each row must have Outlet Name, Latitude, and Longitude.${columnHint} ${topReasons ? 'Issues found: ' + topReasons : ''}`,
+          columnsFound,
           skippedRows: skippedRows.length,
           skippedDetails: skippedRows.slice(0, 20)
         });
       }
+
+      // Only now that the file has parsed into at least one usable outlet is it
+      // safe to replace what is loaded.
+      await storage.deleteAllOutlets();
 
       // Create outlets in storage
       const createdOutlets = await storage.createOutlets(outlets);
