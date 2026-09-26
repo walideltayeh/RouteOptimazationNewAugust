@@ -6,7 +6,7 @@ import { createHash, randomUUID } from "crypto";
 import { storage } from "./storage";
 import { isAdminConfigured, verifyAdmin, adminCredentialSource } from "./admin-credentials";
 import { solveBalancedGroups } from "./balanced-solver";
-import { totalWeeklyLoad, growBalancedRegions, partitionByHilbert, repairLoads, swapForCompactness, polishByCohesion, polishByTourLength, weeklyLoadOf } from "./day-balancer";
+import { totalWeeklyLoad, growBalancedRegions, partitionByHilbert, repairLoads, swapForCompactness, polishByCohesion, polishByTourLength, recutPairs, tourLength, weeklyLoadOf } from "./day-balancer";
 import { 
   insertOptimizationRunSchema, 
   insertOutletSchema, 
@@ -2728,7 +2728,7 @@ function clusterOutletsIntoDailyGroups(outlets: Outlet[], k: number): Outlet[][]
 //
 // Industry journey-plan rule: same outlet always same dayOfWeek across weeks.
 function buildAnchorAwareSchedules(rep: Rep, repOutlets: Outlet[]): InsertSchedule[] {
-  const numDays = rep.workingDaysPerWeek || 5;
+  const numDays = cycleShape(rep.workingDaysPerWeek || 5).dayGroups;
   if (repOutlets.length === 0) return [];
 
   // STEP 1: Anchor clustering on VF3 + VF4 outlets only. Fall back to all
@@ -2781,7 +2781,7 @@ function buildAnchorAwareSchedules(rep: Rep, repOutlets: Outlet[]): InsertSchedu
 // and re-deriving daily groups from scratch (which was free to blend outlets
 // from distant, unrelated zones onto the same day). Falls back to merging or
 // splitting zones only when the zone count doesn't already match numDays.
-function buildDailyClustersFromZones(zoneGroups: Outlet[][], numDays: number, maxWeeklyVisitsPerDay?: number): Outlet[][] {
+function buildDailyClustersFromZones(zoneGroups: Outlet[][], numDays: number, maxWeeklyVisitsPerDay?: number, mergeRepeats: number = 4): Outlet[][] {
   const zones = zoneGroups.filter(z => z.length > 0).map(z => [...z]);
   if (zones.length === 0) return Array.from({ length: numDays }, () => []);
 
@@ -2803,7 +2803,7 @@ function buildDailyClustersFromZones(zoneGroups: Outlet[][], numDays: number, ma
       lat: g.reduce((s, o) => s + o.latitude, 0) / g.length,
       lng: g.reduce((s, o) => s + o.longitude, 0) / g.length,
     });
-    const weeklyLoad = (g: Outlet[]) => g.reduce((s, o) => s + (o.visitFrequency ?? 1), 0) / 4;
+    const weeklyLoad = (g: Outlet[]) => g.reduce((s, o) => s + (o.visitFrequency ?? 1), 0) / mergeRepeats;
     // A zone holding a flagged geographic outlier must never be merged into
     // a neighbour: one mis-geocoded outlet 450km away would otherwise turn a
     // normal day-route into a cross-country drive. It keeps its own (small)
@@ -2877,6 +2877,97 @@ function buildDailyClustersFromZones(zoneGroups: Outlet[][], numDays: number, ma
 // that should all honour the same setting.
 let dayRouteWidthCapKm = 0;
 
+// Length of one journey-plan cycle, in working days. 0 = derive it as four
+// weeks, which is what the app always assumed.
+//
+// Four weeks was hardcoded, and that quietly made the app unable to express how
+// a real operation runs. The Damascus plan works a 26 working-day cycle: 13
+// day-routes, each visited twice, visit 2 falling exactly 13 working days after
+// visit 1. 26 is not 4 x anything, so the app modelled it as 6 x 4 = 24 and
+// packed 8% more calls into every day than the business actually does - 24.1
+// visits a day where the plan says 22.3.
+let cycleWorkingDays = 0;
+
+// A cycle is dayGroups distinct day-routes, each driven `repeats` times.
+// dayGroups x repeats = cycleDays. Repeats is the largest of 4, 3, 2 that
+// divides the cycle, because it sets the finest visit frequency the plan can
+// express (R=4: weekly/fortnightly/monthly; R=2: fortnightly and monthly only,
+// with weekly outlets given a second day-group - see membershipsFor below).
+//
+// 5-day week, default cycle -> 20 days = 5 groups x 4. The old behaviour.
+// 6-day week, default cycle -> 24 days = 6 groups x 4. The old behaviour.
+// 6-day week, 26-day cycle  -> 26 days = 13 groups x 2. The Damascus plan.
+function cycleShape(workingDaysPerWeek: number): { cycleDays: number; repeats: number; dayGroups: number } {
+  const wd = Math.max(1, workingDaysPerWeek || 5);
+  let cycleDays = cycleWorkingDays > 0 ? cycleWorkingDays : wd * 4;
+  // An odd cycle can only be 1 x itself, which would mean every outlet visited
+  // once and no frequency at all. Drop a day rather than ship that.
+  let repeats = [4, 3, 2].find(r => cycleDays % r === 0);
+  if (!repeats && cycleDays > 2) {
+    cycleDays -= 1;
+    repeats = [4, 3, 2].find(r => cycleDays % r === 0);
+  }
+  if (!repeats) { cycleDays = Math.max(2, cycleDays); repeats = 2; }
+  return { cycleDays, repeats, dayGroups: Math.max(1, Math.round(cycleDays / repeats)) };
+}
+
+// The cycle a plan on disk was built with, read back off it: the number of
+// distinct (week, day) cells one rep holds. Rebuilding a rep's routes after a
+// reassignment must not quietly switch them back to a four-week cycle just
+// because the process restarted since the plan was made.
+async function storedCycleDays(): Promise<number> {
+  const all = await storage.getSchedules();
+  if (all.length === 0) return 0;
+  const cellsByRep = new Map<string, Set<string>>();
+  for (const s of all) {
+    if (!cellsByRep.has(s.repId)) cellsByRep.set(s.repId, new Set());
+    cellsByRep.get(s.repId)!.add(`${s.week}:${s.dayOfWeek}`);
+  }
+  return Math.max(...Array.from(cellsByRep.values(), v => v.size));
+}
+
+// Where a (repeat, day-group) cell falls on the calendar. Cycle working day
+// (r-1) * dayGroups + g, laid onto weeks of workingDaysPerWeek. With 13 groups
+// x 2 repeats and a 6-day week, group 1 is driven on cycle day 1 (week 1,
+// Monday) and cycle day 14 (week 3, Tuesday): 13 working days apart, exactly as
+// the plan specifies. The old 6 x 4 shape still lands every group on the same
+// weekday every week, so nothing changes for a four-week cycle.
+function calendarCell(repeat: number, group: number, dayGroups: number, workingDaysPerWeek: number) {
+  const wd = Math.max(1, workingDaysPerWeek || 5);
+  const cycleDay = (repeat - 1) * dayGroups + group; // 1-based
+  return {
+    cycleDay,
+    week: Math.floor((cycleDay - 1) / wd) + 1,
+    dayOfWeek: ((cycleDay - 1) % wd) + 1,
+  };
+}
+
+// A day-group is driven `repeats` times per cycle, so one membership can carry
+// at most `repeats` visits. An outlet needing more (weekly calls on a 2-repeat
+// cycle) is given a second day-group; each membership carries its share.
+function membershipsFor(vf: number, repeats: number): number[] {
+  const need = Math.max(1, Math.min(vf || 1, repeats * 2));
+  const out: number[] = [];
+  let left = need;
+  while (left > 0) { const take = Math.min(repeats, left); out.push(take); left -= take; }
+  return out;
+}
+
+/** How many offset buckets a frequency band needs, so its visits spread evenly. */
+function bucketsForFrequency(vf: number, repeats: number): number {
+  const times = Math.min(Math.max(1, vf), repeats);
+  return Math.max(1, Math.round(repeats / times));
+}
+
+/** Which repeats (1-based) a bucket of this frequency band is visited in. */
+function repeatsForBucket(vf: number, repeats: number, bucketIndex: number): number[] {
+  const times = Math.min(Math.max(1, vf), repeats);
+  const buckets = bucketsForFrequency(vf, repeats);
+  const out: number[] = [];
+  for (let i = 0; i < times; i++) out.push(((bucketIndex + i * buckets) % repeats) + 1);
+  return out.sort((a, b) => a - b);
+}
+
 // How far a single day's visit count may sit from the average, as a fraction.
 //
 // Derived from the min/max visits-per-day the user asked for. It used to be
@@ -2889,7 +2980,15 @@ let dayLoadTolerance = 0.06;
 
 
 async function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[][]): Promise<InsertSchedule[]> {
-  const numDays = rep.workingDaysPerWeek || 5;
+  // Day-GROUPS, not weekdays: a 26-day cycle is 13 groups driven twice, so the
+  // territory is cut into 13 pieces even though the rep works a 6-day week.
+  const { repeats: cycleRuns, dayGroups: numDays } = cycleShape(rep.workingDaysPerWeek || 5);
+  // What ONE day-group carries for this outlet, per run of that group. A group
+  // is driven `cycleRuns` times a cycle, so it can carry at most that many
+  // visits; an outlet needing more gets a second group (see membershipsFor),
+  // and the overflow is budgeted there, not here. On a four-week cycle nothing
+  // overflows and this is exactly the old vf/4.
+  const runLoadOf = (o: Outlet) => Math.min(o.visitFrequency ?? 1, cycleRuns) / cycleRuns;
   const repOutlets = zoneGroups.flat();
   if (repOutlets.length === 0) return [];
 
@@ -2908,28 +3007,49 @@ async function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[]
   // curve cannot strand leftovers, but its cuts fall wherever the load happens
   // to reach a boundary, so the polishing passes matter more here: they move
   // outlets across a seam when doing so shortens the day actually driven.
-  const dailyClusters = repairLoads(
-    polishByTourLength(
-      polishByCohesion(
-        swapForCompactness(
-          repairLoads(
-            // Exact assignment when the solver is there; the curve when it is not.
-            (await solveBalancedGroups(repOutlets, numDays, o => o.visitFrequency ?? 1, dayLoadTolerance))
-              ?? partitionByHilbert(repOutlets, numDays, weeklyLoadOf),
-            weeklyLoadOf,
-            dayLoadTolerance,
-          ),
-          weeklyLoadOf,
-        ),
-        weeklyLoadOf,
-        dayLoadTolerance,
-      ),
-      weeklyLoadOf,
-      dayLoadTolerance,
-    ),
-    weeklyLoadOf,
+  // ...then re-cut neighbouring pairs from scratch. Moving outlets one at a
+  // time cannot repair a day-group that is the wrong SHAPE, and on a cycle with
+  // few repeats the day-group is the route - there is no second, tour-driven
+  // split below it to tidy up after. See recutPairs.
+  let dailyClusters = repairLoads(
+    // Exact assignment when the solver is there; the curve when it is not.
+    (await solveBalancedGroups(repOutlets, numDays, o => Math.min(o.visitFrequency ?? 1, cycleRuns), dayLoadTolerance))
+      ?? partitionByHilbert(repOutlets, numDays, runLoadOf),
+    runLoadOf,
     dayLoadTolerance,
   );
+
+  // Improve until it stops improving, rather than once through. The four passes
+  // feed each other - re-cutting a pair of day-groups moves the boundaries that
+  // the outlet-level passes then have fresh slack to work on, and vice versa -
+  // so a single sweep leaves distance on the table. The loop is cheap (a few
+  // hundred milliseconds a rep) and stops the moment a sweep fails to shorten
+  // the total drive, so it cannot make a plan worse than the one it started on.
+  const totalTour = (gs: Outlet[][]) => gs.reduce((sum, g) => sum + tourLength(g), 0);
+  let best = totalTour(dailyClusters);
+  for (let sweep = 0; sweep < 4; sweep++) {
+    const next = repairLoads(
+      recutPairs(
+        polishByTourLength(
+          polishByCohesion(
+            swapForCompactness(dailyClusters, runLoadOf),
+            runLoadOf,
+            dayLoadTolerance,
+          ),
+          runLoadOf,
+          dayLoadTolerance,
+        ),
+        runLoadOf,
+        dayLoadTolerance,
+      ),
+      runLoadOf,
+      dayLoadTolerance,
+    );
+    const len = totalTour(next);
+    if (len >= best - 0.01) break;
+    dailyClusters = next;
+    best = len;
+  }
 
   // Guardrail. The failure this replaced looked perfect on every count-based
   // check and on the median route, because only one day in six was wrong. The
@@ -2959,8 +3079,10 @@ async function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[]
   }
   while (dailyClusters.length < numDays) dailyClusters.push([]);
 
-  const loads = dailyClusters.map(g => Math.round(totalWeeklyLoad(g) * 10) / 10);
-  console.log(`[days] ${rep.name}: ${repOutlets.length} outlets -> weekly visits/day ${loads.join(', ')}`);
+  const runRepeats = cycleShape(rep.workingDaysPerWeek || 5).repeats;
+  const loads = dailyClusters.map(g =>
+    Math.round((g.reduce((sum, o) => sum + Math.min(o.visitFrequency ?? 1, runRepeats), 0) / runRepeats) * 10) / 10);
+  console.log(`[days] ${rep.name}: ${repOutlets.length} outlets -> visits per run of each day-group ${loads.join(', ')}`);
 
   return scheduleFromDailyClusters(rep, dailyClusters, repOutlets);
 }
@@ -2968,10 +3090,8 @@ async function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[]
 // STEP 3+4 of the anchor-aware scheduler: per-day VF rotation with spatial
 // sub-clustering, shared by both the flat-pool and zone-preserving builders.
 function scheduleFromDailyClusters(rep: Rep, dailyClusters: Outlet[][], repOutlets: Outlet[]): InsertSchedule[] {
-  const numDays = rep.workingDaysPerWeek || 5;
-  const VF3_PATTERNS: number[][] = [[1, 2, 3], [1, 2, 4], [1, 3, 4], [2, 3, 4]];
-  const VF2_PATTERNS: number[][] = [[1, 3], [2, 4]];
-  const VF1_PATTERNS: number[][] = [[1], [2], [3], [4]];
+  const workingDaysPerWeek = rep.workingDaysPerWeek || 5;
+  const { repeats, dayGroups } = cycleShape(workingDaysPerWeek);
 
   const subCluster = (outlets: Outlet[], k: number): Outlet[][] => {
     const buckets: Outlet[][] = Array.from({ length: k }, () => []);
@@ -3004,15 +3124,72 @@ function scheduleFromDailyClusters(rep: Rep, dailyClusters: Outlet[][], repOutle
     return buckets;
   };
 
-  const schedules: InsertSchedule[] = [];
-  for (let d = 0; d < numDays; d++) {
-    const dayOutlets = dailyClusters[d];
-    if (dayOutlets.length === 0) continue;
+  // A day-group is driven `repeats` times a cycle, so one membership carries at
+  // most `repeats` visits. On a 4-repeat cycle that covers every frequency the
+  // app offers and this loop is a no-op. On the 2-repeat (26-day) cycle a
+  // weekly outlet needs four visits out of two runs, so it is also enrolled in
+  // the nearest neighbouring day-group and picks up two more there. Choosing
+  // the NEAREST group keeps the second call on a route that already passes
+  // close by rather than inventing a detour.
+  const groupsOf: Outlet[][] = Array.from({ length: dayGroups }, (_, d) => [...(dailyClusters[d] ?? [])]);
+  const visitsHere = new Map<string, number>(); // `${group}:${outletId}` -> visits owed there
+  const groupCentroids = groupsOf.map(g => g.length === 0 ? null : {
+    lat: g.reduce((sum, o) => sum + o.latitude, 0) / g.length,
+    lng: g.reduce((sum, o) => sum + o.longitude, 0) / g.length,
+  });
 
-    const vf4 = dayOutlets.filter(o => o.visitFrequency === 4);
-    const vf3 = dayOutlets.filter(o => o.visitFrequency === 3);
-    const vf2 = dayOutlets.filter(o => o.visitFrequency === 2);
-    const vf1 = dayOutlets.filter(o => (o.visitFrequency ?? 1) === 1);
+  // Every group starts carrying its own outlets' first share.
+  const runLoad = new Array(dayGroups).fill(0);
+  const overflow: { outlet: Outlet; home: number; share: number }[] = [];
+  for (let d = 0; d < dayGroups; d++) {
+    for (const o of (dailyClusters[d] ?? [])) {
+      const shares = membershipsFor(o.visitFrequency ?? 1, repeats);
+      visitsHere.set(`${d}:${o.id}`, shares[0]);
+      runLoad[d] += shares[0] / repeats;
+      for (let m = 1; m < shares.length; m++) overflow.push({ outlet: o, home: d, share: shares[m] });
+    }
+  }
+
+  // Then the overflow is placed, biggest first, into the nearest group that
+  // still has room. Sending it to the nearest group outright was the obvious
+  // thing and it was wrong: the extra calls all landed on whichever group sat
+  // in the densest pocket, and days that were meant to hold 21-24 came out at
+  // 29. A group is "full" at the cycle's mean load, so the overflow spreads.
+  // The ceiling has to count the overflow itself. Taking the mean of the
+  // primary loads alone put every group at the mean already, so nothing ever
+  // had room and the overflow fell back to "nearest" every time - the exact
+  // behaviour this is meant to replace.
+  const overflowLoad = overflow.reduce((sum, x) => sum + x.share / repeats, 0);
+  const meanLoad = (runLoad.reduce((a, b) => a + b, 0) + overflowLoad) / Math.max(1, dayGroups);
+  overflow.sort((a, b) => b.share - a.share);
+  for (const { outlet: o, home, share } of overflow) {
+    const candidates: { idx: number; dist: number }[] = [];
+    for (let e = 0; e < dayGroups; e++) {
+      const c = groupCentroids[e];
+      if (e === home || !c || visitsHere.has(`${e}:${o.id}`)) continue;
+      candidates.push({ idx: e, dist: haversineDistance(o.latitude, o.longitude, c.lat, c.lng) });
+    }
+    if (candidates.length === 0) continue; // nowhere else to put it
+    candidates.sort((a, b) => a.dist - b.dist);
+    // Only the immediate neighbours are eligible, and the emptiest of those
+    // wins. Searching every group for one with room spread the load beautifully
+    // and cost 25% more driving, because "nearest with room" can be right
+    // across the territory; capping the search at three neighbours keeps the
+    // second call next door and still stops one group taking all the overflow.
+    const near = candidates.slice(0, 3);
+    const cap = meanLoad * (1 + dayLoadTolerance);
+    const roomy = near.find(c => runLoad[c.idx] + share / repeats <= cap);
+    const pick = (roomy ?? near.reduce((a, b) => (runLoad[a.idx] <= runLoad[b.idx] ? a : b))).idx;
+    groupsOf[pick].push(o);
+    visitsHere.set(`${pick}:${o.id}`, share);
+    runLoad[pick] += share / repeats;
+  }
+
+  const schedules: InsertSchedule[] = [];
+  const groupByOutlet = new Map<string, Set<number>>();
+  for (let d = 0; d < dayGroups; d++) {
+    const dayOutlets = groupsOf[d];
+    if (dayOutlets.length === 0) continue;
 
     // Split each frequency band into buckets, one per week it can fall on.
     //
@@ -3033,32 +3210,41 @@ function scheduleFromDailyClusters(rep: Rep, dailyClusters: Outlet[][], repOutle
         polishByTourLength(growBalancedRegions(pool, buckets, oneVisit), oneVisit),
         oneVisit,
       );
-    const vf3Buckets = splitWeeks(vf3, 4);
-    const vf2Buckets = splitWeeks(vf2, 2);
-    const vf1Buckets = splitWeeks(vf1, 4);
+    // One bucket set per frequency band, sized so the band's visits land evenly
+    // across the cycle's repeats.
+    // Band by how many of this group's runs the outlet is due on - 1..repeats -
+    // not by its raw visit frequency, so an outlet that split across two groups
+    // is banded by the share this group owes it.
+    const banded: { visits: number; buckets: Outlet[][] }[] = [];
+    for (let v = 1; v <= repeats; v++) {
+      const pool = dayOutlets.filter(o => (visitsHere.get(`${d}:${o.id}`) ?? 1) === v);
+      banded.push({ visits: v, buckets: pool.length > 0 ? splitWeeks(pool, bucketsForFrequency(v, repeats)) : [] });
+    }
 
-    for (let week = 1; week <= 4; week++) {
-      const weekOutlets: Outlet[] = [...vf4];
-      vf3Buckets.forEach((bucket, i) => {
-        if (VF3_PATTERNS[i].includes(week)) weekOutlets.push(...bucket);
-      });
-      vf2Buckets.forEach((bucket, i) => {
-        if (VF2_PATTERNS[i].includes(week)) weekOutlets.push(...bucket);
-      });
-      vf1Buckets.forEach((bucket, i) => {
-        if (VF1_PATTERNS[i].includes(week)) weekOutlets.push(...bucket);
-      });
+    for (let repeat = 1; repeat <= repeats; repeat++) {
+      const runOutlets: Outlet[] = [];
+      for (const band of banded) {
+        band.buckets.forEach((bucket, i) => {
+          if (repeatsForBucket(band.visits, repeats, i).includes(repeat)) runOutlets.push(...bucket);
+        });
+      }
 
-      if (weekOutlets.length === 0) continue;
+      if (runOutlets.length === 0) continue;
 
-      const optimized = optimizeRoute(weekOutlets);
+      const optimized = optimizeRoute(runOutlets);
       const optimizedIds = optimized.map(o => o.id);
       const dist = calculateTotalDistance(optimized);
+      const cell = calendarCell(repeat, d + 1, dayGroups, workingDaysPerWeek);
+
+      for (const id of optimizedIds) {
+        if (!groupByOutlet.has(id)) groupByOutlet.set(id, new Set());
+        groupByOutlet.get(id)!.add(d);
+      }
 
       schedules.push({
         repId: rep.id,
-        week,
-        dayOfWeek: d + 1,
+        week: cell.week,
+        dayOfWeek: cell.dayOfWeek,
         outletIds: optimizedIds,
         routeOrder: optimizedIds,
         totalDistance: Math.round(dist * 100) / 100,
@@ -3067,22 +3253,26 @@ function scheduleFromDailyClusters(rep: Rep, dailyClusters: Outlet[][], repOutle
     }
   }
 
-  // End-to-end validation: each outlet should be visited exactly visitFrequency
-  // times, and always on the same dayOfWeek across weeks.
+  // End-to-end validation: each outlet visited exactly visitFrequency times, and
+  // always from the same day-group. On a four-week cycle one day-group is one
+  // weekday, which is the classic "same day every week" rule; on the 26-day
+  // cycle a group's two runs land on different weekdays by design, so the
+  // invariant is the group, not the weekday.
   const visitCounts = new Map<string, number>();
-  const dayByOutlet = new Map<string, number>();
-  let consistencyOk = true;
   for (const s of schedules) {
     for (const id of (s.outletIds as string[])) {
       visitCounts.set(id, (visitCounts.get(id) || 0) + 1);
-      const prevDay = dayByOutlet.get(id);
-      if (prevDay === undefined) dayByOutlet.set(id, s.dayOfWeek);
-      else if (prevDay !== s.dayOfWeek) consistencyOk = false;
     }
+  }
+  let consistencyOk = true;
+  for (const o of repOutlets) {
+    const groups = groupByOutlet.get(o.id);
+    const allowed = membershipsFor(o.visitFrequency ?? 1, repeats).length;
+    if (groups && groups.size > allowed) { consistencyOk = false; break; }
   }
   let coverageOk = true;
   for (const o of repOutlets) {
-    const expected = o.visitFrequency ?? 1;
+    const expected = membershipsFor(o.visitFrequency ?? 1, repeats).reduce((a, b) => a + b, 0);
     const actual = visitCounts.get(o.id) || 0;
     if (actual !== expected) { coverageOk = false; break; }
   }
@@ -4135,11 +4325,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         data.push(['=== SALES REP SCHEDULE ===']);
         data.push(['Week', 'Day', 'Day Name', 'Date', 'Outlets Count', 'Outlet Names']);
         
-        for (let week = 1; week <= 4; week++) {
+        // How many calendar weeks the cycle actually spans. A 26-working-day
+        // cycle on a 6-day week runs into a fifth week, so this can no longer be
+        // the constant 4 it was.
+        const cycleWeeks = Math.max(1, repSchedules.reduce((m, s) => Math.max(m, s.week), 0));
+        for (let week = 1; week <= cycleWeeks; week++) {
           for (let day = 1; day <= workingDays; day++) {
-            // Week 3 mirrors week 1, week 4 mirrors week 2
-            const sourceWeek = week <= 2 ? week : week - 2;
-            const schedule = repSchedules.find(s => s.week === sourceWeek && s.dayOfWeek === day);
+            // Prefer the week's own schedule; fall back to the fortnight it
+            // mirrors only for older plans that stored weeks 1-2 alone.
+            const schedule = repSchedules.find(s => s.week === week && s.dayOfWeek === day)
+              ?? (week > 2 ? repSchedules.find(s => s.week === week - 2 && s.dayOfWeek === day) : undefined);
             
             // Calculate date for this day
             const currentDate = new Date(startDate);
@@ -4181,7 +4376,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           
           // Role schedules store their actual week values (including weeks 3/4 when offset pushes them there)
           // Iterate all 7 days to capture any offset-driven spillover (positive or negative)
-          for (let week = 1; week <= 4; week++) {
+          const roleWeeks = Math.max(cycleWeeks, roleSchedulesForRole.reduce((m, s) => Math.max(m, s.week), 0));
+          for (let week = 1; week <= roleWeeks; week++) {
             for (let day = 1; day <= 7; day++) {
               // First try to find a direct match for this week/day
               let schedule = roleSchedulesForRole.find(s => s.week === week && s.dayOfWeek === day);
@@ -4226,11 +4422,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // This is more reliable than reverse calculation
           const roleScheduleRows: Array<{week: number; day: number; originalDay: number; outletIds: string[]}> = [];
           
-          for (let week = 1; week <= 4; week++) {
+          for (let week = 1; week <= cycleWeeks; week++) {
             for (let repDay = 1; repDay <= workingDays; repDay++) {
-              // Map to source week (weeks 3-4 mirror weeks 1-2 for base schedules)
-              const sourceWeek = week <= 2 ? week : week - 2;
-              const schedule = repSchedules.find(s => s.week === sourceWeek && s.dayOfWeek === repDay);
+              const schedule = repSchedules.find(s => s.week === week && s.dayOfWeek === repDay)
+                ?? (week > 2 ? repSchedules.find(s => s.week === week - 2 && s.dayOfWeek === repDay) : undefined);
               
               if (schedule) {
                 // Calculate the role day by adding the offset
@@ -4450,6 +4645,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Set default values for rep constraints (use body params if provided)
       const workingDaysPerWeek = req.body.workingDaysPerWeek || 5; // Monday to Friday
+
+      // Cycle length in working days. Blank/0 keeps the four-week default.
+      const requestedCycleDays = Math.max(0, Math.min(60, parseInt(String(req.body.cycleWorkingDays ?? 0), 10) || 0));
+      cycleWorkingDays = requestedCycleDays;
+      const { cycleDays, repeats: cycleRepeats, dayGroups: dayGroupsPerRep } = cycleShape(workingDaysPerWeek);
+      cycleWorkingDays = cycleDays; // snapped, so every later caller agrees
+      console.log(`Cycle: ${cycleDays} working days = ${dayGroupsPerRep} day-routes x ${cycleRepeats} runs (${workingDaysPerWeek}-day week)`);
       const calculationMode = 'manual'; // time-based mode removed: min/max visits per day IS the capacity input, time-per-visit was a redundant second way to express it
 
       // Daily visit targets come directly from the user
@@ -4468,19 +4670,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // data with a 20-25 target -> zones of 40-50 outlets, whose
       // alternating halves are 20-25 actual visits.
       const totalMonthlyVisits = outlets.reduce((s, o) => s + (o.visitFrequency ?? 1), 0);
-      const avgWeeklyVisitFraction = Math.min(1, Math.max(0.25, totalMonthlyVisits / 4 / outlets.length));
+      const avgWeeklyVisitFraction = Math.min(1, Math.max(1 / cycleRepeats, totalMonthlyVisits / cycleRepeats / outlets.length));
       const zoneMinOutlets = Math.max(1, Math.round(minVisitsPerDay / avgWeeklyVisitFraction));
       const zoneMaxOutlets = Math.max(zoneMinOutlets + 1, Math.round(maxVisitsPerDay / avgWeeklyVisitFraction));
       console.log(`Visit-frequency-aware zone sizing: avg weekly fraction ${avgWeeklyVisitFraction.toFixed(2)} -> zones of ${zoneMinOutlets}-${zoneMaxOutlets} outlets for ${minVisitsPerDay}-${maxVisitsPerDay} actual visits/day`);
 
       // Calculate required reps based on daily visit constraints
       // Formula: actual weekly visits / (working days * max visits per day)
-      const actualWeeklyVisits = Math.ceil(totalMonthlyVisits / 4);
-      const maxWeeklyCapacityPerRep = workingDaysPerWeek * maxVisitsPerDay;
+      const actualWeeklyVisits = Math.ceil(totalMonthlyVisits / cycleRepeats);
+      const maxWeeklyCapacityPerRep = dayGroupsPerRep * maxVisitsPerDay;
       const requiredReps = Math.ceil(actualWeeklyVisits / maxWeeklyCapacityPerRep);
 
       // Ensure we don't go below minimum daily visits requirement
-      const minWeeklyCapacityPerRep = workingDaysPerWeek * minVisitsPerDay;
+      const minWeeklyCapacityPerRep = dayGroupsPerRep * minVisitsPerDay;
 
       // Use the calculated required reps (initial estimate)
       let finalRequiredReps = Math.max(1, requiredReps); // At least 1 rep needed
@@ -4500,7 +4702,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Calculate target zones based on the required rep count and the
       // VF-adjusted zone capacity
-      const zonesPerRep = workingDaysPerWeek; // One zone per working day
+      const zonesPerRep = dayGroupsPerRep; // One zone per distinct day-route in the cycle
       const targetZones = Math.max(
         Math.ceil(outlets.length / zoneMaxOutlets), // At least one zone per zoneMaxOutlets outlets
         finalRequiredReps * zonesPerRep // Or enough zones for all reps
@@ -4582,7 +4784,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Headcount follows demand instead: total monthly visits divided by what
       // one rep can do in a month. Zones are then distributed across that many
       // reps, however many zones there happen to be.
-      const dayslotsPerRep = workingDaysPerWeek * 4; // working days in a 4-week cycle
+      // Working day-slots one rep has in a full cycle.
+      //
+      // The cycle used to be four weeks, full stop. It is now stated in working
+      // days, because that is how the business states it: a 26-day cycle on a
+      // 6-day week is 13 day-routes driven twice, and sizing it as 24 days
+      // over-loads every day by 8%.
+      const dayslotsPerRep = cycleDays;
 
       // Fewest reps that can carry the load without breaking maxVisitsPerDay,
       // and the most that can be kept busy at minVisitsPerDay.
@@ -4599,7 +4807,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const projectedVisitsPerDay = totalMonthlyVisits / (requiredRepCount * dayslotsPerRep);
       console.log(`Headcount from demand: ${totalMonthlyVisits} monthly visits, ${dayslotsPerRep} day-slots/rep -> ${requiredRepCount} reps (~${projectedVisitsPerDay.toFixed(1)} visits/day each; feasible band ${fewestReps}-${mostReps})`);
       if (projectedVisitsPerDay < minVisitsPerDay) {
-        console.warn(`[headcount] ${projectedVisitsPerDay.toFixed(1)} visits/day is below the ${minVisitsPerDay} minimum - this dataset cannot fill ${requiredRepCount} reps at ${workingDaysPerWeek} days/week.`);
+        console.warn(`[headcount] ${projectedVisitsPerDay.toFixed(1)} visits/day is below the ${minVisitsPerDay} minimum - this dataset cannot fill ${requiredRepCount} reps over a ${cycleDays}-day cycle.`);
       }
 
       await emitProgress(55, 'Assigning', `Assigning ${outlets.length} outlets to ${actualZoneCount} zones...`);
@@ -4843,7 +5051,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               projectedVisitsPerDay: Math.round(projectedVisitsPerDay * 10) / 10,
               minVisitsPerDay,
               // Days per week this volume can actually keep busy at the minimum.
-              supportedWorkingDays: Math.max(1, Math.floor(totalMonthlyVisits / (requiredRepCount * 4 * minVisitsPerDay))),
+              supportedWorkingDays: Math.max(1, Math.floor(totalMonthlyVisits / (requiredRepCount * cycleRepeats * minVisitsPerDay))),
               message: `${totalMonthlyVisits} monthly visits across ${requiredRepCount} rep(s) is about ${projectedVisitsPerDay.toFixed(1)} visits/day - below the ${minVisitsPerDay}/day minimum. There is not enough work here to fill ${workingDaysPerWeek} days a week.`,
             }
           : null,
@@ -5524,6 +5732,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
   async function regenerateSchedulesForReps(repIds: string[]) {
     const uniqueRepIds = Array.from(new Set(repIds.filter(Boolean)));
+    // Read the cycle off the existing plan before any of it is deleted.
+    const existingCycle = await storedCycleDays();
+    if (existingCycle > 0) cycleWorkingDays = existingCycle;
     const allReps = await storage.getReps();
     const allOutlets = await storage.getOutlets();
     const allHierarchies = await storage.getRoleHierarchies();
@@ -5560,7 +5771,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const monthlyVisits = repOutlets.reduce((s, o) => s + (o.visitFrequency ?? 1), 0);
-      const monthlyCapacity = (rep.workingDaysPerWeek || 5) * 4 * (rep.maxDailyVisits || 25);
+      const monthlyCapacity = cycleShape(rep.workingDaysPerWeek || 5).cycleDays * (rep.maxDailyVisits || 25);
       summary.push({
         repId: rep.id,
         name: rep.name,
@@ -5736,7 +5947,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           repOutletsMap.set(r.id, os);
           repLoad.set(r.id, os.reduce((s, o) => s + (o.visitFrequency ?? 1), 0));
         }
-        const capacityOf = (r: Rep) => (r.workingDaysPerWeek || 5) * 4 * (r.maxDailyVisits || 25);
+        const capacityOf = (r: Rep) => cycleShape(r.workingDaysPerWeek || 5).cycleDays * (r.maxDailyVisits || 25);
         const centroidOf = (os: Outlet[]) => ({
           lat: os.reduce((s, o) => s + o.latitude, 0) / os.length,
           lng: os.reduce((s, o) => s + o.longitude, 0) / os.length,
@@ -5853,6 +6064,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       
       const { minVisitsPerDay = 25, maxVisitsPerDay = 27, workingDaysPerWeek = 5 } = req.body;
+
+      // Keep the cycle the current plan was built on unless asked to change it.
+      const requestedCycle = Math.max(0, Math.min(60, parseInt(String(req.body.cycleWorkingDays ?? 0), 10) || 0));
+      cycleWorkingDays = requestedCycle || await storedCycleDays();
 
       // Clear existing schedules
       await storage.clearSchedules();

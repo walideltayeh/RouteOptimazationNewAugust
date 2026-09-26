@@ -51,7 +51,11 @@ export function generateScheduleExcel(reps: Rep[], schedules: Schedule[], outlet
     const repSchedules = schedules.filter(s => s.repId === rep.id);
     const calendarData: CalendarEntry[] = [];
     
-    const weeks = [1, 2, 3, 4];
+    // Weeks the cycle actually spans. This was the constant [1, 2, 3, 4]; a
+    // 26-working-day cycle on a 6-day week runs into a fifth week, and a
+    // shorter cycle into fewer, so it has to come from the schedule itself.
+    const lastWeek = repSchedules.reduce((m, s) => Math.max(m, s.week), 0);
+    const weeks = Array.from({ length: Math.max(1, lastWeek) }, (_, i) => i + 1);
     
     weeks.forEach(week => {
       days.slice(0, rep.workingDaysPerWeek).forEach((day, dayIndex) => {
