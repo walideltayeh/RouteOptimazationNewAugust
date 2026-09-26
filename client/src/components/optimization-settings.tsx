@@ -69,6 +69,16 @@ function monthPlan(key: string, days: number[], edges: 'wholeWeeks' | 'allDays')
   return { start, end, count: dates.length, leftOut };
 }
 
+/** Mirrors the server: the pattern length a plan of n days is built on. */
+function patternLength(n: number): number {
+  const fits = (m: number, prefs: number[]) => prefs.some(r => m % r === 0);
+  if (fits(n, [4, 2])) return n;
+  if (n > 2 && fits(n - 1, [4, 2])) return n - 1;
+  if (fits(n, [3, 5])) return n;
+  if (n > 2 && fits(n - 1, [3, 5])) return n - 1;
+  return Math.max(2, n - (n % 2));
+}
+
 /** "Sunday to Thursday - 5 days a week, Friday and Saturday off." */
 function describeWeek(days: number[]): string {
   const week = orderedWeek(days);
@@ -173,7 +183,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
   // plan then runs on that month's dates and the working-day count comes from
   // the calendar. "month" in the cycle select switches it on.
   const [planMonth, setPlanMonth] = useState(nextMonthKey());
-  const [monthEdges, setMonthEdges] = useState<'wholeWeeks' | 'allDays'>('wholeWeeks');
+  const [monthEdges, setMonthEdges] = useState<'wholeWeeks' | 'allDays'>('allDays');
   const cycleMode = cycleWorkingDays === -1 ? 'calendarMonth' : 'fixed';
   const monthSummary = useMemo(
     () => (cycleMode === 'calendarMonth' ? monthPlan(planMonth, orderedWeek(workingDays), monthEdges) : null),
@@ -514,8 +524,8 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
+                      <SelectItem value="allDays">Every working day of the month (recommended)</SelectItem>
                       <SelectItem value="wholeWeeks">Whole weeks only (first {WEEKDAY_LABELS[orderedWeek(workingDays)[0] - 1]} to last {WEEKDAY_LABELS[orderedWeek(workingDays)[orderedWeek(workingDays).length - 1] - 1]})</SelectItem>
-                      <SelectItem value="allDays">Every working day of the month</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -526,7 +536,12 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
                   {' '}— <span className="font-medium">{monthSummary.count} working days</span>.
                   {monthSummary.leftOut > 0 && (
                     <span className="text-amber-700 dark:text-amber-300">
-                      {' '}{monthSummary.leftOut} working day{monthSummary.leftOut === 1 ? '' : 's'} at the edges of the month fall outside the plan.
+                      {' '}{monthSummary.leftOut} working day{monthSummary.leftOut === 1 ? '' : 's'} at the edges of the month would have no route — reps idle, calls lost.
+                    </span>
+                  )}
+                  {patternLength(monthSummary.count) < monthSummary.count && (
+                    <span className="text-gray-500">
+                      {' '}Planned as a {patternLength(monthSummary.count)}-day pattern; the last day drives route 1 again.
                     </span>
                   )}
                 </p>

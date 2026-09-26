@@ -2951,7 +2951,7 @@ function applyPlanSettings(): PlanSettings | null {
   dayVisitsMax = planSettings.maxVisitsPerDay ?? dayVisitsMax;
   cycleMode = planSettings.cycleMode ?? 'fixed';
   planMonth = planSettings.planMonth ?? '';
-  monthEdges = planSettings.monthEdges ?? 'wholeWeeks';
+  monthEdges = planSettings.monthEdges ?? 'allDays';
   planStartDate = planSettings.planStart ?? '';
   cycleStartSlot = planSettings.cycleStartSlot ?? 0;
   setDistanceMode(planSettings.distanceMode === 'road' ? 'road' : 'haversine');
@@ -2995,7 +2995,7 @@ type CycleMode = 'fixed' | 'calendarMonth';
 type MonthEdges = 'wholeWeeks' | 'allDays';
 let cycleMode: CycleMode = 'fixed';
 let planMonth = '';                       // 'YYYY-MM'
-let monthEdges: MonthEdges = 'wholeWeeks';
+let monthEdges: MonthEdges = 'allDays';
 let planStartDate = '';                   // 'YYYY-MM-DD'; '' = next working day
 let cycleStartSlot = 0;                   // where in the working week the plan starts
 
@@ -3047,30 +3047,37 @@ function monthPlanDates(year: number, month: number, week: number[], edges: Mont
 // visits a day where the plan says 22.3.
 let cycleWorkingDays = 0;
 
-// A cycle is dayGroups distinct day-routes, each driven `repeats` times.
-// dayGroups x repeats = cycleDays. Repeats is the largest of 4, 3, 2 that
-// divides the cycle, because it sets the finest visit frequency the plan can
-// express (R=4: weekly/fortnightly/monthly; R=2: fortnightly and monthly only,
-// with weekly outlets given a second day-group - see membershipsFor below).
+// A cycle is dayGroups distinct day-routes, each driven `repeats` times, and
+// dayGroups x repeats is the PATTERN length. The plan itself may be one day
+// longer: a month of 23 working days is planned as an 11 x 2 pattern plus day
+// 23, which is pattern day 1 again - the next cycle's first day. That is how a
+// permanent journey plan actually works. Nothing is ever dropped: the earlier
+// version planned 22 days and left the rep with no route on the 23rd, which in
+// route-to-market terms is a day of lost calls, not a rounding error.
+//
+// Run count prefers even spacing for fortnightly calls. Four runs gives a
+// weekly/fortnightly/monthly plan (the classic four-week PJP); two runs gives
+// fortnightly calls exactly half a cycle apart. Three or five runs put the two
+// visits of a fortnightly outlet 9 and 18 days apart, so they are used only
+// when nothing else fits - and a 27-day month is planned as 13 x 2 with one
+// bonus day rather than 9 x 3, because 13/13 beats 9/18.
 //
 // 5-day week, default cycle -> 20 days = 5 groups x 4. The old behaviour.
 // 6-day week, default cycle -> 24 days = 6 groups x 4. The old behaviour.
-// 6-day week, 26-day cycle  -> 26 days = 13 groups x 2. The Damascus plan.
-function cycleShape(workingDaysPerWeek: number, requested?: number): { cycleDays: number; repeats: number; dayGroups: number } {
+// 26 working days          -> 13 groups x 2.
+// 23 working days (prime)  -> 11 groups x 2, plus one bonus day.
+function cycleShape(workingDaysPerWeek: number, requested?: number): { cycleDays: number; repeats: number; dayGroups: number; planDays: number } {
   const wd = Math.max(1, workingDaysPerWeek || 5);
   const asked = requested ?? cycleWorkingDays;
-  let cycleDays = asked > 0 ? asked : wd * 4;
-  // An odd cycle can only be 1 x itself, which would mean every outlet visited
-  // once and no frequency at all. Drop a day rather than ship that.
-  // Five runs is a last resort before dropping a day: a five-week month of
-  // five-day weeks is 25 working days, and 25 is 5 x 5 or nothing.
-  let repeats = [4, 3, 2, 5].find(r => cycleDays % r === 0);
-  if (!repeats && cycleDays > 2) {
-    cycleDays -= 1;
-    repeats = [4, 3, 2, 5].find(r => cycleDays % r === 0);
-  }
-  if (!repeats) { cycleDays = Math.max(2, cycleDays); repeats = 2; }
-  return { cycleDays, repeats, dayGroups: Math.max(1, Math.round(cycleDays / repeats)) };
+  const planDays = asked > 0 ? asked : wd * 4;
+  const divisor = (n: number, prefs: number[]) => prefs.find(r => n % r === 0);
+  let cycleDays = planDays;
+  let repeats = divisor(planDays, [4, 2]);
+  if (!repeats && planDays > 2 && divisor(planDays - 1, [4, 2])) { cycleDays = planDays - 1; repeats = divisor(cycleDays, [4, 2]); }
+  if (!repeats) repeats = divisor(planDays, [3, 5]);
+  if (!repeats && planDays > 2 && divisor(planDays - 1, [3, 5])) { cycleDays = planDays - 1; repeats = divisor(cycleDays, [3, 5]); }
+  if (!repeats) { cycleDays = Math.max(2, planDays - (planDays % 2)); repeats = 2; }
+  return { cycleDays, repeats, dayGroups: Math.max(1, Math.round(cycleDays / repeats)), planDays: Math.max(cycleDays, planDays) };
 }
 
 // The cycle a plan on disk was built with, read back off it: the number of
@@ -3429,7 +3436,8 @@ async function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[]
 // STEP 3+4 of the anchor-aware scheduler: per-day VF rotation with spatial
 // sub-clustering, shared by both the flat-pool and zone-preserving builders.
 function scheduleFromDailyClusters(rep: Rep, dailyClusters: Outlet[][], repOutlets: Outlet[]): InsertSchedule[] {
-  const { repeats, dayGroups } = cycleShape(workingWeek.length || rep.workingDaysPerWeek || 5);
+  const { repeats, dayGroups, cycleDays, planDays } = cycleShape(workingWeek.length || rep.workingDaysPerWeek || 5);
+  const bonusCells = new Set<string>();
 
   const subCluster = (outlets: Outlet[], k: number): Outlet[][] => {
     const buckets: Outlet[][] = Array.from({ length: k }, () => []);
@@ -3600,6 +3608,24 @@ function scheduleFromDailyClusters(rep: Rep, dailyClusters: Outlet[][], repOutle
         totalDistance: Math.round(dist * 100) / 100,
         estimatedDuration: optimized.length * 15,
       });
+
+      // The bonus day(s): a month one day longer than its pattern continues
+      // into the next cycle's first day, driving pattern day 1 again. The rep
+      // has a route on every working day of the month; route 1's outlets get
+      // one extra call that month.
+      if (cell.cycleDay <= planDays - cycleDays) {
+        const bonus = calendarCell(1, cell.cycleDay + cycleDays, 1, workingWeek);
+        schedules.push({
+          repId: rep.id,
+          week: bonus.week,
+          dayOfWeek: bonus.dayOfWeek,
+          outletIds: optimizedIds,
+          routeOrder: optimizedIds,
+          totalDistance: Math.round(dist * 100) / 100,
+          estimatedDuration: optimized.length * 15,
+        });
+        bonusCells.add(`${bonus.week}:${bonus.dayOfWeek}`);
+      }
     }
   }
 
@@ -3610,6 +3636,7 @@ function scheduleFromDailyClusters(rep: Rep, dailyClusters: Outlet[][], repOutle
   // invariant is the group, not the weekday.
   const visitCounts = new Map<string, number>();
   for (const s of schedules) {
+    if (bonusCells.has(`${s.week}:${s.dayOfWeek}`)) continue; // beyond the pattern
     for (const id of (s.outletIds as string[])) {
       visitCounts.set(id, (visitCounts.get(id) || 0) + 1);
     }
@@ -5041,7 +5068,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Cycle length in working days. Blank/0 keeps the four-week default -
       // unless the cycle is a calendar month, in which case the month decides.
       cycleMode = req.body.cycleMode === 'calendarMonth' ? 'calendarMonth' : 'fixed';
-      monthEdges = req.body.monthEdges === 'allDays' ? 'allDays' : 'wholeWeeks';
+      monthEdges = req.body.monthEdges === 'wholeWeeks' ? 'wholeWeeks' : 'allDays';
       planMonth = typeof req.body.planMonth === 'string' && /^\d{4}-\d{2}$/.test(req.body.planMonth) ? req.body.planMonth : nextMonthKey();
       let planEndDate = '';
       planStartDate = '';
@@ -5060,12 +5087,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       } else {
         cycleWorkingDays = Math.max(0, Math.min(60, parseInt(String(req.body.cycleWorkingDays ?? 0), 10) || 0));
       }
-      const { cycleDays, repeats: cycleRepeats, dayGroups: dayGroupsPerRep } = cycleShape(workingDaysPerWeek);
-      if (cycleMode === 'calendarMonth' && cycleDays !== cycleWorkingDays) {
-        console.warn(`[cycle] ${cycleWorkingDays} working days cannot be split into equal runs; planning ${cycleDays} and leaving the last day of the month unscheduled.`);
-      }
-      cycleWorkingDays = cycleDays; // snapped, so every later caller agrees
-      console.log(`Cycle: ${cycleDays} working days = ${dayGroupsPerRep} day-routes x ${cycleRepeats} runs (${workingDaysPerWeek}-day week)`);
+      const { cycleDays, repeats: cycleRepeats, dayGroups: dayGroupsPerRep, planDays } = cycleShape(workingDaysPerWeek);
+      cycleWorkingDays = planDays; // every later caller derives the same pattern from it
+      console.log(`Cycle: ${cycleDays} working days = ${dayGroupsPerRep} day-routes x ${cycleRepeats} runs (${workingDaysPerWeek}-day week)${planDays > cycleDays ? `, plus ${planDays - cycleDays} bonus day driving route 1 again` : ''}`);
       const calculationMode = 'manual'; // time-based mode removed: min/max visits per day IS the capacity input, time-per-visit was a redundant second way to express it
 
       // Daily visit targets come directly from the user
@@ -5927,6 +5951,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       maxHopKm: planSettings.maxHopKm ?? 4,
       planStart: planSettings.planStart || null,
       planEnd: planSettings.planEnd || null,
+      patternDays: cycleShape(planSettings.workingDays.length || 5, planSettings.cycleWorkingDays).cycleDays,
     });
   });
 
