@@ -6524,11 +6524,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
     // Rebuild with the settings the plan was built on - the day band, the
     // compactness cap and the distance model included, not just the calendar.
     // Without this a rebuild after a restart silently reverted to defaults.
-    applyPlanSettings();
+    const saved = applyPlanSettings();
     const existingCycle = await storedCycleDays();
     if (existingCycle > 0) cycleWorkingDays = existingCycle;
-    const existingWeek = await storedWorkingWeek();
-    if (existingWeek.length > 0) workingWeek = existingWeek;
+    // The saved settings carry the week in the user's order (Sunday first,
+    // Saturday last, for Damascus). Reading it off the plan instead would
+    // re-derive the order from the days off and relabel every week.
+    if (!saved || !saved.workingDays?.length) {
+      const existingWeek = await storedWorkingWeek();
+      if (existingWeek.length > 0) workingWeek = existingWeek;
+    }
     const allReps = await storage.getReps();
     const allOutlets = await storage.getOutlets();
     const allHierarchies = await storage.getRoleHierarchies();
@@ -6877,7 +6882,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       cycleWorkingDays = requestedCycle || await storedCycleDays();
       if (Array.isArray(req.body.workingDays) && req.body.workingDays.length > 0) {
         workingWeek = parseWorkingWeek(req.body);
-      } else {
+      } else if (!saved || !saved.workingDays?.length) {
         const stored = await storedWorkingWeek();
         if (stored.length > 0) workingWeek = stored;
       }
