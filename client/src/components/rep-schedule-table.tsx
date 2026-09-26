@@ -174,20 +174,24 @@ export default function RepScheduleTable() {
     
     if (selectedRole === 'rep') {
       // Use regular schedules for Sales Rep
+      // Count every day-route in the plan, not weeks 1 and 2 only. A plan
+      // that starts mid-week has a one-day week 1 - Thursday 1 October on a
+      // Saturday-first week - and this used to report that as the rep's whole
+      // schedule.
       const repScheduleList = schedules.filter(s => s.repId === rep.id);
-      const week1Schedules = repScheduleList.filter(s => s.week === 1).length;
-      const week2Schedules = repScheduleList.filter(s => s.week === 2).length;
-      totalZones = week1Schedules + week2Schedules;
-      weeklyZones = Math.max(week1Schedules, week2Schedules);
+      const perWeek = new Map<number, number>();
+      for (const s of repScheduleList) perWeek.set(s.week, (perWeek.get(s.week) ?? 0) + 1);
+      totalZones = repScheduleList.length;
+      weeklyZones = Math.max(0, ...Array.from(perWeek.values()));
     } else {
       // Use role schedules for other roles
       const roleScheduleList = roleSchedules.filter(
         rs => rs.repId === rep.id && rs.role === selectedRole
       );
-      const week1Schedules = roleScheduleList.filter(s => s.week === 1).length;
-      const week2Schedules = roleScheduleList.filter(s => s.week === 2).length;
-      totalZones = week1Schedules + week2Schedules;
-      weeklyZones = Math.max(week1Schedules, week2Schedules);
+      const perWeek = new Map<number, number>();
+      for (const s of roleScheduleList) perWeek.set(s.week, (perWeek.get(s.week) ?? 0) + 1);
+      totalZones = roleScheduleList.length;
+      weeklyZones = Math.max(0, ...Array.from(perWeek.values()));
     }
 
     return {
