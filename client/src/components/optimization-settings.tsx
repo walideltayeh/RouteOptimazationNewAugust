@@ -23,10 +23,19 @@ const WEEK_PICKER: { iso: number; label: string }[] = [
 ];
 const WEEKDAY_LABELS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
-/** Orders the ticked days so the week starts after the longest break. */
-function orderedWeek(days: number[]): number[] {
+/**
+ * Orders the ticked days so the week starts on `startOn` when it is ticked,
+ * otherwise after the longest break. The break rule alone is wrong for
+ * Damascus: Saturday to Thursday with Friday off puts Saturday FIRST, but the
+ * week there starts on Sunday and Saturday is its last working day.
+ */
+function orderedWeek(days: number[], startOn: number = 0): number[] {
   const sorted = Array.from(new Set(days)).sort((a, b) => a - b);
   if (sorted.length < 2) return sorted;
+  if (startOn > 0 && sorted.includes(startOn)) {
+    const at = sorted.indexOf(startOn);
+    return [...sorted.slice(at), ...sorted.slice(0, at)];
+  }
   let startAt = 0, widest = -1;
   for (let i = 0; i < sorted.length; i++) {
     const prev = sorted[(i - 1 + sorted.length) % sorted.length];
@@ -82,8 +91,7 @@ function patternShape(n: number): { days: number; runs: number; routes: number; 
 }
 
 /** "Sunday to Thursday - 5 days a week, Friday and Saturday off." */
-function describeWeek(days: number[]): string {
-  const week = orderedWeek(days);
+function describeWeek(week: number[]): string {
   if (week.length === 0) return 'No working days selected.';
   const off = [1, 2, 3, 4, 5, 6, 7].filter(d => !week.includes(d)).map(d => WEEKDAY_LABELS[d - 1]);
   const span = week.length === 1
@@ -215,6 +223,9 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
   // order the week runs. A count alone could not express a week that starts on
   // Saturday or Sunday, which is how much of the region works.
   const [workingDays, setWorkingDays] = useState<number[]>([1, 2, 3, 4, 5]);
+  // First day of the working week, ISO number; 0 = after the longest break.
+  const [weekStart, setWeekStart] = useState(0);
+  const week = useMemo(() => orderedWeek(workingDays, weekStart), [workingDays, weekStart]);
   const workingDaysPerWeek = workingDays.length;
   // Length of one journey-plan cycle, in working days. 0 = four weeks, which is
   // what the app always assumed. A business that plans a 26-day cycle (13
@@ -231,7 +242,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
   const [monthEdges, setMonthEdges] = useState<'wholeWeeks' | 'allDays'>('allDays');
   const cycleMode = cycleWorkingDays === -1 ? 'calendarMonth' : 'fixed';
   const monthSummary = useMemo(
-    () => (cycleMode === 'calendarMonth' ? monthPlan(planMonth, orderedWeek(workingDays), monthEdges) : null),
+    () => (cycleMode === 'calendarMonth' ? monthPlan(planMonth, week, monthEdges) : null),
     [cycleMode, planMonth, workingDays, monthEdges],
   );
   
@@ -392,7 +403,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       minVisitsPerDay,
       maxVisitsPerDay,
       workingDaysPerWeek,
-      workingDays: orderedWeek(workingDays),
+      workingDays: week,
       cycleWorkingDays: cycleMode === 'calendarMonth' ? 0 : cycleWorkingDays,
       cycleMode,
       planMonth,
@@ -521,7 +532,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
             })}
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-500">
-            <span data-testid="text-week-summary">{describeWeek(workingDays)}</span>
+            <span data-testid="text-week-summary">{describeWeek(week)}</span>
             <span>·</span>
             <button type="button" className="underline hover:text-gray-700 dark:hover:text-gray-300"
               disabled={disabled} onClick={() => setWorkingDays([1, 2, 3, 4, 5])}>Mon–Fri</button>
@@ -531,6 +542,23 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
               disabled={disabled} onClick={() => setWorkingDays([7, 1, 2, 3, 4])}>Sun–Thu</button>
             <button type="button" className="underline hover:text-gray-700 dark:hover:text-gray-300"
               disabled={disabled} onClick={() => setWorkingDays([6, 7, 1, 2, 3])}>Sat–Wed</button>
+            <button type="button" className="underline hover:text-gray-700 dark:hover:text-gray-300"
+              disabled={disabled} onClick={() => { setWorkingDays([7, 1, 2, 3, 4, 6]); setWeekStart(7); }}>Sun–Thu + Sat, Fri off</button>
+          </div>
+          <div className="mt-2 flex items-center gap-2 text-xs">
+            <Label htmlFor="weekStart" className="text-xs">Week starts on</Label>
+            <Select value={String(weekStart)} onValueChange={(v) => setWeekStart(parseInt(v))} disabled={disabled}>
+              <SelectTrigger id="weekStart" className="h-8 w-56" disabled={disabled} data-testid="select-week-start">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="0">After the days off ({WEEKDAY_LABELS[orderedWeek(workingDays)[0] - 1]})</SelectItem>
+                {WEEK_PICKER.filter(d => workingDays.includes(d.iso)).map(d => (
+                  <SelectItem key={d.iso} value={String(d.iso)}>{WEEKDAY_LABELS[d.iso - 1]}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <span className="text-gray-500">Sets what "week 1" means and where a whole-week month begins.</span>
           </div>
         </div>
 
@@ -556,7 +584,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="allDays">Every working day of the month (recommended)</SelectItem>
-                    <SelectItem value="wholeWeeks">Whole weeks only (first {WEEKDAY_LABELS[orderedWeek(workingDays)[0] - 1]} to last {WEEKDAY_LABELS[orderedWeek(workingDays)[orderedWeek(workingDays).length - 1] - 1]})</SelectItem>
+                    <SelectItem value="wholeWeeks">Whole weeks only (first {WEEKDAY_LABELS[week[0] - 1]} to last {WEEKDAY_LABELS[week[week.length - 1] - 1]})</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
