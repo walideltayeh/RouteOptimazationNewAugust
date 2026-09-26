@@ -3992,36 +3992,72 @@ export async function registerRoutes(app: Express): Promise<Server> {
           if (d <= radiusM) { const a = find(i), b = find(j); if (a !== b) parent[a] = b; }
         }
       }
+      // Second pass: the same name within 150m, whatever the GPS says. A
+      // shop entered twice can carry two GPS fixes 18m apart, which the
+      // radius above misses; a common name 6km apart is a different shop and
+      // stays out. Different rows of one name are linked only when they are
+      // within that distance of each other.
+      const nameKey = sorted.map(o => normaliseName(o.name));
+      const byName = new Map<string, number[]>();
+      nameKey.forEach((k, i) => { if (k.length >= 2) { if (!byName.has(k)) byName.set(k, []); byName.get(k)!.push(i); } });
+      const nameRadiusM = 150;
+      for (const idxs of Array.from(byName.values())) {
+        if (idxs.length < 2) continue;
+        for (let a = 0; a < idxs.length; a++) for (let b = a + 1; b < idxs.length; b++) {
+          const i = idxs[a], j = idxs[b];
+          const d = geoDist(sorted[i].latitude, sorted[i].longitude, sorted[j].latitude, sorted[j].longitude) * 1000;
+          if (d <= nameRadiusM) { const x = find(i), y = find(j); if (x !== y) parent[x] = y; }
+        }
+      }
       const byRoot = new Map<number, Outlet[]>();
       sorted.forEach((o, i) => { const r = find(i); if (!byRoot.has(r)) byRoot.set(r, []); byRoot.get(r)!.push(o); });
 
-      const clusters = Array.from(byRoot.values()).filter(g => g.length > 1).map(members => {
-        let maxDistanceM = 0, bestSim = 0;
-        let identical = true, mixedScript = false;
-        for (let i = 0; i < members.length; i++) for (let j = i + 1; j < members.length; j++) {
-          const d = geoDist(members[i].latitude, members[i].longitude, members[j].latitude, members[j].longitude) * 1000;
-          maxDistanceM = Math.max(maxDistanceM, d);
-          if (d > 0.5) identical = false;
-          bestSim = Math.max(bestSim, nameSimilarity(members[i].name, members[j].name));
-          const ai = isArabic(members[i].name) && !isLatin(members[i].name), aj = isArabic(members[j].name) && !isLatin(members[j].name);
-          const li = isLatin(members[i].name) && !isArabic(members[i].name), lj = isLatin(members[j].name) && !isArabic(members[j].name);
-          if ((ai && lj) || (li && aj)) mixedScript = true;
-        }
-        let confidence: 'high' | 'medium' | 'low';
-        let reason: string;
-        if (bestSim >= 0.6 && maxDistanceM <= radiusM) { confidence = 'high'; reason = identical ? 'Same coordinates and the same name' : `Same name, ${maxDistanceM.toFixed(0)}m apart`; }
-        else if (identical) { confidence = mixedScript ? 'high' : 'medium'; reason = mixedScript ? 'Same coordinates, one name in Arabic and one in English' : 'Same coordinates, different names'; }
-        else if (mixedScript) { confidence = 'medium'; reason = `${maxDistanceM.toFixed(0)}m apart, one name in Arabic and one in English`; }
-        else { confidence = 'low'; reason = `${maxDistanceM.toFixed(0)}m apart, different names - may be neighbouring shops`; }
+      // A spot can hold several stories at once - two rows of one shop AND the
+      // shop next door - and union-find chains them into one cluster. So each
+      // cluster is split by name first: rows sharing a name are one group, rated
+      // by how far apart their fixes are; whatever is left at the spot is a
+      // second group, rated by script. Without this the three rows of "شادي"
+      // dragged the two shops beside them into a "likely duplicate" group.
+      type DupGroup = { confidence: 'high' | 'medium' | 'low'; reason: string; maxDistanceM: number; keepId: string; members: any[]; suggestedRemoveIds: string[] };
+      const clusters: DupGroup[] = [];
+      const spanOf = (g: Outlet[]) => { let m = 0; for (let i = 0; i < g.length; i++) for (let j = i + 1; j < g.length; j++) m = Math.max(m, geoDist(g[i].latitude, g[i].longitude, g[j].latitude, g[j].longitude) * 1000); return m; };
+      const emit = (members: Outlet[], confidence: DupGroup['confidence'], reason: string, maxDistanceM: number) => {
         // Keep the busiest, then the more fully named; suggest the rest go.
         const keep = [...members].sort((a, b) => (b.visitFrequency ?? 1) - (a.visitFrequency ?? 1) || b.name.length - a.name.length)[0];
-        return {
-          confidence, reason, maxDistanceM: Math.round(maxDistanceM * 10) / 10,
-          keepId: keep.id,
-          members: members.map(o => ({ id: o.id, name: o.name, address: o.address, latitude: o.latitude, longitude: o.longitude, visitFrequency: o.visitFrequency, repId: o.repId })),
+        clusters.push({
+          confidence, reason, maxDistanceM: Math.round(maxDistanceM * 10) / 10, keepId: keep.id,
+          members: members.map(o => ({ id: o.id, name: o.name, code: o.code ?? null, address: o.address, latitude: o.latitude, longitude: o.longitude, visitFrequency: o.visitFrequency, repId: o.repId })),
           suggestedRemoveIds: members.filter(o => o.id !== keep.id).map(o => o.id),
-        };
-      });
+        });
+      };
+      for (const cluster of Array.from(byRoot.values())) {
+        if (cluster.length < 2) continue;
+        // Name groups: rows whose normalised names match, or contain one another.
+        const groups: Outlet[][] = [];
+        for (const o of cluster) {
+          const g = groups.find(grp => nameSimilarity(grp[0].name, o.name) >= 0.6);
+          if (g) g.push(o); else groups.push([o]);
+        }
+        const rest: Outlet[] = [];
+        for (const g of groups) {
+          if (g.length >= 2) {
+            const span = spanOf(g);
+            if (span <= 0.5) emit(g, 'high', 'Same coordinates and the same name', span);
+            else if (span <= 50) emit(g, 'high', `Same name, ${span.toFixed(0)}m apart`, span);
+            else emit(g, 'medium', `Same name, ${span.toFixed(0)}m apart - one shop with two GPS fixes, or two branches`, span);
+          } else rest.push(g[0]);
+        }
+        // Whatever is left at the spot: different names within the GPS radius.
+        const near = rest.filter(o => cluster.some(p => p !== o && geoDist(o.latitude, o.longitude, p.latitude, p.longitude) * 1000 <= radiusM));
+        if (near.length >= 2) {
+          const span = spanOf(near);
+          const scripts = near.map(o => (isArabic(o.name) && !isLatin(o.name)) ? 'ar' : (isLatin(o.name) && !isArabic(o.name)) ? 'la' : 'mixed');
+          const mixedScript = scripts.includes('ar') && scripts.includes('la');
+          if (span <= 0.5) emit(near, mixedScript ? 'high' : 'medium', mixedScript ? 'Same coordinates, one name in Arabic and one in English' : 'Same coordinates, different names', span);
+          else if (mixedScript) emit(near, 'medium', `${span.toFixed(0)}m apart, one name in Arabic and one in English`, span);
+          else emit(near, 'low', `${span.toFixed(0)}m apart, different names - may be neighbouring shops`, span);
+        }
+      }
       const rank = { high: 0, medium: 1, low: 2 } as const;
       clusters.sort((a, b) => rank[a.confidence] - rank[b.confidence] || a.maxDistanceM - b.maxDistanceM);
       res.json({
@@ -4203,8 +4239,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
             continue;
           }
 
+          const clientCode = normalizedRow['clientcode'] || normalizedRow['outletcode'] || normalizedRow['code'] ||
+                  normalizedRow['customercode'] || normalizedRow['shopcode'] || normalizedRow['storecode'] ||
+                  row['Client Code'] || row['Outlet Code'] || row['Code'] || '';
           const outlet: typeof insertOutletSchema._type = {
             name: outletName.toString().trim(),
+            code: clientCode ? String(clientCode).trim() : null,
             address: normalizedRow['address'] || normalizedRow['addr'] || normalizedRow['streetaddress'] ||
                     normalizedRow['fulladdress'] || normalizedRow['location'] ||
                     `${row.District || ''} - ${row.Region || ''} - ${row.Area || ''}`.replace(/^- |- $|^-$/, '').trim() || 

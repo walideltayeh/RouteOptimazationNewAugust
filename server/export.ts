@@ -94,7 +94,7 @@ export function generateScheduleExcel(
                 'Date': index === 0 ? dateStr : '', // Only show date on first row
                 'Day': index === 0 ? day : '', // Only show day on first row
                 'Outlet Name': outlet.name,
-                'Outlet Code': outlet.id,
+                'Outlet Code': outlet.code || outlet.id,
                 'Visit Frequency': vfLabel,
                 'Zone': outlet.territory || 'Unassigned'
               });

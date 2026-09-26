@@ -6,6 +6,7 @@ import { z } from "zod";
 export const outlets = pgTable("outlets", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   name: text("name").notNull(),
+  code: text("code"), // the customer's own outlet / client code from the upload, so rows can be told apart
   address: text("address").notNull(),
   latitude: real("latitude").notNull(),
   longitude: real("longitude").notNull(),
