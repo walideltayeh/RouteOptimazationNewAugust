@@ -10,7 +10,12 @@ interface CalendarEntry {
   Zone: string;
 }
 
-export function generateScheduleExcel(reps: Rep[], schedules: Schedule[], outlets: Outlet[]): Buffer {
+export function generateScheduleExcel(
+  reps: Rep[],
+  schedules: Schedule[],
+  outlets: Outlet[],
+  workingWeek: number[] = [1, 2, 3, 4, 5],
+): Buffer {
   const workbook = XLSX.utils.book_new();
   
   // Create overview sheet
@@ -35,17 +40,23 @@ export function generateScheduleExcel(reps: Rep[], schedules: Schedule[], outlet
   // Create calendar-style schedule sheets for each rep
   const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
   
-  // Generate dates for a 4-week cycle starting from next Monday
-  const getNextMonday = () => {
-    const today = new Date();
-    const dayOfWeek = today.getDay();
-    const daysUntilMonday = dayOfWeek === 0 ? 1 : (8 - dayOfWeek);
-    const nextMonday = new Date(today);
-    nextMonday.setDate(today.getDate() + daysUntilMonday);
-    return nextMonday;
-  };
-  
-  const startDate = getNextMonday();
+  // Real calendar dates on the days the business works. Starting at "next
+  // Monday" and adding (week-1)*7 + dayIndex assumed a Monday-first week with
+  // the days off at the end of it, and dated a Sunday-to-Thursday plan onto
+  // Fridays.
+  const week = workingWeek.length > 0 ? workingWeek : [1, 2, 3, 4, 5];
+  const workingDates: Date[] = [];
+  {
+    const cursor = new Date();
+    cursor.setHours(0, 0, 0, 0);
+    cursor.setDate(cursor.getDate() + 1);
+    const wanted = new Set(week);
+    for (let guard = 0; guard < 400 && workingDates.length < 200; guard++) {
+      const iso = cursor.getDay() === 0 ? 7 : cursor.getDay();
+      if (wanted.has(iso)) workingDates.push(new Date(cursor));
+      cursor.setDate(cursor.getDate() + 1);
+    }
+  }
   
   reps.forEach(rep => {
     const repSchedules = schedules.filter(s => s.repId === rep.id);
@@ -57,19 +68,16 @@ export function generateScheduleExcel(reps: Rep[], schedules: Schedule[], outlet
     const lastWeek = repSchedules.reduce((m, s) => Math.max(m, s.week), 0);
     const weeks = Array.from({ length: Math.max(1, lastWeek) }, (_, i) => i + 1);
     
-    weeks.forEach(week => {
-      days.slice(0, rep.workingDaysPerWeek).forEach((day, dayIndex) => {
-        // Schedule uses 1-based dayOfWeek (1=Monday, 2=Tuesday, etc.)
-        const dayOfWeek = dayIndex + 1;
-        const daySchedule = repSchedules.find(s => s.week === week && s.dayOfWeek === dayOfWeek);
+    weeks.forEach(weekNo => {
+      week.forEach((dayOfWeek, dayIndex) => {
+        const day = days[dayOfWeek - 1];
+        const daySchedule = repSchedules.find(s => s.week === weekNo && s.dayOfWeek === dayOfWeek);
         
         if (daySchedule) {
           const outletIds = daySchedule.outletIds as string[];
           
-          // Calculate the actual date for this day
-          const currentDate = new Date(startDate);
-          currentDate.setDate(startDate.getDate() + ((week - 1) * 7) + dayIndex);
-          const dateStr = currentDate.toISOString().split('T')[0];
+          const scheduledDate = workingDates[(weekNo - 1) * week.length + dayIndex];
+          const dateStr = scheduledDate ? scheduledDate.toISOString().split('T')[0] : '';
           
           // Add each outlet as a separate row in calendar format
           outletIds.forEach((outletId: string, index: number) => {

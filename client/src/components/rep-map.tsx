@@ -113,7 +113,7 @@ export function RepMap() {
   // Rep reassignments queued on the map; nothing executes until the user
   // hits "Apply & Reoptimize", then affected reps' schedules rework in one
   // batch instead of once per edited outlet.
-  const [pendingReassignments, setPendingReassignments] = useState<Record<string, { name: string; toRepId: string; toRepName: string }>>({});
+  const [pendingReassignments, setPendingReassignments] = useState<Record<string, { name: string; toRepId: string; toRepName: string; toTerritory?: string }>>({});
   const [needsReoptimization, setNeedsReoptimization] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -697,16 +697,40 @@ export function RepMap() {
   });
   const misfits = (misfitData?.misfits || []).filter(m => !pendingReassignments[m.outletId]);
 
-  const queueReassignment = (outletId: string, name: string, toRepId: string) => {
+  // A full re-optimization DELETES every rep and creates new ones with new ids,
+  // so anything queued beforehand points at a rep that no longer exists.
+  // Applying it returned 404 "Target rep not found" - and because the queue was
+  // never cleared, every later attempt failed the same way with no way out but
+  // Discard. Drop the dead entries as soon as the rep list changes and say so.
+  useEffect(() => {
+    if (reps.length === 0) return;
+    const live = new Set(reps.map(r => r.id));
+    const stale = Object.entries(pendingReassignments).filter(([, p]) => !live.has(p.toRepId));
+    if (stale.length === 0) return;
+    setPendingReassignments(Object.fromEntries(
+      Object.entries(pendingReassignments).filter(([, p]) => live.has(p.toRepId)),
+    ));
+    toast({
+      title: "Queued reassignments dropped",
+      description: `${stale.length} queued move${stale.length === 1 ? '' : 's'} pointed at reps that the last optimization replaced. Re-queue them on the new plan.`,
+      variant: "destructive",
+    });
+  }, [reps, pendingReassignments, toast]);
+
+  const queueReassignment = (outletId: string, name: string, toRepId: string, toTerritory?: string) => {
     const toRep = reps.find(r => r.id === toRepId);
     if (!toRep) return;
-    setPendingReassignments(prev => ({ ...prev, [outletId]: { name, toRepId, toRepName: toRep.name } }));
+    setPendingReassignments(prev => ({ ...prev, [outletId]: { name, toRepId, toRepName: toRep.name, toTerritory } }));
   };
 
   const handleQueueFromDialog = () => {
     if (!editingOutlet || !newRepId || newRepId === 'keep-current') return;
-    queueReassignment(editingOutlet.id, editingOutlet.name, newRepId);
-    toast({ title: "Queued", description: `${editingOutlet.name} → ${reps.find(r => r.id === newRepId)?.name}. Apply & Reoptimize when ready.` });
+    // Carry the zone too. Queueing used to drop it on the floor: pick a new
+    // zone AND a new rep and the button became "Queue Reassignment", which
+    // queued only the rep and cleared the zone without a word.
+    const zone = newZone && newZone !== editingOutlet.territory ? newZone : undefined;
+    queueReassignment(editingOutlet.id, editingOutlet.name, newRepId, zone);
+    toast({ title: "Queued", description: `${editingOutlet.name} → ${reps.find(r => r.id === newRepId)?.name}${zone ? ` (${zone})` : ''}. Apply & Reoptimize when ready.` });
     setEditingOutlet(null);
     setNewZone('');
     setNewRepId('');
@@ -723,11 +747,28 @@ export function RepMap() {
       });
       const warnings: string[] = [];
       let moved = 0;
+
+      // Zone moves first, in one call, so an outlet that changed both zone and
+      // rep lands in the right zone before the schedules are rebuilt.
+      const zoneUpdates = Object.entries(pendingReassignments)
+        .filter(([, p]) => p.toTerritory)
+        .map(([outletId, p]) => ({ id: outletId, territory: p.toTerritory, repId: p.toRepId }));
+      if (zoneUpdates.length > 0) {
+        await apiRequest("POST", "/api/outlets/bulk-reassign", { updates: zoneUpdates });
+      }
+
       for (const [toRepId, outletIds] of Array.from(byRep.entries())) {
-        const res = await apiRequest("POST", "/api/reps/reassign-outlets", { outletIds, toRepId });
-        if (!res.ok) throw new Error((await res.json()).message || "Reassignment failed");
-        const data = await res.json();
-        moved += data.movedOutlets;
+        const repName = reps.find(r => r.id === toRepId)?.name ?? 'the selected rep';
+        let data: { movedOutlets?: number; warnings?: string[] };
+        try {
+          const res = await apiRequest("POST", "/api/reps/reassign-outlets", { outletIds, toRepId });
+          data = await res.json();
+        } catch (err) {
+          // Name the rep. "Apply failed: 404: {...}" told the user nothing about
+          // which of several queued moves broke, or why.
+          throw new Error(`Could not move ${outletIds.length} outlet(s) to ${repName}. ${(err as Error).message}`);
+        }
+        moved += data.movedOutlets ?? 0;
         warnings.push(...(data.warnings || []));
       }
       return { moved, warnings };
