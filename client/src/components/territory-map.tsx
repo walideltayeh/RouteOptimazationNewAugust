@@ -381,11 +381,16 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     setIsRenderingMarkers(false);
   };
 
+  // A territory is a REP's territory. This grouped by the outlet's zone label
+  // ("Zone 31" - sixty of them) and then looked the rep up by matching that
+  // label to "Territory 3", which never matched, so the page showed sixty
+  // unowned clusters and no rep. Ownership is repId; the label is the rep's.
   const createTerritoryGroups = () => {
     if (outlets.length === 0) return {};
     const groups: Record<string, Outlet[]> = {};
+    const labelOfRep = new Map(reps.map(r => [r.id, r.territory || r.name]));
     outlets.forEach(outlet => {
-      const territory = outlet.territory || 'Unassigned';
+      const territory = (outlet.repId && labelOfRep.get(outlet.repId)) || 'Unassigned';
       if (!groups[territory]) groups[territory] = [];
       groups[territory].push(outlet);
     });
@@ -393,6 +398,11 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   };
 
   const territoryGroups = useMemo(() => createTerritoryGroups(), [outlets, reps]);
+
+  // Day-slots in the plan, for the visits/day figure; four weeks of five if
+  // no plan has been run yet.
+  const { data: planSettings } = useQuery<{ configured: boolean; cycleDays?: number }>({ queryKey: ['/api/plan-settings'] });
+  const cycleSlots = planSettings?.configured && planSettings.cycleDays ? planSettings.cycleDays : 20;
 
   const getTerritoryColor = (territory: string) => {
     if (territory === 'Unassigned') return '#9CA3AF';
@@ -402,7 +412,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   };
 
   const getRepForTerritory = (territory: string) => {
-    return reps.find(rep => rep.territory === territory);
+    return reps.find(rep => (rep.territory || rep.name) === territory);
   };
 
   if (!isMapboxConfigLoading && (!resolvedMapboxToken || resolvedMapboxToken.includes('demo_token'))) {
@@ -535,7 +545,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                         VF2: {vf2Count} | VF4: {vf4Count}
                       </div>
                       <div className="text-xs text-green-600">
-                        ~{Math.round(territoryOutlets.reduce((sum, o) => sum + (o.visitFrequency || 2), 0) / 5)} visits/day
+                        ~{Math.round(territoryOutlets.reduce((sum, o) => sum + (o.visitFrequency || 2), 0) / cycleSlots)} visits/day
                       </div>
                     </div>
                   </div>
