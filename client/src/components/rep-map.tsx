@@ -541,51 +541,53 @@ export function RepMap() {
   }, [schedules, outlets]);
 
   // Recommendation algorithm: find closest zones and reps
-  const getRecommendations = useMemo(() => {
-    if (!editingOutlet) return { zones: [], reps: [] };
-
-    const outletLat = editingOutlet.lat;
-    const outletLng = editingOutlet.lng;
-
-    const calcDistance = (lat1: number, lng1: number, lat2: number, lng2: number) => {
-      const dLat = lat2 - lat1;
-      const dLng = lng2 - lng1;
-      return Math.sqrt(dLat * dLat + dLng * dLng);
-    };
-
-    // Sort zones by distance
-    const zonesWithDistance = allZones
-      .filter(zone => zone !== editingOutlet.territory)
-      .map(zone => {
-        const center = zoneCenters[zone];
-        const distance = center ? calcDistance(outletLat, outletLng, center.lat, center.lng) : Infinity;
-        return { zone, distance };
+  // Zones ranked by how close they actually are to this outlet.
+  //
+  // This used to score a zone by the straight-line gap to its CENTROID, in raw
+  // degrees of latitude and longitude. Both halves were wrong. Degrees are not
+  // distance - at Damascus's latitude a degree of longitude is 93km against
+  // 111km for a degree of latitude, so east-west gaps were over-weighted by a
+  // fifth - and a centroid is not where the route runs: a long thin zone along
+  // a main road has its centre nowhere near either end, so the zone whose
+  // outlets are literally next door could rank behind one whose middle happens
+  // to sit closer.
+  //
+  // Rank on the distance to the NEAREST OUTLET in the zone, in kilometres.
+  // That is the question being asked: which route already passes by here.
+  const rankedZones = useMemo(() => {
+    if (!editingOutlet) return [];
+    const byZone = new Map<string, Outlet[]>();
+    for (const o of outlets) {
+      if (!o.territory || o.territory === editingOutlet.territory) continue;
+      if (!byZone.has(o.territory)) byZone.set(o.territory, []);
+      byZone.get(o.territory)!.push(o);
+    }
+    const repNameById = new Map(reps.map(r => [r.id, r.name]));
+    return Array.from(byZone.entries())
+      .map(([zone, zoneOutlets]) => {
+        let nearestKm = Infinity;
+        for (const o of zoneOutlets) {
+          const d = haversineKm(editingOutlet.lat, editingOutlet.lng, o.latitude, o.longitude);
+          if (d < nearestKm) nearestKm = d;
+        }
+        // Whoever owns most of the zone owns the zone, for labelling purposes.
+        const owners = new Map<string, number>();
+        for (const o of zoneOutlets) {
+          if (o.repId) owners.set(o.repId, (owners.get(o.repId) ?? 0) + 1);
+        }
+        let ownerId = '';
+        let best = 0;
+        for (const [rid, n] of Array.from(owners.entries())) if (n > best) { best = n; ownerId = rid; }
+        return {
+          zone,
+          nearestKm,
+          outlets: zoneOutlets.length,
+          ownerId,
+          ownerName: repNameById.get(ownerId) ?? '',
+        };
       })
-      .sort((a, b) => a.distance - b.distance);
-
-    // Sort reps by distance to their zone centers (filter out reps with no territories)
-    const repsWithDistance = reps
-      .filter(rep => rep.id !== editingOutlet.currentRepId)
-      .map(rep => {
-        const repZoneSet = repTerritories[rep.id] || new Set();
-        let minDistance = Infinity;
-        repZoneSet.forEach(zone => {
-          const center = zoneCenters[zone];
-          if (center) {
-            const dist = calcDistance(outletLat, outletLng, center.lat, center.lng);
-            if (dist < minDistance) minDistance = dist;
-          }
-        });
-        return { rep, distance: minDistance };
-      })
-      .filter(r => r.distance !== Infinity) // Only include reps with valid territories
-      .sort((a, b) => a.distance - b.distance);
-
-    return {
-      zones: zonesWithDistance.slice(0, 2).map(z => z.zone),
-      reps: repsWithDistance.slice(0, 2).map(r => r.rep.id)
-    };
-  }, [editingOutlet, allZones, zoneCenters, reps, repTerritories]);
+      .sort((a, b) => a.nearestKm - b.nearestKm);
+  }, [editingOutlet, outlets, reps]);
 
   // Reassignment mutation
   const reassignMutation = useMutation({
@@ -673,17 +675,46 @@ export function RepMap() {
 
   // Reps ranked by distance from the outlet being edited - answers "which
   // rep's territory is this outlet actually closest to?" with numbers.
+  // Reps ranked by their NEAREST outlet, for the same reason as the zones: a
+  // rep whose territory sprawls can have a distant centroid and a shop across
+  // the street, and it is the shop across the street that makes the move cheap.
   const rankedRepOptions = useMemo(() => {
     if (!editingOutlet) return [];
+    const nearest = new Map<string, number>();
+    for (const o of outlets) {
+      if (!o.repId || o.id === editingOutlet.id) continue;
+      const d = haversineKm(editingOutlet.lat, editingOutlet.lng, o.latitude, o.longitude);
+      const cur = nearest.get(o.repId);
+      if (cur === undefined || d < cur) nearest.set(o.repId, d);
+    }
     return reps
-      .map(rep => {
-        const c = repCentroids.get(rep.id);
-        return { rep, distKm: c ? haversineKm(editingOutlet.lat, editingOutlet.lng, c.lat, c.lng) : Infinity };
-      })
+      .map(rep => ({ rep, distKm: nearest.get(rep.id) ?? Infinity }))
       .filter(r => r.distKm !== Infinity)
       .sort((a, b) => a.distKm - b.distKm);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editingOutlet, reps, repCentroids]);
+  }, [editingOutlet, reps, outlets]);
+
+  // Open the dialog on the answer, not on a blank. The nearest zone is what the
+  // user almost always wants; anything else is a deliberate override.
+  useEffect(() => {
+    if (!editingOutlet || rankedZones.length === 0) return;
+    setNewZone(rankedZones[0].zone);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingOutlet?.id]);
+
+  // What a rebuild will actually run with. Shown next to the Reoptimize button
+  // so the settings in force are visible before it is pressed, rather than
+  // being a property of a form on another page.
+  interface PlanSettings {
+    configured: boolean;
+    minVisitsPerDay?: number; maxVisitsPerDay?: number;
+    cycleDays?: number; workingDayNames?: string[]; daysOffNames?: string[];
+    distanceMode?: string;
+  }
+  const { data: planSettings } = useQuery<PlanSettings>({ queryKey: ["/api/plan-settings"] });
+  const planSummary = planSettings?.configured
+    ? `${planSettings.minVisitsPerDay}-${planSettings.maxVisitsPerDay} visits/day · ${planSettings.cycleDays}-day cycle · ${planSettings.workingDayNames?.[0]}-${planSettings.workingDayNames?.[planSettings.workingDayNames.length - 1]}`
+    : null;
 
   interface MisfitOutlet {
     outletId: string; name: string;
@@ -1850,9 +1881,14 @@ export function RepMap() {
         {needsReoptimization && (
           <div className="mt-4 p-3 bg-amber-50 dark:bg-amber-900/20 rounded-xl border border-amber-200 dark:border-amber-800">
             <div className="flex items-center justify-between">
-              <p className="text-sm text-amber-800 dark:text-amber-200">
-                Changes detected. Reoptimize to update all routes and schedules.
-              </p>
+              <div className="text-sm text-amber-800 dark:text-amber-200">
+                <p>Changes detected. Reoptimize to update all routes and schedules.</p>
+                {planSummary && (
+                  <p className="text-xs mt-0.5 text-amber-700 dark:text-amber-300" data-testid="text-plan-settings">
+                    Using your dashboard settings: {planSummary}.
+                  </p>
+                )}
+              </div>
               <Button
                 onClick={() => {
                   setIsOptimizing(true);
@@ -2277,21 +2313,39 @@ export function RepMap() {
                 </Badge>
               </div>
               <div>
-                <p className="text-sm text-gray-600 mb-2">New Zone:</p>
+                <p className="text-sm text-gray-600 mb-2">New Zone (closest first):</p>
+                {/* Nearest at the top, with the real distance and the rep who
+                    owns it. The list used to be every zone in alphabetical
+                    order - "Zone 1, Zone 10, Zone 11..." across 84 of them -
+                    with two of them merely labelled "Recommended", so finding
+                    the zone next door meant scrolling and guessing. */}
                 <Select value={newZone} onValueChange={setNewZone}>
-                  <SelectTrigger>
+                  <SelectTrigger data-testid="select-reassign-zone">
                     <SelectValue placeholder="Select new zone" />
                   </SelectTrigger>
                   <SelectContent>
-                    {allZones
-                      .filter(zone => zone !== editingOutlet?.territory)
-                      .map(zone => (
-                        <SelectItem key={zone} value={zone}>
-                          {getRecommendations.zones.includes(zone) ? `Recommended - ${zone}` : zone}
-                        </SelectItem>
-                      ))}
+                    {rankedZones.map(({ zone, nearestKm, outlets: n, ownerName }, idx) => (
+                      <SelectItem key={zone} value={zone}>
+                        {zone} — {nearestKm < 1 ? `${Math.round(nearestKm * 1000)} m` : `${nearestKm.toFixed(1)} km`}
+                        {ownerName ? ` · ${ownerName}` : ''} · {n} outlet{n === 1 ? '' : 's'}
+                        {idx === 0 ? ' · closest' : ''}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
+                {rankedZones.length > 0 && (
+                  <p className="text-xs text-gray-500 mt-1" data-testid="text-nearest-zone">
+                    Nearest route: <span className="font-medium">{rankedZones[0].zone}</span>
+                    {rankedZones[0].ownerName ? ` (${rankedZones[0].ownerName})` : ''}, {' '}
+                    {rankedZones[0].nearestKm < 1
+                      ? `${Math.round(rankedZones[0].nearestKm * 1000)} m`
+                      : `${rankedZones[0].nearestKm.toFixed(1)} km`} from this outlet.
+                    {newZone && newZone !== rankedZones[0].zone && (
+                      <button type="button" className="ml-1 underline hover:text-gray-700"
+                        onClick={() => setNewZone(rankedZones[0].zone)}>Use it</button>
+                    )}
+                  </p>
+                )}
               </div>
               <div>
                 <p className="text-sm text-gray-600 mb-2">Reassign to Rep (sorted by distance to this outlet):</p>
