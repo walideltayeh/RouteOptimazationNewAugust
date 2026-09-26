@@ -3941,6 +3941,100 @@ export async function registerRoutes(app: Express): Promise<Server> {
     return undefined;
   }
 
+  // Outlets that may be the same shop entered twice.
+  //
+  // The tell is the GPS: two rows within a few metres of each other. But GPS
+  // alone is not proof - in a dense souk the market and the nut seller next
+  // door share coordinates to the metre, and on this data 161 pairs sit within
+  // 10m of which most are plainly different shops. So this SUGGESTS, ranked by
+  // confidence, and the user decides: identical coordinates or a matching
+  // name is high; the same spot with one name in Arabic and one in Latin
+  // script is the reported case and medium; the same spot with two different
+  // names in the same script is low, and shown only so it can be checked.
+  const normaliseName = (raw: string) => raw
+    .toLowerCase()
+    .replace(/[\u064B-\u0652\u0640]/g, '')          // Arabic diacritics and tatweel
+    .replace(/[إأآ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي')
+    .replace(/\b(سوبر ?ماركت|ميني ?ماركت|ماركت|مركز|محل|بقالية|بقاليه|سوبرماركت|super ?market|mini ?market|market|center|centre|shop|store|grocery)\b/g, ' ')
+    .replace(/^ال/, '').replace(/\sال/g, ' ')
+    .replace(/[^a-z0-9\u0600-\u06FF]+/g, '')   // keep Latin, digits, Arabic
+    .trim();
+  const isArabic = (t: string) => /[\u0600-\u06FF]/.test(t);
+  const isLatin = (t: string) => /[A-Za-z]/.test(t);
+  const nameSimilarity = (a: string, b: string) => {
+    const x = normaliseName(a), y = normaliseName(b);
+    if (!x || !y) return 0;
+    if (x === y) return 1;
+    // "الرايق" and "الرايق اسبرسو" are the same shop with and without its
+    // suffix; bigram overlap alone scores that 0.5.
+    const [short, long] = x.length <= y.length ? [x, y] : [y, x];
+    if (short.length >= 3 && long.includes(short)) return 0.8;
+    const grams = (t: string) => { const g = new Map<string, number>(); for (let i = 0; i < t.length - 1; i++) { const k = t.slice(i, i + 2); g.set(k, (g.get(k) ?? 0) + 1); } return g; };
+    const ga = grams(x), gb = grams(y);
+    let shared = 0; for (const [k, n] of Array.from(ga.entries())) shared += Math.min(n, gb.get(k) ?? 0);
+    const total = (x.length - 1) + (y.length - 1);
+    return total > 0 ? (2 * shared) / total : 0;
+  };
+
+  app.get("/api/outlets/duplicates", async (req, res) => {
+    try {
+      const radiusM = Math.max(1, Math.min(100, parseFloat(String(req.query.radiusM ?? 10)) || 10));
+      const all = (await storage.getOutlets()).filter(o => o.territory !== 'Excluded');
+      // Union-find over pairs within the radius; a coarse latitude sort keeps
+      // it from being all-pairs over the whole city.
+      const sorted = [...all].sort((a, b) => a.latitude - b.latitude);
+      const parent = sorted.map((_, i) => i);
+      const find = (x: number): number => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+      const latSpan = (radiusM / 1000) / 111 * 1.05;
+      for (let i = 0; i < sorted.length; i++) {
+        for (let j = i + 1; j < sorted.length && sorted[j].latitude - sorted[i].latitude <= latSpan; j++) {
+          const d = geoDist(sorted[i].latitude, sorted[i].longitude, sorted[j].latitude, sorted[j].longitude) * 1000;
+          if (d <= radiusM) { const a = find(i), b = find(j); if (a !== b) parent[a] = b; }
+        }
+      }
+      const byRoot = new Map<number, Outlet[]>();
+      sorted.forEach((o, i) => { const r = find(i); if (!byRoot.has(r)) byRoot.set(r, []); byRoot.get(r)!.push(o); });
+
+      const clusters = Array.from(byRoot.values()).filter(g => g.length > 1).map(members => {
+        let maxDistanceM = 0, bestSim = 0;
+        let identical = true, mixedScript = false;
+        for (let i = 0; i < members.length; i++) for (let j = i + 1; j < members.length; j++) {
+          const d = geoDist(members[i].latitude, members[i].longitude, members[j].latitude, members[j].longitude) * 1000;
+          maxDistanceM = Math.max(maxDistanceM, d);
+          if (d > 0.5) identical = false;
+          bestSim = Math.max(bestSim, nameSimilarity(members[i].name, members[j].name));
+          const ai = isArabic(members[i].name) && !isLatin(members[i].name), aj = isArabic(members[j].name) && !isLatin(members[j].name);
+          const li = isLatin(members[i].name) && !isArabic(members[i].name), lj = isLatin(members[j].name) && !isArabic(members[j].name);
+          if ((ai && lj) || (li && aj)) mixedScript = true;
+        }
+        let confidence: 'high' | 'medium' | 'low';
+        let reason: string;
+        if (bestSim >= 0.6 && maxDistanceM <= radiusM) { confidence = 'high'; reason = identical ? 'Same coordinates and the same name' : `Same name, ${maxDistanceM.toFixed(0)}m apart`; }
+        else if (identical) { confidence = mixedScript ? 'high' : 'medium'; reason = mixedScript ? 'Same coordinates, one name in Arabic and one in English' : 'Same coordinates, different names'; }
+        else if (mixedScript) { confidence = 'medium'; reason = `${maxDistanceM.toFixed(0)}m apart, one name in Arabic and one in English`; }
+        else { confidence = 'low'; reason = `${maxDistanceM.toFixed(0)}m apart, different names - may be neighbouring shops`; }
+        // Keep the busiest, then the more fully named; suggest the rest go.
+        const keep = [...members].sort((a, b) => (b.visitFrequency ?? 1) - (a.visitFrequency ?? 1) || b.name.length - a.name.length)[0];
+        return {
+          confidence, reason, maxDistanceM: Math.round(maxDistanceM * 10) / 10,
+          keepId: keep.id,
+          members: members.map(o => ({ id: o.id, name: o.name, address: o.address, latitude: o.latitude, longitude: o.longitude, visitFrequency: o.visitFrequency, repId: o.repId })),
+          suggestedRemoveIds: members.filter(o => o.id !== keep.id).map(o => o.id),
+        };
+      });
+      const rank = { high: 0, medium: 1, low: 2 } as const;
+      clusters.sort((a, b) => rank[a.confidence] - rank[b.confidence] || a.maxDistanceM - b.maxDistanceM);
+      res.json({
+        radiusM,
+        clusters,
+        counts: { high: clusters.filter(c => c.confidence === 'high').length, medium: clusters.filter(c => c.confidence === 'medium').length, low: clusters.filter(c => c.confidence === 'low').length },
+      });
+    } catch (error) {
+      console.error("Duplicate scan error:", error);
+      res.status(500).json({ message: "Failed to scan for duplicates" });
+    }
+  });
+
   app.post("/api/upload", upload.single("file"), async (req: MulterRequest, res) => {
     try {
       if (!req.file) {
