@@ -11,6 +11,43 @@ import { Settings, Play, AlertCircle } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import OptimizationProgressModal from "./optimization-progress-modal";
+import { cn } from "@/lib/utils";
+
+// ISO weekday numbers, shown in the order a picker reads best. Sunday and
+// Saturday sit at the ends because whichever one a business starts on, it is
+// the boundary of its week.
+const WEEK_PICKER: { iso: number; label: string }[] = [
+  { iso: 7, label: 'Sun' }, { iso: 1, label: 'Mon' }, { iso: 2, label: 'Tue' },
+  { iso: 3, label: 'Wed' }, { iso: 4, label: 'Thu' }, { iso: 5, label: 'Fri' },
+  { iso: 6, label: 'Sat' },
+];
+const WEEKDAY_LABELS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+/** Orders the ticked days so the week starts after the longest break. */
+function orderedWeek(days: number[]): number[] {
+  const sorted = Array.from(new Set(days)).sort((a, b) => a - b);
+  if (sorted.length < 2) return sorted;
+  let startAt = 0, widest = -1;
+  for (let i = 0; i < sorted.length; i++) {
+    const prev = sorted[(i - 1 + sorted.length) % sorted.length];
+    const gap = ((sorted[i] - prev) + 7) % 7;
+    if (gap > widest) { widest = gap; startAt = i; }
+  }
+  return [...sorted.slice(startAt), ...sorted.slice(0, startAt)];
+}
+
+/** "Sunday to Thursday - 5 days a week, Friday and Saturday off." */
+function describeWeek(days: number[]): string {
+  const week = orderedWeek(days);
+  if (week.length === 0) return 'No working days selected.';
+  const off = [1, 2, 3, 4, 5, 6, 7].filter(d => !week.includes(d)).map(d => WEEKDAY_LABELS[d - 1]);
+  const span = week.length === 1
+    ? WEEKDAY_LABELS[week[0] - 1]
+    : `${WEEKDAY_LABELS[week[0] - 1]} to ${WEEKDAY_LABELS[week[week.length - 1] - 1]}`;
+  const offText = off.length === 0 ? 'no days off'
+    : `${off.slice(0, -1).join(', ')}${off.length > 1 ? ' and ' : ''}${off[off.length - 1]} off`;
+  return `${span} — ${week.length} day${week.length === 1 ? '' : 's'} a week, ${offText}.`;
+}
 
 interface FileAnalysis {
   outlets: number;
@@ -88,7 +125,11 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
   const [activeExcludedIds, setActiveExcludedIds] = useState<string[]>([]);
 
   // Common settings
-  const [workingDaysPerWeek, setWorkingDaysPerWeek] = useState(5);
+  // The weekdays the reps work, ISO numbers (1 = Monday ... 7 = Sunday), in the
+  // order the week runs. A count alone could not express a week that starts on
+  // Saturday or Sunday, which is how much of the region works.
+  const [workingDays, setWorkingDays] = useState<number[]>([1, 2, 3, 4, 5]);
+  const workingDaysPerWeek = workingDays.length;
   // Length of one journey-plan cycle, in working days. 0 = four weeks, which is
   // what the app always assumed. A business that plans a 26-day cycle (13
   // day-routes driven twice) gets days sized for 26, not 24.
@@ -102,6 +143,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
     minVisitsPerDay: number;
     maxVisitsPerDay: number;
     workingDaysPerWeek: number;
+    workingDays: number[];
     cycleWorkingDays: number;
     weightMode: WeightMode;
     distanceMode: DistanceModel;
@@ -151,6 +193,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       minVisitsPerDay: number;
       maxVisitsPerDay: number;
       workingDaysPerWeek: number;
+      workingDays?: number[];
       cycleWorkingDays?: number;
       weightMode?: WeightMode;
       distanceMode?: DistanceModel;
@@ -237,6 +280,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       minVisitsPerDay,
       maxVisitsPerDay,
       workingDaysPerWeek,
+      workingDays: orderedWeek(workingDays),
       cycleWorkingDays,
       weightMode,
       distanceMode,
@@ -327,21 +371,50 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
         </div>
 
         <div>
-          <Label htmlFor="workingDays">Working Days/Week</Label>
-          <Select
-            value={workingDaysPerWeek.toString()}
-            onValueChange={(value) => setWorkingDaysPerWeek(parseInt(value))}
-            disabled={disabled}
-          >
-            <SelectTrigger className="mt-1" disabled={disabled} data-testid="select-working-days">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="5">5 Days</SelectItem>
-              <SelectItem value="6">6 Days</SelectItem>
-              <SelectItem value="7">7 Days</SelectItem>
-            </SelectContent>
-          </Select>
+          <Label>Working Days</Label>
+          <p className="text-xs text-gray-500 mt-1 mb-2">
+            Tick the days the reps work. The first and last ticked days are the start
+            and end of their week; the rest are days off.
+          </p>
+          <div className="flex flex-wrap gap-1.5" data-testid="picker-working-days">
+            {WEEK_PICKER.map(({ iso, label }) => {
+              const on = workingDays.includes(iso);
+              return (
+                <button
+                  key={iso}
+                  type="button"
+                  disabled={disabled}
+                  aria-pressed={on}
+                  data-testid={`chip-workday-${iso}`}
+                  onClick={() => setWorkingDays(prev => {
+                    const next = on ? prev.filter(d => d !== iso) : [...prev, iso];
+                    // Never leave the plan with no days to schedule onto.
+                    return next.length === 0 ? prev : next;
+                  })}
+                  className={cn(
+                    "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50",
+                    on
+                      ? "border-transparent bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900"
+                      : "border-gray-300 text-gray-500 hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-800",
+                  )}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-500">
+            <span data-testid="text-week-summary">{describeWeek(workingDays)}</span>
+            <span>·</span>
+            <button type="button" className="underline hover:text-gray-700 dark:hover:text-gray-300"
+              disabled={disabled} onClick={() => setWorkingDays([1, 2, 3, 4, 5])}>Mon–Fri</button>
+            <button type="button" className="underline hover:text-gray-700 dark:hover:text-gray-300"
+              disabled={disabled} onClick={() => setWorkingDays([1, 2, 3, 4, 5, 6])}>Mon–Sat</button>
+            <button type="button" className="underline hover:text-gray-700 dark:hover:text-gray-300"
+              disabled={disabled} onClick={() => setWorkingDays([7, 1, 2, 3, 4])}>Sun–Thu</button>
+            <button type="button" className="underline hover:text-gray-700 dark:hover:text-gray-300"
+              disabled={disabled} onClick={() => setWorkingDays([6, 7, 1, 2, 3])}>Sat–Wed</button>
+          </div>
         </div>
 
         <div>

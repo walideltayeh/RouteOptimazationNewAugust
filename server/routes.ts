@@ -2877,6 +2877,33 @@ function buildDailyClustersFromZones(zoneGroups: Outlet[][], numDays: number, ma
 // that should all honour the same setting.
 let dayRouteWidthCapKm = 0;
 
+// Which weekdays the reps actually work, as ISO numbers (1 = Monday ... 7 =
+// Sunday), in the order the week runs.
+//
+// The app assumed the week starts on Monday and that "6 working days" means
+// Monday to Saturday - it took a COUNT and filled it from the top of a
+// Monday-first list. That is wrong wherever the week does not start on Monday:
+// Syria works Sunday to Thursday with Friday and Saturday off, and the app
+// would put those reps on the road on Friday and give them Sunday off. The
+// user now states the working days themselves, and the first and last of them
+// are the start and end of their week.
+let workingWeek: number[] = [1, 2, 3, 4, 5];
+
+const WEEKDAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+/** Reads a working week off a request body, falling back to the first N weekdays. */
+function parseWorkingWeek(body: any): number[] {
+  const raw = body?.workingDays;
+  if (Array.isArray(raw)) {
+    const days = Array.from(new Set(
+      raw.map((d: any) => parseInt(String(d), 10)).filter((d: number) => d >= 1 && d <= 7),
+    ));
+    if (days.length > 0) return days;
+  }
+  const count = Math.max(1, Math.min(7, parseInt(String(body?.workingDaysPerWeek ?? 5), 10) || 5));
+  return Array.from({ length: count }, (_, i) => i + 1);
+}
+
 // Length of one journey-plan cycle, in working days. 0 = derive it as four
 // weeks, which is what the app always assumed.
 //
@@ -2926,20 +2953,62 @@ async function storedCycleDays(): Promise<number> {
   return Math.max(...Array.from(cellsByRep.values(), v => v.size));
 }
 
+/**
+ * The working week a plan on disk was built with: the weekdays its cells use,
+ * rotated so the week starts where the days off end.
+ *
+ * Sorting them 1..7 would lose which day the week STARTS on - a Sunday-to-
+ * Thursday week would read back as Monday-to-Thursday-plus-Sunday and a rebuild
+ * would re-date the whole plan. The break in the sequence is the weekend, so
+ * the day after the longest gap is the first working day.
+ */
+async function storedWorkingWeek(): Promise<number[]> {
+  const all = await storage.getSchedules();
+  if (all.length === 0) return [];
+  const days = Array.from(new Set(all.map(s => s.dayOfWeek))).sort((a, b) => a - b);
+  if (days.length < 2) return days;
+  let startAt = 0, widest = -1;
+  for (let i = 0; i < days.length; i++) {
+    const prev = days[(i - 1 + days.length) % days.length];
+    const gap = ((days[i] - prev) + 7) % 7;
+    if (gap > widest) { widest = gap; startAt = i; }
+  }
+  return [...days.slice(startAt), ...days.slice(0, startAt)];
+}
+
 // Where a (repeat, day-group) cell falls on the calendar. Cycle working day
 // (r-1) * dayGroups + g, laid onto weeks of workingDaysPerWeek. With 13 groups
 // x 2 repeats and a 6-day week, group 1 is driven on cycle day 1 (week 1,
 // Monday) and cycle day 14 (week 3, Tuesday): 13 working days apart, exactly as
 // the plan specifies. The old 6 x 4 shape still lands every group on the same
 // weekday every week, so nothing changes for a four-week cycle.
-function calendarCell(repeat: number, group: number, dayGroups: number, workingDaysPerWeek: number) {
-  const wd = Math.max(1, workingDaysPerWeek || 5);
+function calendarCell(repeat: number, group: number, dayGroups: number, week: number[]) {
+  const days = week.length > 0 ? week : [1, 2, 3, 4, 5];
+  const wd = days.length;
   const cycleDay = (repeat - 1) * dayGroups + group; // 1-based
   return {
     cycleDay,
     week: Math.floor((cycleDay - 1) / wd) + 1,
-    dayOfWeek: ((cycleDay - 1) % wd) + 1,
+    // The weekday the business actually works, not an index into an assumed
+    // Monday-first week.
+    dayOfWeek: days[(cycleDay - 1) % wd],
   };
+}
+
+/** The real calendar dates of the first `count` working days on or after today. */
+function upcomingWorkingDates(count: number, week: number[]): Date[] {
+  const days = new Set(week.length > 0 ? week : [1, 2, 3, 4, 5]);
+  const dates: Date[] = [];
+  const cursor = new Date();
+  cursor.setHours(0, 0, 0, 0);
+  cursor.setDate(cursor.getDate() + 1); // start tomorrow, never today
+  // 7 days of slack per working day is enough even for a one-day week.
+  for (let guard = 0; guard < count * 7 + 14 && dates.length < count; guard++) {
+    const iso = cursor.getDay() === 0 ? 7 : cursor.getDay(); // JS Sunday=0 -> ISO 7
+    if (days.has(iso)) dates.push(new Date(cursor));
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return dates;
 }
 
 // A day-group is driven `repeats` times per cycle, so one membership can carry
@@ -3090,8 +3159,7 @@ async function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[]
 // STEP 3+4 of the anchor-aware scheduler: per-day VF rotation with spatial
 // sub-clustering, shared by both the flat-pool and zone-preserving builders.
 function scheduleFromDailyClusters(rep: Rep, dailyClusters: Outlet[][], repOutlets: Outlet[]): InsertSchedule[] {
-  const workingDaysPerWeek = rep.workingDaysPerWeek || 5;
-  const { repeats, dayGroups } = cycleShape(workingDaysPerWeek);
+  const { repeats, dayGroups } = cycleShape(workingWeek.length || rep.workingDaysPerWeek || 5);
 
   const subCluster = (outlets: Outlet[], k: number): Outlet[][] => {
     const buckets: Outlet[][] = Array.from({ length: k }, () => []);
@@ -3234,7 +3302,7 @@ function scheduleFromDailyClusters(rep: Rep, dailyClusters: Outlet[][], repOutle
       const optimized = optimizeRoute(runOutlets);
       const optimizedIds = optimized.map(o => o.id);
       const dist = calculateTotalDistance(optimized);
-      const cell = calendarCell(repeat, d + 1, dayGroups, workingDaysPerWeek);
+      const cell = calendarCell(repeat, d + 1, dayGroups, workingWeek);
 
       for (const id of optimizedIds) {
         if (!groupByOutlet.has(id)) groupByOutlet.set(id, new Set());
@@ -4289,7 +4357,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "No schedules available to export" });
       }
       
-      const excelBuffer = generateScheduleExcel(reps, schedules, outlets);
+      const excelBuffer = generateScheduleExcel(reps, schedules, outlets, workingWeek);
       
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename=schedules_${new Date().toISOString().split('T')[0]}.xlsx`);
@@ -4328,16 +4396,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const workbook = XLSX.utils.book_new();
       const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
-      // Generate dates for a 4-week cycle starting from next Monday
-      const getNextMonday = () => {
-        const today = new Date();
-        const dayOfWeek = today.getDay();
-        const daysUntilMonday = dayOfWeek === 0 ? 1 : (8 - dayOfWeek);
-        const nextMonday = new Date(today);
-        nextMonday.setDate(today.getDate() + daysUntilMonday);
-        return nextMonday;
+      // Real calendar dates for the cycle, on the days the business works.
+      //
+      // This used to start at "next Monday" and then add (week-1)*7 + (day-1)
+      // days, which silently assumed the week runs Monday first and that the
+      // days off are whatever falls after the count. On a Sunday-to-Thursday
+      // week that produced dates on Friday and Saturday.
+      const cycleDates = upcomingWorkingDates(200, workingWeek);
+      const dateOfCell = (week: number, dayOfWeek: number): string => {
+        const slot = workingWeek.indexOf(dayOfWeek);
+        if (slot < 0) return '';
+        const index = (week - 1) * workingWeek.length + slot;
+        const d = cycleDates[index];
+        return d ? d.toISOString().split('T')[0] : '';
       };
-      const startDate = getNextMonday();
 
       // For each rep, create a sheet with all roles
       const targetReps = repId ? reps.filter(r => r.id === repId) : reps;
@@ -4371,16 +4443,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // the constant 4 it was.
         const cycleWeeks = Math.max(1, repSchedules.reduce((m, s) => Math.max(m, s.week), 0));
         for (let week = 1; week <= cycleWeeks; week++) {
-          for (let day = 1; day <= workingDays; day++) {
+          for (const day of workingWeek) {
             // Prefer the week's own schedule; fall back to the fortnight it
             // mirrors only for older plans that stored weeks 1-2 alone.
             const schedule = repSchedules.find(s => s.week === week && s.dayOfWeek === day)
               ?? (week > 2 ? repSchedules.find(s => s.week === week - 2 && s.dayOfWeek === day) : undefined);
             
-            // Calculate date for this day
-            const currentDate = new Date(startDate);
-            currentDate.setDate(startDate.getDate() + ((week - 1) * 7) + (day - 1));
-            const dateStr = currentDate.toISOString().split('T')[0];
+            const dateStr = dateOfCell(week, day);
             
             if (schedule) {
               const outletIds = Array.isArray(schedule.outletIds) 
@@ -4429,10 +4498,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 schedule = roleSchedulesForRole.find(s => s.week === mirrorWeek && s.dayOfWeek === day);
               }
               
-              // Calculate date for this day
-              const currentDate = new Date(startDate);
-              currentDate.setDate(startDate.getDate() + ((week - 1) * 7) + (day - 1));
-              const dateStr = currentDate.toISOString().split('T')[0];
+              const dateStr = dateOfCell(week, day);
               
               if (schedule) {
                 const outletIds = Array.isArray(schedule.outletIds) 
@@ -4464,7 +4530,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const roleScheduleRows: Array<{week: number; day: number; originalDay: number; outletIds: string[]}> = [];
           
           for (let week = 1; week <= cycleWeeks; week++) {
-            for (let repDay = 1; repDay <= workingDays; repDay++) {
+            for (const repDay of workingWeek) {
               const schedule = repSchedules.find(s => s.week === week && s.dayOfWeek === repDay)
                 ?? (week > 2 ? repSchedules.find(s => s.week === week - 2 && s.dayOfWeek === repDay) : undefined);
               
@@ -4514,10 +4580,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           
           // Output the role schedule rows
           for (const row of roleScheduleRows) {
-            // Calculate date for this role day
-            const currentDate = new Date(startDate);
-            currentDate.setDate(startDate.getDate() + ((row.week - 1) * 7) + (row.day - 1));
-            const dateStr = currentDate.toISOString().split('T')[0];
+            const dateStr = dateOfCell(row.week, row.day);
             
             const outletNames = row.outletIds
               .map((id: string) => outlets.find(o => o.id === id)?.name || id)
@@ -4685,7 +4748,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       clearRoadMatrix();
 
       // Set default values for rep constraints (use body params if provided)
-      const workingDaysPerWeek = req.body.workingDaysPerWeek || 5; // Monday to Friday
+      // The days the reps actually work - which also fixes the count, the start
+      // of their week and their days off.
+      workingWeek = parseWorkingWeek(req.body);
+      const workingDaysPerWeek = workingWeek.length;
+      console.log(`Working week: ${workingWeek.map(d => WEEKDAY_NAMES[d - 1]).join(', ')} (${workingDaysPerWeek} days; off: ${
+        WEEKDAY_NAMES.filter((_, i) => !workingWeek.includes(i + 1)).join(', ') || 'none'})`);
 
       // Cycle length in working days. Blank/0 keeps the four-week default.
       const requestedCycleDays = Math.max(0, Math.min(60, parseInt(String(req.body.cycleWorkingDays ?? 0), 10) || 0));
@@ -5773,9 +5841,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
   async function regenerateSchedulesForReps(repIds: string[]) {
     const uniqueRepIds = Array.from(new Set(repIds.filter(Boolean)));
-    // Read the cycle off the existing plan before any of it is deleted.
+    // Read the cycle and the working week off the existing plan before any of
+    // it is deleted, so a rebuild after a restart does not silently revert to a
+    // four-week Monday-to-Friday assumption.
     const existingCycle = await storedCycleDays();
     if (existingCycle > 0) cycleWorkingDays = existingCycle;
+    const existingWeek = await storedWorkingWeek();
+    if (existingWeek.length > 0) workingWeek = existingWeek;
     const allReps = await storage.getReps();
     const allOutlets = await storage.getOutlets();
     const allHierarchies = await storage.getRoleHierarchies();
@@ -5943,7 +6015,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       const targetRep = await storage.getRep(toRepId);
       if (!targetRep) {
-        return res.status(404).json({ message: "Target rep not found" });
+        // Almost always a queued move outliving the plan it was made on: a full
+        // optimization deletes every rep and creates new ones. Say so, rather
+        // than leaving the user to guess at "Target rep not found".
+        return res.status(404).json({
+          message: "That rep no longer exists - the plan was rebuilt since this move was queued. Re-queue it on the current plan.",
+        });
       }
 
       const affectedBefore = await repsAffectedByOutlets(outletIds);
@@ -6106,9 +6183,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       const { minVisitsPerDay = 25, maxVisitsPerDay = 27, workingDaysPerWeek = 5 } = req.body;
 
-      // Keep the cycle the current plan was built on unless asked to change it.
+      // Keep the cycle and working week the current plan was built on unless
+      // asked to change them.
       const requestedCycle = Math.max(0, Math.min(60, parseInt(String(req.body.cycleWorkingDays ?? 0), 10) || 0));
       cycleWorkingDays = requestedCycle || await storedCycleDays();
+      if (Array.isArray(req.body.workingDays) && req.body.workingDays.length > 0) {
+        workingWeek = parseWorkingWeek(req.body);
+      } else {
+        const stored = await storedWorkingWeek();
+        if (stored.length > 0) workingWeek = stored;
+      }
 
       // Clear existing schedules
       await storage.clearSchedules();
@@ -6614,14 +6698,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // For each rep schedule entry, create a corresponding role schedule with shifted day
       for (const schedule of repSchedules) {
         // Calculate the new day with offset
-        let newDayOfWeek = schedule.dayOfWeek + hierarchy.offsetDays;
-        let newWeek = schedule.week;
-
-        // Handle week overflow
-        while (newDayOfWeek > workingDaysPerWeek) {
-          newDayOfWeek -= workingDaysPerWeek;
-          newWeek++;
-        }
+        // Offsets count WORKING days, so they step along the working week
+        // rather than through raw weekday numbers: +1 from the last working day
+        // is the first working day of the next week, not the day off.
+        const weekDays = workingWeek.length > 0 ? workingWeek : [1, 2, 3, 4, 5];
+        const slot = weekDays.indexOf(schedule.dayOfWeek);
+        const shifted = (slot >= 0 ? slot : 0) + hierarchy.offsetDays;
+        let newWeek = schedule.week + Math.floor(shifted / weekDays.length);
+        let newDayOfWeek = weekDays[((shifted % weekDays.length) + weekDays.length) % weekDays.length];
+        if (newWeek < 1) newWeek = 1;
 
         // Handle month overflow (wrap to next week/day)
         if (newWeek > weeksInMonth) {
