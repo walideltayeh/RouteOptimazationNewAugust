@@ -69,14 +69,16 @@ function monthPlan(key: string, days: number[], edges: 'wholeWeeks' | 'allDays')
   return { start, end, count: dates.length, leftOut };
 }
 
-/** Mirrors the server: the pattern length a plan of n days is built on. */
-function patternLength(n: number): number {
-  const fits = (m: number, prefs: number[]) => prefs.some(r => m % r === 0);
-  if (fits(n, [4, 2])) return n;
-  if (n > 2 && fits(n - 1, [4, 2])) return n - 1;
-  if (fits(n, [3, 5])) return n;
-  if (n > 2 && fits(n - 1, [3, 5])) return n - 1;
-  return Math.max(2, n - (n % 2));
+/** Mirrors the server: how a plan of n working days is built. */
+function patternShape(n: number): { days: number; runs: number; routes: number; bonus: number } {
+  const divisor = (m: number, prefs: number[]) => prefs.find(r => m % r === 0);
+  let days = n;
+  let runs = divisor(n, [4, 2]);
+  if (!runs && n > 2 && divisor(n - 1, [4, 2])) { days = n - 1; runs = divisor(days, [4, 2]); }
+  if (!runs) runs = divisor(n, [3, 5]);
+  if (!runs && n > 2 && divisor(n - 1, [3, 5])) { days = n - 1; runs = divisor(days, [3, 5]); }
+  if (!runs) { days = Math.max(2, n - (n % 2)); runs = 2; }
+  return { days, runs, routes: Math.max(1, Math.round(days / runs)), bonus: Math.max(0, n - days) };
 }
 
 /** "Sunday to Thursday - 5 days a week, Friday and Saturday off." */
@@ -178,7 +180,11 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
   // Length of one journey-plan cycle, in working days. 0 = four weeks, which is
   // what the app always assumed. A business that plans a 26-day cycle (13
   // day-routes driven twice) gets days sized for 26, not 24.
-  const [cycleWorkingDays, setCycleWorkingDays] = useState(0);
+  // -1 = calendar month: the cycle length is whatever the chosen month and
+  // working days add up to. A fixed length is an advanced option for a rolling
+  // plan not tied to months.
+  const [cycleWorkingDays, setCycleWorkingDays] = useState(-1);
+  const [showFixedCycle, setShowFixedCycle] = useState(false);
   // A cycle can be one real calendar month instead of a fixed length: the
   // plan then runs on that month's dates and the working-day count comes from
   // the calendar. "month" in the cycle select switches it on.
@@ -485,69 +491,82 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
         </div>
 
         <div>
-          <Label htmlFor="cycleDays">Cycle Length</Label>
-          <Select
-            value={cycleWorkingDays.toString()}
-            onValueChange={(value) => setCycleWorkingDays(parseInt(value))}
-            disabled={disabled}
-          >
-            <SelectTrigger className="mt-1" disabled={disabled} data-testid="select-cycle-days">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="-1">Calendar month — the working days of a real month</SelectItem>
-              <SelectItem value="0">4 weeks ({workingDaysPerWeek * 4} working days)</SelectItem>
-              <SelectItem value="20">20 working days (10 routes x 2)</SelectItem>
-              <SelectItem value="22">22 working days (11 routes x 2)</SelectItem>
-              <SelectItem value="24">24 working days (6 routes x 4)</SelectItem>
-              <SelectItem value="26">26 working days (13 routes x 2)</SelectItem>
-            </SelectContent>
-          </Select>
-          <p className="text-xs text-gray-500 mt-1">
-            How many working days one full journey plan covers before it repeats. A
-            26-day cycle is 13 distinct day-routes, each driven twice, 13 working
-            days apart - the daily load is sized for 26 days, not 24.
+          <Label>Plan Month</Label>
+          <p className="text-xs text-gray-500 mt-1 mb-2">
+            The cycle length is not a setting: it is how many of the days you ticked above fall
+            in this month. Pick the month and the app counts them.
           </p>
-          {cycleMode === 'calendarMonth' && (
-            <div className="mt-3 space-y-2 rounded-lg border border-gray-200 p-3 dark:border-gray-700" data-testid="panel-plan-month">
-              <div className="flex flex-wrap items-center gap-3">
-                <div>
-                  <Label htmlFor="planMonth" className="text-xs">Month</Label>
-                  <Input id="planMonth" type="month" value={planMonth} min="2020-01"
-                    onChange={(e) => setPlanMonth(e.target.value || nextMonthKey())}
-                    className="mt-1 w-44" disabled={disabled} data-testid="input-plan-month" />
-                </div>
-                <div>
-                  <Label className="text-xs">Month edges</Label>
-                  <Select value={monthEdges} onValueChange={(v) => setMonthEdges(v as 'wholeWeeks' | 'allDays')} disabled={disabled}>
-                    <SelectTrigger className="mt-1 w-64" disabled={disabled} data-testid="select-month-edges">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="allDays">Every working day of the month (recommended)</SelectItem>
-                      <SelectItem value="wholeWeeks">Whole weeks only (first {WEEKDAY_LABELS[orderedWeek(workingDays)[0] - 1]} to last {WEEKDAY_LABELS[orderedWeek(workingDays)[orderedWeek(workingDays).length - 1] - 1]})</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
+          <div className="space-y-2 rounded-lg border border-gray-200 p-3 dark:border-gray-700" data-testid="panel-plan-month">
+            <div className="flex flex-wrap items-center gap-3">
+              <div>
+                <Label htmlFor="planMonth" className="text-xs">Month</Label>
+                <Input id="planMonth" type="month" value={planMonth} min="2020-01"
+                  onChange={(e) => { setPlanMonth(e.target.value || nextMonthKey()); setCycleWorkingDays(-1); }}
+                  className="mt-1 w-44" disabled={disabled} data-testid="input-plan-month" />
               </div>
-              {monthSummary ? (
+              <div>
+                <Label className="text-xs">Month edges</Label>
+                <Select value={monthEdges} onValueChange={(v) => setMonthEdges(v as 'wholeWeeks' | 'allDays')} disabled={disabled}>
+                  <SelectTrigger className="mt-1 w-64" disabled={disabled} data-testid="select-month-edges">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="allDays">Every working day of the month (recommended)</SelectItem>
+                    <SelectItem value="wholeWeeks">Whole weeks only (first {WEEKDAY_LABELS[orderedWeek(workingDays)[0] - 1]} to last {WEEKDAY_LABELS[orderedWeek(workingDays)[orderedWeek(workingDays).length - 1] - 1]})</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            {cycleMode === 'calendarMonth' ? (
+              monthSummary ? (
                 <p className="text-sm" data-testid="text-plan-month-summary">
                   <span className="font-medium">{shortDate(monthSummary.start)} → {shortDate(monthSummary.end)}</span>
-                  {' '}— <span className="font-medium">{monthSummary.count} working days</span>.
+                  {' '}— <span className="font-medium">{monthSummary.count} working days</span>
+                  {(() => { const p = patternShape(monthSummary.count); return (
+                    <span className="text-gray-500"> · {p.routes} routes × {p.runs} runs{p.bonus > 0 ? `, + ${p.bonus} bonus day (route 1 again)` : ''}</span>
+                  ); })()}.
                   {monthSummary.leftOut > 0 && (
                     <span className="text-amber-700 dark:text-amber-300">
                       {' '}{monthSummary.leftOut} working day{monthSummary.leftOut === 1 ? '' : 's'} at the edges of the month would have no route — reps idle, calls lost.
                     </span>
                   )}
-                  {patternLength(monthSummary.count) < monthSummary.count && (
-                    <span className="text-gray-500">
-                      {' '}Planned as a {patternLength(monthSummary.count)}-day pattern; the last day drives route 1 again.
-                    </span>
-                  )}
                 </p>
               ) : (
                 <p className="text-sm text-red-600">No working days in that month for the selected working week.</p>
-              )}
+              )
+            ) : (
+              <p className="text-sm text-gray-600" data-testid="text-fixed-cycle-summary">
+                Using a fixed {cycleWorkingDays > 0 ? cycleWorkingDays : workingDaysPerWeek * 4}-day pattern instead of this month.{' '}
+                <button type="button" className="underline" disabled={disabled} onClick={() => setCycleWorkingDays(-1)}>Plan this month</button>
+              </p>
+            )}
+          </div>
+          <button type="button" className="mt-2 text-xs text-gray-500 underline hover:text-gray-700 dark:hover:text-gray-300"
+            disabled={disabled} onClick={() => setShowFixedCycle(v => !v)} data-testid="button-toggle-fixed-cycle">
+            {showFixedCycle ? 'Hide' : 'Advanced: use a fixed cycle length instead'}
+          </button>
+          {showFixedCycle && (
+            <div className="mt-2">
+              <Select
+                value={cycleWorkingDays === -1 ? '' : cycleWorkingDays.toString()}
+                onValueChange={(value) => setCycleWorkingDays(parseInt(value))}
+                disabled={disabled}
+              >
+                <SelectTrigger className="mt-1" disabled={disabled} data-testid="select-cycle-days">
+                  <SelectValue placeholder="Choose a fixed length" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="0">4 weeks ({workingDaysPerWeek * 4} working days)</SelectItem>
+                  <SelectItem value="20">20 working days (5 routes × 4)</SelectItem>
+                  <SelectItem value="22">22 working days (11 routes × 2)</SelectItem>
+                  <SelectItem value="24">24 working days (6 routes × 4)</SelectItem>
+                  <SelectItem value="26">26 working days (13 routes × 2)</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-gray-500 mt-1">
+                A rolling journey plan of a fixed length, dated from tomorrow, not tied to a
+                calendar month. Most operations should leave this alone.
+              </p>
             </div>
           )}
         </div>
