@@ -36,6 +36,39 @@ function orderedWeek(days: number[]): number[] {
   return [...sorted.slice(startAt), ...sorted.slice(0, startAt)];
 }
 
+const isoWeekday = (d: Date) => (d.getDay() === 0 ? 7 : d.getDay());
+const nextMonthKey = () => {
+  const t = new Date();
+  const y = t.getMonth() === 11 ? t.getFullYear() + 1 : t.getFullYear();
+  const m = t.getMonth() === 11 ? 1 : t.getMonth() + 2;
+  return `${y}-${String(m).padStart(2, '0')}`;
+};
+const shortDate = (d: Date) => d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+
+/**
+ * The working dates of one calendar month, mirroring the server so the form
+ * can say "Sat 3 Oct to Thu 29 Oct, 24 working days" before the run.
+ */
+function monthPlan(key: string, days: number[], edges: 'wholeWeeks' | 'allDays') {
+  const m = /^(\d{4})-(\d{2})$/.exec(key);
+  if (!m || days.length === 0) return null;
+  const year = Number(m[1]), month = Number(m[2]);
+  const inWeek = new Set(days);
+  const all: Date[] = [];
+  for (let d = new Date(year, month - 1, 1); d.getMonth() === month - 1; d.setDate(d.getDate() + 1)) all.push(new Date(d));
+  const working = all.filter(d => inWeek.has(isoWeekday(d)));
+  if (working.length === 0) return null;
+  let start = working[0], end = working[working.length - 1];
+  if (edges === 'wholeWeeks') {
+    const s = all.find(d => isoWeekday(d) === days[0]);
+    const e = [...all].reverse().find(d => isoWeekday(d) === days[days.length - 1]);
+    if (s && e && s <= e) { start = s; end = e; }
+  }
+  const dates = working.filter(d => d >= start && d <= end);
+  const leftOut = working.length - dates.length;
+  return { start, end, count: dates.length, leftOut };
+}
+
 /** "Sunday to Thursday - 5 days a week, Friday and Saturday off." */
 function describeWeek(days: number[]): string {
   const week = orderedWeek(days);
@@ -136,6 +169,16 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
   // what the app always assumed. A business that plans a 26-day cycle (13
   // day-routes driven twice) gets days sized for 26, not 24.
   const [cycleWorkingDays, setCycleWorkingDays] = useState(0);
+  // A cycle can be one real calendar month instead of a fixed length: the
+  // plan then runs on that month's dates and the working-day count comes from
+  // the calendar. "month" in the cycle select switches it on.
+  const [planMonth, setPlanMonth] = useState(nextMonthKey());
+  const [monthEdges, setMonthEdges] = useState<'wholeWeeks' | 'allDays'>('wholeWeeks');
+  const cycleMode = cycleWorkingDays === -1 ? 'calendarMonth' : 'fixed';
+  const monthSummary = useMemo(
+    () => (cycleMode === 'calendarMonth' ? monthPlan(planMonth, orderedWeek(workingDays), monthEdges) : null),
+    [cycleMode, planMonth, workingDays, monthEdges],
+  );
   
   // Progress modal state
   const [showProgressModal, setShowProgressModal] = useState(false);
@@ -147,6 +190,9 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
     workingDaysPerWeek: number;
     workingDays: number[];
     cycleWorkingDays: number;
+    cycleMode: 'fixed' | 'calendarMonth';
+    planMonth: string;
+    monthEdges: 'wholeWeeks' | 'allDays';
     weightMode: WeightMode;
     distanceMode: DistanceModel;
     maxZoneRadiusKm: number;
@@ -181,7 +227,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
     // This used to divide by a hardcoded four-week month, which over-counted
     // every day's load on any cycle that is not exactly four weeks.
     const totalCycleVisits = (analysis.vf1 || 0) + (analysis.vf2 * 2) + (analysis.vf4 * 4);
-    const cycleDays = cycleWorkingDays > 0 ? cycleWorkingDays : workingDaysPerWeek * 4;
+    const cycleDays = monthSummary ? monthSummary.count : cycleWorkingDays > 0 ? cycleWorkingDays : workingDaysPerWeek * 4;
     const estimatedRepsNeeded = Math.max(1, Math.ceil(totalCycleVisits / (cycleDays * maxVisitsPerDay)));
 
     return {
@@ -189,7 +235,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       message: `Will create ~${estimatedRepsNeeded} routes (${minVisitsPerDay}-${maxVisitsPerDay} visits/day over a ${cycleDays}-working-day cycle)`,
       warning: false
     };
-  }, [analysis, metrics, workingDaysPerWeek, cycleWorkingDays, minVisitsPerDay, maxVisitsPerDay]);
+  }, [analysis, metrics, workingDaysPerWeek, cycleWorkingDays, monthSummary, minVisitsPerDay, maxVisitsPerDay]);
 
   const optimizationMutation = useMutation({
     mutationFn: async (settings: {
@@ -198,6 +244,9 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       workingDaysPerWeek: number;
       workingDays?: number[];
       cycleWorkingDays?: number;
+      cycleMode?: 'fixed' | 'calendarMonth';
+      planMonth?: string;
+      monthEdges?: 'wholeWeeks' | 'allDays';
       weightMode?: WeightMode;
       distanceMode?: DistanceModel;
       maxZoneRadiusKm?: number;
@@ -285,7 +334,10 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       maxVisitsPerDay,
       workingDaysPerWeek,
       workingDays: orderedWeek(workingDays),
-      cycleWorkingDays,
+      cycleWorkingDays: cycleMode === 'calendarMonth' ? 0 : cycleWorkingDays,
+      cycleMode,
+      planMonth,
+      monthEdges,
       weightMode,
       distanceMode,
       maxZoneRadiusKm,
@@ -433,6 +485,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
+              <SelectItem value="-1">Calendar month — the working days of a real month</SelectItem>
               <SelectItem value="0">4 weeks ({workingDaysPerWeek * 4} working days)</SelectItem>
               <SelectItem value="20">20 working days (10 routes x 2)</SelectItem>
               <SelectItem value="22">22 working days (11 routes x 2)</SelectItem>
@@ -445,6 +498,43 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
             26-day cycle is 13 distinct day-routes, each driven twice, 13 working
             days apart - the daily load is sized for 26 days, not 24.
           </p>
+          {cycleMode === 'calendarMonth' && (
+            <div className="mt-3 space-y-2 rounded-lg border border-gray-200 p-3 dark:border-gray-700" data-testid="panel-plan-month">
+              <div className="flex flex-wrap items-center gap-3">
+                <div>
+                  <Label htmlFor="planMonth" className="text-xs">Month</Label>
+                  <Input id="planMonth" type="month" value={planMonth} min="2020-01"
+                    onChange={(e) => setPlanMonth(e.target.value || nextMonthKey())}
+                    className="mt-1 w-44" disabled={disabled} data-testid="input-plan-month" />
+                </div>
+                <div>
+                  <Label className="text-xs">Month edges</Label>
+                  <Select value={monthEdges} onValueChange={(v) => setMonthEdges(v as 'wholeWeeks' | 'allDays')} disabled={disabled}>
+                    <SelectTrigger className="mt-1 w-64" disabled={disabled} data-testid="select-month-edges">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="wholeWeeks">Whole weeks only (first {WEEKDAY_LABELS[orderedWeek(workingDays)[0] - 1]} to last {WEEKDAY_LABELS[orderedWeek(workingDays)[orderedWeek(workingDays).length - 1] - 1]})</SelectItem>
+                      <SelectItem value="allDays">Every working day of the month</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              {monthSummary ? (
+                <p className="text-sm" data-testid="text-plan-month-summary">
+                  <span className="font-medium">{shortDate(monthSummary.start)} → {shortDate(monthSummary.end)}</span>
+                  {' '}— <span className="font-medium">{monthSummary.count} working days</span>.
+                  {monthSummary.leftOut > 0 && (
+                    <span className="text-amber-700 dark:text-amber-300">
+                      {' '}{monthSummary.leftOut} working day{monthSummary.leftOut === 1 ? '' : 's'} at the edges of the month fall outside the plan.
+                    </span>
+                  )}
+                </p>
+              ) : (
+                <p className="text-sm text-red-600">No working days in that month for the selected working week.</p>
+              )}
+            </div>
+          )}
         </div>
 
         <div>

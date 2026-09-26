@@ -709,11 +709,11 @@ export function RepMap() {
     configured: boolean;
     minVisitsPerDay?: number; maxVisitsPerDay?: number;
     cycleDays?: number; workingDayNames?: string[]; daysOffNames?: string[];
-    distanceMode?: string;
+    distanceMode?: string; planStart?: string | null; planEnd?: string | null;
   }
   const { data: planSettings } = useQuery<PlanSettings>({ queryKey: ["/api/plan-settings"] });
   const planSummary = planSettings?.configured
-    ? `${planSettings.minVisitsPerDay}-${planSettings.maxVisitsPerDay} visits/day · ${planSettings.cycleDays}-day cycle · ${planSettings.workingDayNames?.[0]}-${planSettings.workingDayNames?.[planSettings.workingDayNames.length - 1]}`
+    ? `${planSettings.minVisitsPerDay}-${planSettings.maxVisitsPerDay} visits/day · ${planSettings.cycleDays}-day cycle · ${planSettings.workingDayNames?.[0]}-${planSettings.workingDayNames?.[planSettings.workingDayNames.length - 1]}${planSettings.planStart ? ` · ${planSettings.planStart} to ${planSettings.planEnd}` : ''}`
     : null;
 
   interface MisfitOutlet {
