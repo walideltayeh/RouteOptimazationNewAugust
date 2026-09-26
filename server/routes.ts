@@ -2907,6 +2907,12 @@ interface PlanSettings {
   dayLoadTolerance: number;
   dayRouteWidthCapKm: number;
   maxHopKm: number;
+  cycleMode?: CycleMode;
+  planMonth?: string;
+  monthEdges?: MonthEdges;
+  planStart?: string;
+  planEnd?: string;
+  cycleStartSlot?: number;
 }
 const SETTINGS_FILE = path.join(process.env.DATA_DIR || path.join(process.cwd(), "data"), "plan-settings.json");
 let planSettings: PlanSettings | null = null;
@@ -2943,6 +2949,11 @@ function applyPlanSettings(): PlanSettings | null {
   maxHopKm = planSettings.maxHopKm ?? maxHopKm;
   dayVisitsMin = planSettings.minVisitsPerDay ?? dayVisitsMin;
   dayVisitsMax = planSettings.maxVisitsPerDay ?? dayVisitsMax;
+  cycleMode = planSettings.cycleMode ?? 'fixed';
+  planMonth = planSettings.planMonth ?? '';
+  monthEdges = planSettings.monthEdges ?? 'wholeWeeks';
+  planStartDate = planSettings.planStart ?? '';
+  cycleStartSlot = planSettings.cycleStartSlot ?? 0;
   setDistanceMode(planSettings.distanceMode === 'road' ? 'road' : 'haversine');
   return planSettings;
 }
@@ -2975,6 +2986,56 @@ function parseWorkingWeek(body: any): number[] {
   return Array.from({ length: count }, (_, i) => i + 1);
 }
 
+// How the cycle is sized. 'fixed' uses cycleWorkingDays as given; 'calendarMonth'
+// takes one real calendar month - the one in planMonth - and counts its working
+// days, so October on a Saturday-to-Thursday week is 24 whole-week days (or 26
+// if the partial weeks at the edges are included), and the plan's dates are
+// October's dates rather than "tomorrow onwards".
+type CycleMode = 'fixed' | 'calendarMonth';
+type MonthEdges = 'wholeWeeks' | 'allDays';
+let cycleMode: CycleMode = 'fixed';
+let planMonth = '';                       // 'YYYY-MM'
+let monthEdges: MonthEdges = 'wholeWeeks';
+let planStartDate = '';                   // 'YYYY-MM-DD'; '' = next working day
+let cycleStartSlot = 0;                   // where in the working week the plan starts
+
+const isoWeekday = (d: Date) => (d.getDay() === 0 ? 7 : d.getDay());
+const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const nextMonthKey = () => {
+  const t = new Date();
+  const y = t.getMonth() === 11 ? t.getFullYear() + 1 : t.getFullYear();
+  const m = t.getMonth() === 11 ? 1 : t.getMonth() + 2;
+  return `${y}-${String(m).padStart(2, '0')}`;
+};
+
+/**
+ * The working dates of one calendar month.
+ *
+ * 'wholeWeeks' runs from the first day of the month that starts the working
+ * week to the last day that ends it - first Saturday to last Thursday on a
+ * Saturday-to-Thursday week - which is how the business describes its month.
+ * It leaves the partial weeks at either edge to no plan at all: two days in
+ * October 2026, eight in November. 'allDays' covers every working day of the
+ * month and starts mid-week when the 1st falls mid-week.
+ */
+function monthPlanDates(year: number, month: number, week: number[], edges: MonthEdges): { start: Date; end: Date; dates: Date[] } | null {
+  const days = week.length > 0 ? week : [1, 2, 3, 4, 5];
+  const inWeek = new Set(days);
+  const all: Date[] = [];
+  for (let d = new Date(year, month - 1, 1); d.getMonth() === month - 1; d.setDate(d.getDate() + 1)) all.push(new Date(d));
+  const working = all.filter(d => inWeek.has(isoWeekday(d)));
+  if (working.length === 0) return null;
+  let start = working[0];
+  let end = working[working.length - 1];
+  if (edges === 'wholeWeeks') {
+    const s = all.find(d => isoWeekday(d) === days[0]);
+    const e = [...all].reverse().find(d => isoWeekday(d) === days[days.length - 1]);
+    if (s && e && s.getTime() <= e.getTime()) { start = s; end = e; }
+  }
+  const dates = working.filter(d => d.getTime() >= start.getTime() && d.getTime() <= end.getTime());
+  return dates.length > 0 ? { start, end, dates } : null;
+}
+
 // Length of one journey-plan cycle, in working days. 0 = derive it as four
 // weeks, which is what the app always assumed.
 //
@@ -3001,10 +3062,12 @@ function cycleShape(workingDaysPerWeek: number, requested?: number): { cycleDays
   let cycleDays = asked > 0 ? asked : wd * 4;
   // An odd cycle can only be 1 x itself, which would mean every outlet visited
   // once and no frequency at all. Drop a day rather than ship that.
-  let repeats = [4, 3, 2].find(r => cycleDays % r === 0);
+  // Five runs is a last resort before dropping a day: a five-week month of
+  // five-day weeks is 25 working days, and 25 is 5 x 5 or nothing.
+  let repeats = [4, 3, 2, 5].find(r => cycleDays % r === 0);
   if (!repeats && cycleDays > 2) {
     cycleDays -= 1;
-    repeats = [4, 3, 2].find(r => cycleDays % r === 0);
+    repeats = [4, 3, 2, 5].find(r => cycleDays % r === 0);
   }
   if (!repeats) { cycleDays = Math.max(2, cycleDays); repeats = 2; }
   return { cycleDays, repeats, dayGroups: Math.max(1, Math.round(cycleDays / repeats)) };
@@ -3058,22 +3121,28 @@ function calendarCell(repeat: number, group: number, dayGroups: number, week: nu
   const days = week.length > 0 ? week : [1, 2, 3, 4, 5];
   const wd = days.length;
   const cycleDay = (repeat - 1) * dayGroups + group; // 1-based
+  // A plan that starts mid-week (the 1st of the month on a Thursday) begins
+  // part-way through week 1, so the cell is offset by where the start falls.
+  const pos = cycleStartSlot + cycleDay - 1;
   return {
     cycleDay,
-    week: Math.floor((cycleDay - 1) / wd) + 1,
+    week: Math.floor(pos / wd) + 1,
     // The weekday the business actually works, not an index into an assumed
     // Monday-first week.
-    dayOfWeek: days[(cycleDay - 1) % wd],
+    dayOfWeek: days[pos % wd],
   };
 }
 
-/** The real calendar dates of the first `count` working days on or after today. */
+/**
+ * The real calendar dates of the first `count` working days of the plan: from
+ * its start date when it has one (a calendar-month plan), else from tomorrow.
+ */
 function upcomingWorkingDates(count: number, week: number[]): Date[] {
   const days = new Set(week.length > 0 ? week : [1, 2, 3, 4, 5]);
   const dates: Date[] = [];
-  const cursor = new Date();
+  const cursor = planStartDate ? new Date(planStartDate + 'T00:00:00') : new Date();
   cursor.setHours(0, 0, 0, 0);
-  cursor.setDate(cursor.getDate() + 1); // start tomorrow, never today
+  if (!planStartDate) cursor.setDate(cursor.getDate() + 1); // start tomorrow, never today
   // 7 days of slack per working day is enough even for a one-day week.
   for (let guard = 0; guard < count * 7 + 14 && dates.length < count; guard++) {
     const iso = cursor.getDay() === 0 ? 7 : cursor.getDay(); // JS Sunday=0 -> ISO 7
@@ -3094,19 +3163,33 @@ function membershipsFor(vf: number, repeats: number): number[] {
   return out;
 }
 
-/** How many offset buckets a frequency band needs, so its visits spread evenly. */
+/**
+ * How many offset buckets a frequency band needs, so its visits spread evenly.
+ *
+ * When the runs divide by the visits (4 runs, 2 visits) the buckets are the
+ * stride: two buckets, seen in runs {1,3} and {2,4}. When they do not (3 runs,
+ * 2 visits; 4 runs, 3 visits) there is no stride, so every bucket is its own
+ * offset: one bucket per run, each seen in `times` runs. Rounding 3/2 to two
+ * buckets, as this used to, put both buckets in run 1 and one each in runs 2
+ * and 3 - days of 37 next to days of 15 - and rounding 4/3 to one bucket left
+ * run 4 without any three-a-cycle outlet at all.
+ */
 function bucketsForFrequency(vf: number, repeats: number): number {
   const times = Math.min(Math.max(1, vf), repeats);
-  return Math.max(1, Math.round(repeats / times));
+  return repeats % times === 0 ? repeats / times : repeats;
 }
 
-/** Which repeats (1-based) a bucket of this frequency band is visited in. */
+/**
+ * Which repeats (1-based) a bucket of this frequency band is visited in: the
+ * bucket's own offset, then every repeats/times runs after it, rounded down.
+ * Each run then lands in exactly `times` buckets, so the runs stay even, and
+ * the visits are as evenly spaced as the arithmetic allows.
+ */
 function repeatsForBucket(vf: number, repeats: number, bucketIndex: number): number[] {
   const times = Math.min(Math.max(1, vf), repeats);
-  const buckets = bucketsForFrequency(vf, repeats);
-  const out: number[] = [];
-  for (let i = 0; i < times; i++) out.push(((bucketIndex + i * buckets) % repeats) + 1);
-  return out.sort((a, b) => a - b);
+  const out = new Set<number>();
+  for (let j = 0; j < times; j++) out.add(((bucketIndex + Math.floor((j * repeats) / times)) % repeats) + 1);
+  return Array.from(out).sort((a, b) => a - b);
 }
 
 // How far a single day's visit count may sit from the average, as a fraction.
@@ -4556,7 +4639,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "No schedules available to export" });
       }
       
-      const excelBuffer = generateScheduleExcel(reps, schedules, outlets, workingWeek);
+      const excelBuffer = generateScheduleExcel(reps, schedules, outlets, workingWeek, planStartDate, cycleStartSlot);
       
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename=schedules_${new Date().toISOString().split('T')[0]}.xlsx`);
@@ -4605,9 +4688,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const dateOfCell = (week: number, dayOfWeek: number): string => {
         const slot = workingWeek.indexOf(dayOfWeek);
         if (slot < 0) return '';
-        const index = (week - 1) * workingWeek.length + slot;
-        const d = cycleDates[index];
-        return d ? d.toISOString().split('T')[0] : '';
+        const index = (week - 1) * workingWeek.length + slot - cycleStartSlot;
+        const d = index >= 0 ? cycleDates[index] : undefined;
+        return d ? ymd(d) : '';
       };
 
       // For each rep, create a sheet with all roles
@@ -4649,6 +4732,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               ?? (week > 2 ? repSchedules.find(s => s.week === week - 2 && s.dayOfWeek === day) : undefined);
             
             const dateStr = dateOfCell(week, day);
+            if (!dateStr) continue; // before the plan starts (a mid-week 1st)
             
             if (schedule) {
               const outletIds = Array.isArray(schedule.outletIds) 
@@ -4954,10 +5038,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.log(`Working week: ${workingWeek.map(d => WEEKDAY_NAMES[d - 1]).join(', ')} (${workingDaysPerWeek} days; off: ${
         WEEKDAY_NAMES.filter((_, i) => !workingWeek.includes(i + 1)).join(', ') || 'none'})`);
 
-      // Cycle length in working days. Blank/0 keeps the four-week default.
-      const requestedCycleDays = Math.max(0, Math.min(60, parseInt(String(req.body.cycleWorkingDays ?? 0), 10) || 0));
-      cycleWorkingDays = requestedCycleDays;
+      // Cycle length in working days. Blank/0 keeps the four-week default -
+      // unless the cycle is a calendar month, in which case the month decides.
+      cycleMode = req.body.cycleMode === 'calendarMonth' ? 'calendarMonth' : 'fixed';
+      monthEdges = req.body.monthEdges === 'allDays' ? 'allDays' : 'wholeWeeks';
+      planMonth = typeof req.body.planMonth === 'string' && /^\d{4}-\d{2}$/.test(req.body.planMonth) ? req.body.planMonth : nextMonthKey();
+      let planEndDate = '';
+      planStartDate = '';
+      cycleStartSlot = 0;
+      if (cycleMode === 'calendarMonth') {
+        const [py, pm] = planMonth.split('-').map(Number);
+        const plan = monthPlanDates(py, pm, workingWeek, monthEdges);
+        if (!plan) {
+          return res.status(400).json({ message: `No working days in ${planMonth} for the selected working week.` });
+        }
+        cycleWorkingDays = plan.dates.length;
+        planStartDate = ymd(plan.start);
+        planEndDate = ymd(plan.end);
+        cycleStartSlot = Math.max(0, workingWeek.indexOf(isoWeekday(plan.start)));
+        console.log(`Plan month ${planMonth} (${monthEdges === 'wholeWeeks' ? 'whole weeks' : 'every working day'}): ${WEEKDAY_NAMES[isoWeekday(plan.start) - 1]} ${planStartDate} -> ${WEEKDAY_NAMES[isoWeekday(plan.end) - 1]} ${planEndDate}, ${plan.dates.length} working days`);
+      } else {
+        cycleWorkingDays = Math.max(0, Math.min(60, parseInt(String(req.body.cycleWorkingDays ?? 0), 10) || 0));
+      }
       const { cycleDays, repeats: cycleRepeats, dayGroups: dayGroupsPerRep } = cycleShape(workingDaysPerWeek);
+      if (cycleMode === 'calendarMonth' && cycleDays !== cycleWorkingDays) {
+        console.warn(`[cycle] ${cycleWorkingDays} working days cannot be split into equal runs; planning ${cycleDays} and leaving the last day of the month unscheduled.`);
+      }
       cycleWorkingDays = cycleDays; // snapped, so every later caller agrees
       console.log(`Cycle: ${cycleDays} working days = ${dayGroupsPerRep} day-routes x ${cycleRepeats} runs (${workingDaysPerWeek}-day week)`);
       const calculationMode = 'manual'; // time-based mode removed: min/max visits per day IS the capacity input, time-per-visit was a redundant second way to express it
@@ -5352,6 +5458,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         dayLoadTolerance,
         dayRouteWidthCapKm,
         maxHopKm,
+        cycleMode,
+        planMonth,
+        monthEdges,
+        planStart: planStartDate,
+        planEnd: planEndDate,
+        cycleStartSlot,
       });
 
       let capturedScenarioId: string | null = null;
@@ -5813,6 +5925,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       daysOffNames: WEEKDAY_NAMES.filter((_, i) => !planSettings!.workingDays.includes(i + 1)),
       cycleDays: cycleShape(planSettings.workingDays.length || 5, planSettings.cycleWorkingDays).cycleDays,
       maxHopKm: planSettings.maxHopKm ?? 4,
+      planStart: planSettings.planStart || null,
+      planEnd: planSettings.planEnd || null,
     });
   });
 

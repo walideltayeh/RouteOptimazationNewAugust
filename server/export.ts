@@ -15,6 +15,8 @@ export function generateScheduleExcel(
   schedules: Schedule[],
   outlets: Outlet[],
   workingWeek: number[] = [1, 2, 3, 4, 5],
+  planStart: string = '',
+  startSlot: number = 0,
 ): Buffer {
   const workbook = XLSX.utils.book_new();
   
@@ -47,9 +49,9 @@ export function generateScheduleExcel(
   const week = workingWeek.length > 0 ? workingWeek : [1, 2, 3, 4, 5];
   const workingDates: Date[] = [];
   {
-    const cursor = new Date();
+    const cursor = planStart ? new Date(planStart + 'T00:00:00') : new Date();
     cursor.setHours(0, 0, 0, 0);
-    cursor.setDate(cursor.getDate() + 1);
+    if (!planStart) cursor.setDate(cursor.getDate() + 1);
     const wanted = new Set(week);
     for (let guard = 0; guard < 400 && workingDates.length < 200; guard++) {
       const iso = cursor.getDay() === 0 ? 7 : cursor.getDay();
@@ -76,8 +78,10 @@ export function generateScheduleExcel(
         if (daySchedule) {
           const outletIds = daySchedule.outletIds as string[];
           
-          const scheduledDate = workingDates[(weekNo - 1) * week.length + dayIndex];
-          const dateStr = scheduledDate ? scheduledDate.toISOString().split('T')[0] : '';
+          const dateIndex = (weekNo - 1) * week.length + dayIndex - startSlot;
+          const scheduledDate = dateIndex >= 0 ? workingDates[dateIndex] : undefined;
+          if (!scheduledDate) return; // before the plan starts
+          const dateStr = `${scheduledDate.getFullYear()}-${String(scheduledDate.getMonth() + 1).padStart(2, '0')}-${String(scheduledDate.getDate()).padStart(2, '0')}`;
           
           // Add each outlet as a separate row in calendar format
           outletIds.forEach((outletId: string, index: number) => {
