@@ -222,11 +222,23 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
   // The weekdays the reps work, ISO numbers (1 = Monday ... 7 = Sunday), in the
   // order the week runs. A count alone could not express a week that starts on
   // Saturday or Sunday, which is how much of the region works.
-  const [workingDays, setWorkingDays] = useState<number[]>([1, 2, 3, 4, 5]);
-  // First day of the working week, ISO number; 0 = after the longest break.
-  const [weekStart, setWeekStart] = useState(0);
-  const week = useMemo(() => orderedWeek(workingDays, weekStart), [workingDays, weekStart]);
-  const workingDaysPerWeek = workingDays.length;
+  // The working week, as three answers: which day the week starts on, how
+  // many days off it has, and which days those are. Syria: starts Saturday,
+  // one day off, Friday - so Saturday to Thursday, six days. Other countries
+  // answer differently, and everything else - the day order, the count,
+  // where a whole-week month begins and ends - follows from the answers.
+  const [weekStartDay, setWeekStartDay] = useState(1);        // ISO 1 = Monday
+  const [daysOffCount, setDaysOffCount] = useState(2);
+  const [daysOff, setDaysOff] = useState<number[]>([6, 7]);   // Sat, Sun
+  // The days off default to the ones just before the week starts.
+  const defaultDaysOff = (start: number, count: number) =>
+    Array.from({ length: count }, (_, i) => ((start - 2 - i + 7) % 7) + 1).reverse();
+  const week = useMemo(() => {
+    const order = Array.from({ length: 7 }, (_, i) => ((weekStartDay - 1 + i) % 7) + 1);
+    return order.filter(d => !daysOff.includes(d));
+  }, [weekStartDay, daysOff]);
+  const workingDays = week;
+  const workingDaysPerWeek = week.length;
   // Length of one journey-plan cycle, in working days. 0 = four weeks, which is
   // what the app always assumed. A business that plans a 26-day cycle (13
   // day-routes driven twice) gets days sized for 26, not 24.
@@ -498,67 +510,78 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
           </div>
         </div>
 
-        <div>
-          <Label>Working Days</Label>
-          <p className="text-xs text-gray-500 mt-1 mb-2">
-            Tick the days the reps work. The first and last ticked days are the start
-            and end of their week; the rest are days off.
-          </p>
-          <div className="flex flex-wrap gap-1.5" data-testid="picker-working-days">
-            {WEEK_PICKER.map(({ iso, label }) => {
-              const on = workingDays.includes(iso);
-              return (
-                <button
-                  key={iso}
-                  type="button"
-                  disabled={disabled}
-                  aria-pressed={on}
-                  data-testid={`chip-workday-${iso}`}
-                  onClick={() => setWorkingDays(prev => {
-                    const next = on ? prev.filter(d => d !== iso) : [...prev, iso];
-                    // Never leave the plan with no days to schedule onto.
-                    return next.length === 0 ? prev : next;
+        <div className="space-y-3">
+          <Label>Working Week</Label>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div>
+              <Label htmlFor="weekStartDay" className="text-xs">What day does the week start on?</Label>
+              <Select value={String(weekStartDay)} onValueChange={(v) => {
+                const start = parseInt(v); setWeekStartDay(start); setDaysOff(defaultDaysOff(start, daysOffCount));
+              }} disabled={disabled}>
+                <SelectTrigger id="weekStartDay" className="mt-1" disabled={disabled} data-testid="select-week-start">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {WEEKDAY_LABELS.map((name, i) => <SelectItem key={i + 1} value={String(i + 1)}>{name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label htmlFor="daysOffCount" className="text-xs">How many days off per week?</Label>
+              <Select value={String(daysOffCount)} onValueChange={(v) => {
+                const n = parseInt(v); setDaysOffCount(n); setDaysOff(defaultDaysOff(weekStartDay, n));
+              }} disabled={disabled}>
+                <SelectTrigger id="daysOffCount" className="mt-1" disabled={disabled} data-testid="select-days-off-count">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {[0, 1, 2, 3].map(n => <SelectItem key={n} value={String(n)}>{n === 0 ? 'None — 7 days a week' : `${n} — ${7 - n} working days`}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs">{daysOffCount === 1 ? 'Which day is off?' : daysOffCount === 0 ? 'Days off' : 'Which days are off?'}</Label>
+              {daysOffCount === 0 ? (
+                <p className="mt-2 text-sm text-gray-500">None.</p>
+              ) : (
+                <div className="mt-1 flex flex-wrap gap-1.5" data-testid="picker-days-off">
+                  {WEEK_PICKER.map(({ iso, label }) => {
+                    const off = daysOff.includes(iso);
+                    return (
+                      <button key={iso} type="button" disabled={disabled} aria-pressed={off} data-testid={`chip-dayoff-${iso}`}
+                        onClick={() => setDaysOff(prev => {
+                          if (off) return prev.length > 1 ? prev.filter(d => d !== iso) : prev;
+                          // Replace the oldest choice so the count stays what was answered.
+                          const next = [...prev, iso];
+                          return next.length > daysOffCount ? next.slice(next.length - daysOffCount) : next;
+                        })}
+                        className={cn(
+                          "rounded-full border px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50",
+                          off ? "border-transparent bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900"
+                              : "border-gray-300 text-gray-500 hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-800",
+                        )}>
+                        {label}
+                      </button>
+                    );
                   })}
-                  className={cn(
-                    "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50",
-                    on
-                      ? "border-transparent bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900"
-                      : "border-gray-300 text-gray-500 hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-800",
-                  )}
-                >
-                  {label}
-                </button>
-              );
-            })}
+                </div>
+              )}
+            </div>
           </div>
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-500">
-            <span data-testid="text-week-summary">{describeWeek(week)}</span>
-            <span>·</span>
-            <button type="button" className="underline hover:text-gray-700 dark:hover:text-gray-300"
-              disabled={disabled} onClick={() => setWorkingDays([1, 2, 3, 4, 5])}>Mon–Fri</button>
-            <button type="button" className="underline hover:text-gray-700 dark:hover:text-gray-300"
-              disabled={disabled} onClick={() => setWorkingDays([1, 2, 3, 4, 5, 6])}>Mon–Sat</button>
-            <button type="button" className="underline hover:text-gray-700 dark:hover:text-gray-300"
-              disabled={disabled} onClick={() => setWorkingDays([7, 1, 2, 3, 4])}>Sun–Thu</button>
-            <button type="button" className="underline hover:text-gray-700 dark:hover:text-gray-300"
-              disabled={disabled} onClick={() => setWorkingDays([6, 7, 1, 2, 3])}>Sat–Wed</button>
-            <button type="button" className="underline hover:text-gray-700 dark:hover:text-gray-300"
-              disabled={disabled} onClick={() => { setWorkingDays([7, 1, 2, 3, 4, 6]); setWeekStart(7); }}>Sun–Thu + Sat, Fri off</button>
-          </div>
-          <div className="mt-2 flex items-center gap-2 text-xs">
-            <Label htmlFor="weekStart" className="text-xs">Week starts on</Label>
-            <Select value={String(weekStart)} onValueChange={(v) => setWeekStart(parseInt(v))} disabled={disabled}>
-              <SelectTrigger id="weekStart" className="h-8 w-56" disabled={disabled} data-testid="select-week-start">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="0">After the days off ({WEEKDAY_LABELS[orderedWeek(workingDays)[0] - 1]})</SelectItem>
-                {WEEK_PICKER.filter(d => workingDays.includes(d.iso)).map(d => (
-                  <SelectItem key={d.iso} value={String(d.iso)}>{WEEKDAY_LABELS[d.iso - 1]}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <span className="text-gray-500">Sets what "week 1" means and where a whole-week month begins.</span>
+          <p className="text-sm" data-testid="text-week-summary">
+            <span className="font-medium">{describeWeek(week)}</span>
+            {' '}<span className="text-gray-500">Week 1 runs {WEEKDAY_LABELS[week[0] - 1]} to {WEEKDAY_LABELS[week[week.length - 1] - 1]}; a whole-week month starts on its first {WEEKDAY_LABELS[week[0] - 1]} and ends on its last {WEEKDAY_LABELS[week[week.length - 1] - 1]}.</span>
+          </p>
+          <div className="flex flex-wrap gap-2 text-xs text-gray-500">
+            <span>Quick fill:</span>
+            <button type="button" className="underline hover:text-gray-700" disabled={disabled}
+              onClick={() => { setWeekStartDay(6); setDaysOffCount(1); setDaysOff([5]); }}>Syria — Sat start, Fri off</button>
+            <button type="button" className="underline hover:text-gray-700" disabled={disabled}
+              onClick={() => { setWeekStartDay(7); setDaysOffCount(2); setDaysOff([5, 6]); }}>Gulf — Sun start, Fri + Sat off</button>
+            <button type="button" className="underline hover:text-gray-700" disabled={disabled}
+              onClick={() => { setWeekStartDay(1); setDaysOffCount(2); setDaysOff([6, 7]); }}>Mon start, Sat + Sun off</button>
+            <button type="button" className="underline hover:text-gray-700" disabled={disabled}
+              onClick={() => { setWeekStartDay(1); setDaysOffCount(1); setDaysOff([7]); }}>Mon start, Sun off</button>
           </div>
         </div>
 
