@@ -215,6 +215,17 @@ export function RepMap() {
     return Array.from({ length: Math.max(1, max || 4) }, (_, i) => i + 1);
   }, [schedules, roleSchedules]);
 
+  // Show the whole plan by default, not week 1 alone. On a calendar-month
+  // plan that starts mid-week, week 1 can be a single day - October 2026 on
+  // a Saturday-to-Thursday week opens on Thursday the 1st - and the map came
+  // up showing one route of one rep, which read as if the plan were empty.
+  const weeksDefaulted = useRef(false);
+  useEffect(() => {
+    if (weeksDefaulted.current || schedules.length === 0) return;
+    weeksDefaulted.current = true;
+    setSelectedWeeks(availableWeeks);
+  }, [schedules.length, availableWeeks]);
+
   // Older plans stored only weeks 1-2 and let weeks 3-4 mirror them. Newer ones
   // store every week, and mirroring them would show the wrong outlets.
   const mirrorsFortnight = useMemo(
