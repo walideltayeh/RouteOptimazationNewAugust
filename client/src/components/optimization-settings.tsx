@@ -110,6 +110,8 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
   // routes but fewer visits per day in sparse markets (more reps needed);
   // higher = fuller days over more ground.
   const [maxZoneRadiusKm, setMaxZoneRadiusKm] = useState(15);
+  // Longest drive allowed between two consecutive stops on a day-route, km.
+  const [maxHopKm, setMaxHopKm] = useState(4);
   const [coverageSuggestions, setCoverageSuggestions] = useState<CoverageSuggestion[]>([]);
   const [territoryBalance, setTerritoryBalance] = useState<TerritoryBalance | null>(null);
   const [weightModeUsed, setWeightModeUsed] = useState<string>('');
@@ -148,6 +150,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
     weightMode: WeightMode;
     distanceMode: DistanceModel;
     maxZoneRadiusKm: number;
+    maxHopKm: number;
     excludedOutletIds?: string[];
     progressId: string;
   } | null>(null);
@@ -198,6 +201,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       weightMode?: WeightMode;
       distanceMode?: DistanceModel;
       maxZoneRadiusKm?: number;
+      maxHopKm?: number;
       excludedOutletIds?: string[];
       progressId?: string;
     }) => {
@@ -285,6 +289,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       weightMode,
       distanceMode,
       maxZoneRadiusKm,
+      maxHopKm,
       excludedOutletIds: excludedOutletIds.length > 0 ? excludedOutletIds : undefined,
       progressId: newProgressId,
     };
@@ -503,6 +508,31 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
           </Select>
           <p className="text-xs text-gray-500 mt-1">
             In dense cities you can keep routes very tight and still fill each day. In sparse markets the two pull against each other: tighter routes mean fewer visits per day and more reps. Loosen this if days come out under target.
+          </p>
+        </div>
+
+        <div>
+          <Label htmlFor="maxHop">Max Drive Between Stops</Label>
+          <div className="mt-1 flex items-center gap-2">
+            <Input
+              id="maxHop"
+              type="number"
+              value={maxHopKm}
+              onChange={(e) => setMaxHopKm(Math.max(0, parseFloat(e.target.value) || 0))}
+              min="0"
+              max="50"
+              step="0.5"
+              className="w-28"
+              disabled={disabled}
+              data-testid="input-max-hop"
+            />
+            <span className="text-sm text-gray-600">km</span>
+          </div>
+          <p className="text-xs text-gray-500 mt-1">
+            The longest single drive allowed from one stop to the next inside a day. Any hop
+            over this is penalised heavily, so the grouping will spend a little total distance to
+            avoid one long jump. An outlet with no neighbour at all within this range still has
+            to be reached; the console lists those. 0 turns it off.
           </p>
         </div>
 

@@ -6,7 +6,7 @@ import { createHash, randomUUID } from "crypto";
 import { storage } from "./storage";
 import { isAdminConfigured, verifyAdmin, adminCredentialSource } from "./admin-credentials";
 import { solveBalancedGroups } from "./balanced-solver";
-import { totalWeeklyLoad, growBalancedRegions, partitionByHilbert, repairLoads, swapForCompactness, polishByCohesion, polishByTourLength, recutPairs, tourLength, weeklyLoadOf } from "./day-balancer";
+import { totalWeeklyLoad, growBalancedRegions, partitionByHilbert, repairLoads, swapForCompactness, polishByCohesion, polishByTourLength, recutPairs, routeCost, longestHop, swapStranded, reachabilityComponents, gapBetween, weeklyLoadOf, type Band } from "./day-balancer";
 import { 
   insertOptimizationRunSchema, 
   insertOutletSchema, 
@@ -2877,6 +2877,77 @@ function buildDailyClustersFromZones(zoneGroups: Outlet[][], numDays: number, ma
 // that should all honour the same setting.
 let dayRouteWidthCapKm = 0;
 
+// The longest single hop a day-route may contain before it is penalised, in
+// kilometres. 0 turns the penalty off. See legCost in day-balancer.
+let maxHopKm = 4;
+
+// The user's floor and ceiling for a day, in visits. The day builders derive a
+// per-piece band from these and the piece's own mean, so "20 to 25" is honoured
+// as stated rather than as a symmetric tolerance around whatever the mean is.
+let dayVisitsMin = 0;
+let dayVisitsMax = 0;
+
+// The settings the last full optimization ran with, kept on disk.
+//
+// Everything that rebuilds routes afterwards - "Reoptimize", and the rebuild
+// that follows a reassignment - used to invent its own defaults (25-27 visits a
+// day, 5 working days, four weeks) instead of the numbers the user set on the
+// dashboard. So a plan built for 21-24 calls a day over a 26-day Sunday-to-
+// Thursday cycle was silently rebuilt as 25-27 calls over a four-week
+// Monday-to-Friday one, and the user's settings were quietly undone by the
+// button labelled "Reoptimize".
+interface PlanSettings {
+  workingDays: number[];
+  cycleWorkingDays: number;
+  minVisitsPerDay: number;
+  maxVisitsPerDay: number;
+  weightMode: string;
+  distanceMode: string;
+  maxZoneRadiusKm: number;
+  dayLoadTolerance: number;
+  dayRouteWidthCapKm: number;
+  maxHopKm: number;
+}
+const SETTINGS_FILE = path.join(process.env.DATA_DIR || path.join(process.cwd(), "data"), "plan-settings.json");
+let planSettings: PlanSettings | null = null;
+
+function loadPlanSettings() {
+  try {
+    if (fs.existsSync(SETTINGS_FILE)) {
+      planSettings = JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf-8"));
+      console.log(`[settings] Restored plan settings: ${planSettings!.minVisitsPerDay}-${planSettings!.maxVisitsPerDay} visits/day, ${planSettings!.cycleWorkingDays || 'default'} day cycle`);
+    }
+  } catch (err) {
+    console.error("[settings] Failed to read:", (err as Error).message);
+    planSettings = null;
+  }
+}
+function savePlanSettings(next: PlanSettings) {
+  planSettings = next;
+  try {
+    fs.mkdirSync(path.dirname(SETTINGS_FILE), { recursive: true });
+    const tmp = SETTINGS_FILE + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify(next, null, 2));
+    fs.renameSync(tmp, SETTINGS_FILE);
+  } catch (err) {
+    console.error("[settings] Failed to write:", (err as Error).message);
+  }
+}
+/** Puts the saved settings back into the module state the builders read. */
+function applyPlanSettings(): PlanSettings | null {
+  if (!planSettings) return null;
+  workingWeek = planSettings.workingDays?.length > 0 ? planSettings.workingDays : workingWeek;
+  cycleWorkingDays = planSettings.cycleWorkingDays ?? 0;
+  dayLoadTolerance = planSettings.dayLoadTolerance ?? dayLoadTolerance;
+  dayRouteWidthCapKm = planSettings.dayRouteWidthCapKm ?? dayRouteWidthCapKm;
+  maxHopKm = planSettings.maxHopKm ?? maxHopKm;
+  dayVisitsMin = planSettings.minVisitsPerDay ?? dayVisitsMin;
+  dayVisitsMax = planSettings.maxVisitsPerDay ?? dayVisitsMax;
+  setDistanceMode(planSettings.distanceMode === 'road' ? 'road' : 'haversine');
+  return planSettings;
+}
+loadPlanSettings();
+
 // Which weekdays the reps actually work, as ISO numbers (1 = Monday ... 7 =
 // Sunday), in the order the week runs.
 //
@@ -2924,9 +2995,10 @@ let cycleWorkingDays = 0;
 // 5-day week, default cycle -> 20 days = 5 groups x 4. The old behaviour.
 // 6-day week, default cycle -> 24 days = 6 groups x 4. The old behaviour.
 // 6-day week, 26-day cycle  -> 26 days = 13 groups x 2. The Damascus plan.
-function cycleShape(workingDaysPerWeek: number): { cycleDays: number; repeats: number; dayGroups: number } {
+function cycleShape(workingDaysPerWeek: number, requested?: number): { cycleDays: number; repeats: number; dayGroups: number } {
   const wd = Math.max(1, workingDaysPerWeek || 5);
-  let cycleDays = cycleWorkingDays > 0 ? cycleWorkingDays : wd * 4;
+  const asked = requested ?? cycleWorkingDays;
+  let cycleDays = asked > 0 ? asked : wd * 4;
   // An odd cycle can only be 1 x itself, which would mean every outlet visited
   // once and no frequency at all. Drop a day rather than ship that.
   let repeats = [4, 3, 2].find(r => cycleDays % r === 0);
@@ -3080,44 +3152,152 @@ async function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[]
   // time cannot repair a day-group that is the wrong SHAPE, and on a cycle with
   // few repeats the day-group is the route - there is no second, tour-driven
   // split below it to tidy up after. See recutPairs.
-  let dailyClusters = repairLoads(
-    // Exact assignment when the solver is there; the curve when it is not.
-    (await solveBalancedGroups(repOutlets, numDays, o => Math.min(o.visitFrequency ?? 1, cycleRuns), dayLoadTolerance))
-      ?? partitionByHilbert(repOutlets, numDays, runLoadOf),
-    runLoadOf,
-    dayLoadTolerance,
-  );
+  // Partition one connected piece of territory into k day-groups: exact
+  // balanced assignment, then polish to convergence.
+  const partitionPiece = async (piece: Outlet[], k: number): Promise<Outlet[][]> => {
+    if (k <= 1 || piece.length <= 1) return [piece.slice()];
+    // Room below and above this piece's own mean, from the user's floor and
+    // ceiling. With a floor of 20 on a mean of 20.9 there is almost no room
+    // below and plenty above; the old symmetric tolerance around the mean gave
+    // 18.6 to 23.3 and let days come out at 19.
+    const mean = piece.reduce((sum, o) => sum + runLoadOf(o), 0) / k;
+    const band: Band = dayVisitsMin > 0 && dayVisitsMax > 0 && mean > 0
+      ? {
+          below: Math.min(0.35, Math.max(0.02, (mean - dayVisitsMin) / mean)),
+          above: Math.min(0.35, Math.max(0.02, (dayVisitsMax - mean) / mean)),
+        }
+      : dayLoadTolerance;
+    let groups = repairLoads(
+      // Exact assignment when the solver is there; the curve when it is not.
+      (await solveBalancedGroups(piece, k, o => Math.min(o.visitFrequency ?? 1, cycleRuns), band))
+        ?? partitionByHilbert(piece, k, runLoadOf),
+      runLoadOf,
+      band,
+      maxHopKm,
+    );
 
-  // Improve until it stops improving, rather than once through. The four passes
-  // feed each other - re-cutting a pair of day-groups moves the boundaries that
-  // the outlet-level passes then have fresh slack to work on, and vice versa -
-  // so a single sweep leaves distance on the table. The loop is cheap (a few
-  // hundred milliseconds a rep) and stops the moment a sweep fails to shorten
-  // the total drive, so it cannot make a plan worse than the one it started on.
-  const totalTour = (gs: Outlet[][]) => gs.reduce((sum, g) => sum + tourLength(g), 0);
-  let best = totalTour(dailyClusters);
-  for (let sweep = 0; sweep < 4; sweep++) {
-    const next = repairLoads(
-      recutPairs(
-        polishByTourLength(
-          polishByCohesion(
-            swapForCompactness(dailyClusters, runLoadOf),
+    // Improve until it stops improving, rather than once through. The passes
+    // feed each other - re-cutting a pair of day-groups moves the boundaries
+    // that the outlet-level passes then have fresh slack to work on, and vice
+    // versa - so a single sweep leaves distance on the table. The loop stops
+    // the moment a sweep fails to shorten the total drive, so it cannot make a
+    // plan worse than the one it started on.
+    const totalCost = (gs: Outlet[][]) => gs.reduce((sum, g) => sum + routeCost(g, maxHopKm), 0);
+    let best = totalCost(groups);
+    for (let sweep = 0; sweep < 4; sweep++) {
+      const next = repairLoads(
+        swapStranded(
+          recutPairs(
+            polishByTourLength(
+              polishByCohesion(
+                swapForCompactness(groups, runLoadOf),
+                runLoadOf,
+                band,
+              ),
+              runLoadOf,
+              band,
+              4,
+              maxHopKm,
+            ),
             runLoadOf,
-            dayLoadTolerance,
+            band,
+            6,
+            6,
+            maxHopKm,
           ),
           runLoadOf,
-          dayLoadTolerance,
+          band,
+          maxHopKm,
         ),
         runLoadOf,
-        dayLoadTolerance,
-      ),
-      runLoadOf,
-      dayLoadTolerance,
-    );
-    const len = totalTour(next);
-    if (len >= best - 0.01) break;
-    dailyClusters = next;
-    best = len;
+        band,
+        maxHopKm,
+      );
+      const cost = totalCost(next);
+      if (cost >= best - 0.01) break;
+      groups = next;
+      best = cost;
+    }
+    return groups;
+  };
+
+  // Respect the hop limit STRUCTURALLY, before any optimising starts.
+  //
+  // The polishing passes could not fix a day-route that reaches across a gap
+  // no hop under the limit can bridge, because every move they can make keeps
+  // the day the same size and every outlet across the gap is equally far. On
+  // this territory the gaps are real: one rep has a core of 210 outlets and
+  // three pockets of 26, 26 and 22 more than 4km from it. So: find the pieces
+  // of territory that CAN be driven within the limit, give each its fair share
+  // of days, and partition each on its own. A pocket the size of a day simply
+  // becomes that day. Only a piece too small to be a day is merged into its
+  // nearest neighbour, and that one unavoidable long hop is reported.
+  const totalLoad = repOutlets.reduce((sum, o) => sum + runLoadOf(o), 0);
+  const targetLoad = totalLoad / numDays;
+  const floorLoad = dayVisitsMin > 0 ? Math.min(dayVisitsMin, targetLoad) * (1 - 0.02) : targetLoad * (1 - dayLoadTolerance);
+  let pieces = reachabilityComponents(repOutlets, maxHopKm);
+
+  const loadOfPiece = (g: Outlet[]) => g.reduce((sum, o) => sum + runLoadOf(o), 0);
+  const mergeInto = (from: number) => {
+    let to = -1, gap = Infinity;
+    for (let j = 0; j < pieces.length; j++) {
+      if (j === from) continue;
+      const g = gapBetween(pieces[from], pieces[j]);
+      if (g < gap) { gap = g; to = j; }
+    }
+    if (to < 0) return;
+    console.log(`[hops] ${rep.name}: ${pieces[from].length} outlet(s) have no neighbour within ${maxHopKm}km - joined to the nearest piece, ${gap.toFixed(1)}km away (that hop is unavoidable)`);
+    pieces[to] = [...pieces[to], ...pieces[from]];
+    pieces.splice(from, 1);
+  };
+  // Too small to be a day on its own -> merge. Smallest first, so a handful of
+  // stragglers attach to a pocket rather than a pocket dissolving into the core.
+  for (;;) {
+    let smallest = -1;
+    for (let i = 0; i < pieces.length; i++) {
+      if (loadOfPiece(pieces[i]) < floorLoad && (smallest < 0 || pieces[i].length < pieces[smallest].length)) smallest = i;
+    }
+    if (smallest < 0 || pieces.length === 1) break;
+    mergeInto(smallest);
+  }
+  // More pieces than days -> merge the smallest until they fit.
+  while (pieces.length > numDays) {
+    let smallest = 0;
+    for (let i = 1; i < pieces.length; i++) if (pieces[i].length < pieces[smallest].length) smallest = i;
+    mergeInto(smallest);
+  }
+
+  // Share the days out in proportion to load (largest-remainder), every piece
+  // getting at least one.
+  const pieceLoads = pieces.map(loadOfPiece);
+  const quota = pieceLoads.map(l => l / targetLoad);
+  const days = quota.map(q => Math.max(1, Math.floor(q)));
+  let left = numDays - days.reduce((a, b) => a + b, 0);
+  // Remainder against what was actually allocated, not against the floor: a
+  // pocket of 22 with a quota of 0.99 already holds its one day, and counting
+  // its 0.99 as unmet gave it a second - two days of eleven.
+  const remainders = quota.map((q, i) => ({ i, r: q - days[i] })).sort((a, b) => b.r - a.r);
+  for (const { i } of remainders) { if (left <= 0) break; days[i] += 1; left -= 1; }
+  // Over-allocated (many pieces each forced to one day): take days back from
+  // the pieces whose days would stay fullest.
+  while (left < 0) {
+    let pick = -1, fullest = -Infinity;
+    for (let i = 0; i < pieces.length; i++) {
+      if (days[i] <= 1) continue;
+      const perDay = pieceLoads[i] / (days[i] - 1);
+      if (perDay > fullest) { fullest = perDay; pick = i; }
+    }
+    if (pick < 0) break;
+    days[pick] -= 1; left += 1;
+  }
+  if (pieces.length > 1) {
+    console.log(`[hops] ${rep.name}: ${pieces.length} pieces within ${maxHopKm}km -> ` +
+      pieces.map((p, i) => `${p.length} outlets/${days[i]} day${days[i] === 1 ? '' : 's'}`).join(', '));
+  }
+
+  let dailyClusters: Outlet[][] = [];
+  for (let i = 0; i < pieces.length; i++) {
+    dailyClusters.push(...await partitionPiece(pieces[i], days[i]));
   }
 
   // Guardrail. The failure this replaced looked perfect on every count-based
@@ -3148,6 +3328,13 @@ async function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[]
   }
   while (dailyClusters.length < numDays) dailyClusters.push([]);
 
+  if (maxHopKm > 0) {
+    const hops = dailyClusters.filter(g => g.length > 1).map(longestHop);
+    const over = hops.filter(h => h > maxHopKm).length;
+    if (over > 0) {
+      console.log(`[hops] ${rep.name}: ${over} of ${hops.length} day-routes still have a hop over ${maxHopKm}km (worst ${Math.max(...hops).toFixed(1)}km)`);
+    }
+  }
   const runRepeats = cycleShape(rep.workingDaysPerWeek || 5).repeats;
   const loads = dailyClusters.map(g =>
     Math.round((g.reduce((sum, o) => sum + Math.min(o.visitFrequency ?? 1, runRepeats), 0) / runRepeats) * 10) / 10);
@@ -3273,11 +3460,23 @@ function scheduleFromDailyClusters(rep: Rep, dailyClusters: Outlet[][], repOutle
     // polish belongs here as well as at the day-group level above: polishing the
     // group only shapes the pool that the weeks are then drawn from.
     const oneVisit = () => 1;
-    const splitWeeks = (pool: Outlet[], buckets: number) =>
-      repairLoads(
-        polishByTourLength(growBalancedRegions(pool, buckets, oneVisit), oneVisit),
+    const splitWeeks = (pool: Outlet[], buckets: number) => {
+      // Same band and hop limit as the day-groups above: the user's floor and
+      // ceiling against this pool's own mean, not a symmetric 5% around it.
+      const mean = pool.length / Math.max(1, buckets);
+      const band: Band = dayVisitsMin > 0 && dayVisitsMax > 0 && mean > 0
+        ? {
+            below: Math.min(0.35, Math.max(0.02, (mean - dayVisitsMin) / mean)),
+            above: Math.min(0.35, Math.max(0.02, (dayVisitsMax - mean) / mean)),
+          }
+        : 0.05;
+      return repairLoads(
+        polishByTourLength(growBalancedRegions(pool, buckets, oneVisit), oneVisit, band, 4, maxHopKm),
         oneVisit,
+        band,
+        maxHopKm,
       );
+    };
     // One bucket set per frequency band, sized so the band's visits land evenly
     // across the cycle's repeats.
     // Band by how many of this group's runs the outlet is due on - 1..repeats -
@@ -4837,6 +5036,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // stopped being built from zones it silently stopped mattering: 5km and
       // 25km produced identical plans.
       dayRouteWidthCapKm = maxZoneRadiusKm;
+      maxHopKm = Math.max(0, Math.min(50, parseFloat(String(req.body.maxHopKm ?? 4)) || 0));
+      console.log(`Max hop between stops: ${maxHopKm > 0 ? maxHopKm + ' km' : 'off'}`);
+      dayVisitsMin = minVisitsPerDay;
+      dayVisitsMax = maxVisitsPerDay;
       {
         const midPoint = (minVisitsPerDay + maxVisitsPerDay) / 2;
         dayLoadTolerance = midPoint > 0
@@ -4981,6 +5184,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
               (await solveBalancedGroups(outlets, allReps.length, monthlyVisitsOf, balanceTolerance))
                 ?? growBalancedRegions(outlets, allReps.length, monthlyVisitsOf),
               monthlyVisitsOf,
+              // Territories should come out as even as they can, not merely
+              // inside the band: a rep whose territory holds pockets that must
+              // be whole days needs every outlet its share allows for the rest.
+              0.025,
             ),
               monthlyVisitsOf,
             ),
@@ -5132,11 +5339,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // replaces the live plan, so without this the previous plan would be
       // gone for good - capturing means you can always compare against it
       // and restore it from the Scenarios page.
+      // Remember what this run was told to do, so every later rebuild honours
+      // it rather than falling back to defaults nobody chose.
+      savePlanSettings({
+        workingDays: workingWeek,
+        cycleWorkingDays,
+        minVisitsPerDay,
+        maxVisitsPerDay,
+        weightMode,
+        distanceMode,
+        maxZoneRadiusKm,
+        dayLoadTolerance,
+        dayRouteWidthCapKm,
+        maxHopKm,
+      });
+
       let capturedScenarioId: string | null = null;
       try {
         capturedScenarioId = await captureCurrentPlanAsScenario({
           workingDaysPerWeek, minVisitsPerDay, maxVisitsPerDay,
           maxZoneRadiusKm, distanceMode, weightMode,
+          workingDays: workingWeek, cycleWorkingDays,
         });
       } catch (err) {
         console.error("[scenarios] auto-capture failed:", (err as Error).message);
@@ -5579,8 +5802,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // (deletions, additions, reassignments) and does a FULL re-clustering of
   // daily groups + per-day TSP resequencing. If nothing has changed, falls back
   // to a fast per-day resequence on just the requested days.
+  // What a rebuild will use. The map's Reoptimize button has no settings form
+  // of its own, so it reads them from here and tells the user before running.
+  app.get("/api/plan-settings", async (_req, res) => {
+    if (!planSettings) return res.json({ configured: false });
+    res.json({
+      configured: true,
+      ...planSettings,
+      workingDayNames: planSettings.workingDays.map(d => WEEKDAY_NAMES[d - 1]),
+      daysOffNames: WEEKDAY_NAMES.filter((_, i) => !planSettings!.workingDays.includes(i + 1)),
+      cycleDays: cycleShape(planSettings.workingDays.length || 5, planSettings.cycleWorkingDays).cycleDays,
+      maxHopKm: planSettings.maxHopKm ?? 4,
+    });
+  });
+
   app.post("/api/optimize-routes", async (req, res) => {
     try {
+      // Same rule as everywhere else: rebuild to the settings the plan was
+      // built on, not to whatever this module happens to hold.
+      applyPlanSettings();
       const { repIds, days } = req.body;
       if (!Array.isArray(repIds) || repIds.length === 0) {
         return res.status(400).json({ message: "repIds is required" });
@@ -5841,9 +6081,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
   async function regenerateSchedulesForReps(repIds: string[]) {
     const uniqueRepIds = Array.from(new Set(repIds.filter(Boolean)));
-    // Read the cycle and the working week off the existing plan before any of
-    // it is deleted, so a rebuild after a restart does not silently revert to a
-    // four-week Monday-to-Friday assumption.
+    // Rebuild with the settings the plan was built on - the day band, the
+    // compactness cap and the distance model included, not just the calendar.
+    // Without this a rebuild after a restart silently reverted to defaults.
+    applyPlanSettings();
     const existingCycle = await storedCycleDays();
     if (existingCycle > 0) cycleWorkingDays = existingCycle;
     const existingWeek = await storedWorkingWeek();
@@ -6181,7 +6422,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "No outlets available for re-optimization" });
       }
       
-      const { minVisitsPerDay = 25, maxVisitsPerDay = 27, workingDaysPerWeek = 5 } = req.body;
+      // The dashboard's settings are the plan's settings. This used to default
+      // to 25-27 visits a day over a 5-day week whenever the request did not
+      // spell them out - which the Reoptimize button never did - so pressing it
+      // quietly rebuilt the plan to numbers the user had not chosen.
+      const saved = applyPlanSettings();
+      const minVisitsPerDay = req.body.minVisitsPerDay ?? saved?.minVisitsPerDay ?? 25;
+      const maxVisitsPerDay = req.body.maxVisitsPerDay ?? saved?.maxVisitsPerDay ?? 27;
+      const workingDaysPerWeek = req.body.workingDaysPerWeek ?? workingWeek.length ?? 5;
 
       // Keep the cycle and working week the current plan was built on unless
       // asked to change them.

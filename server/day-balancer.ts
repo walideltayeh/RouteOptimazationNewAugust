@@ -10,6 +10,20 @@ import { geoDist } from "./road-distance";
  *   VF2 (biweekly) = 0.5 VF1 (monthly) = 0.25
  */
 
+/**
+ * How far a group's load may sit from the mean. A plain number is symmetric;
+ * {below, above} gives separate room each side, which is what a user's
+ * "20 to 25 a day" actually means when the data averages 20.9: almost no room
+ * below, plenty above. Symmetric tolerance around the mean let days fall to 19
+ * while the user was looking at a floor of 20.
+ */
+export type Band = number | { below: number; above: number };
+export function bandOf(target: number, tol: Band): { lo: number; hi: number } {
+  const below = typeof tol === 'number' ? tol : tol.below;
+  const above = typeof tol === 'number' ? tol : tol.above;
+  return { lo: target * (1 - below), hi: target * (1 + above) };
+}
+
 export function weeklyLoadOf(outlet: Outlet): number {
   const vf = outlet.visitFrequency ?? 1;
   return vf / 4;
@@ -222,7 +236,8 @@ export function growBalancedRegions(
 export function repairLoads(
   groups: Outlet[][],
   weightFn: (o: Outlet) => number,
-  maxSpreadFraction: number = 0.05,
+  tolerance: Band = 0.05,
+  maxHopKm: number = 0,
 ): Outlet[][] {
   const working = groups.map(g => [...g]);
   if (working.length < 2) return working;
@@ -230,38 +245,58 @@ export function repairLoads(
   const loadOf = (g: Outlet[]) => g.reduce((s, o) => s + weightFn(o), 0);
   const total = working.reduce((s, g) => s + loadOf(g), 0);
   const target = total / working.length;
-  const allowed = Math.max(target * maxSpreadFraction, 1e-9);
+  const { lo, hi } = bandOf(target, tolerance);
+
+  // Nearest outlet in `from` to any member of `to` - the one already on the
+  // border between them - and how far across that border it is.
+  const borderMove = (from: Outlet[], to: Outlet[]) => {
+    let idx = -1, dist = Infinity;
+    for (let i = 0; i < from.length; i++) {
+      const o = from[i];
+      if (o.geoStatus === 'offset') continue;
+      for (const t of to) {
+        const d = geoDist(o.latitude, o.longitude, t.latitude, t.longitude);
+        if (d < dist) { dist = d; idx = i; }
+      }
+    }
+    return { idx, dist };
+  };
 
   for (let step = 0; step < working.length * 40; step++) {
     const loads = working.map(loadOf);
-    let heavy = 0, light = 0;
-    for (let i = 1; i < working.length; i++) {
-      if (loads[i] > loads[heavy]) heavy = i;
-      if (loads[i] < loads[light]) light = i;
-    }
-    if (heavy === light) break;
-    if (loads[heavy] - loads[light] <= allowed) break;
-    if (working[heavy].length <= 1) break;
 
-    // Nearest outlet in the heavy group to ANY member of the light group -
-    // i.e. the one already on the border between them.
-    let bestIdx = -1, bestD = Infinity;
-    for (let i = 0; i < working[heavy].length; i++) {
-      const o = working[heavy][i];
-      if (o.geoStatus === 'offset') continue;
-      for (const t of working[light]) {
-        const d = geoDist(o.latitude, o.longitude, t.latitude, t.longitude);
-        if (d < bestD) { bestD = d; bestIdx = i; }
+    // Only a day actually outside its band needs repairing. This used to
+    // balance on the SPREAD between the heaviest and lightest day, which is
+    // twice as strict as the band and kept shuffling outlets between two days
+    // that were both already legal - and each shuffle was the nearest border
+    // between two days that might not adjoin at all, which is exactly how a
+    // tidy day acquired an 8km hop after every polishing pass had finished.
+    let best: { from: number; to: number; idx: number; dist: number } | null = null;
+    for (let g = 0; g < working.length; g++) {
+      if (loads[g] > hi && working[g].length > 1) {
+        for (let t = 0; t < working.length; t++) {
+          if (t === g || loads[t] >= target) continue;
+          const m = borderMove(working[g], working[t]);
+          if (m.idx >= 0 && (!best || m.dist < best.dist)) best = { from: g, to: t, ...m };
+        }
+      } else if (loads[g] < lo) {
+        for (let f = 0; f < working.length; f++) {
+          if (f === g || loads[f] <= target || working[f].length <= 1) continue;
+          const m = borderMove(working[f], working[g]);
+          if (m.idx >= 0 && (!best || m.dist < best.dist)) best = { from: f, to: g, ...m };
+        }
       }
     }
-    if (bestIdx < 0) break;
+    if (!best) break;
+    // A move across a gap wider than a legal hop trades a load problem for a
+    // routing one; leave the day slightly off-band instead.
+    if (maxHopKm > 0 && best.dist > maxHopKm) break;
 
-    const moving = working[heavy][bestIdx];
+    const moving = working[best.from][best.idx];
     // Do not overshoot into the mirror-image imbalance.
-    if (loads[light] + weightFn(moving) > loads[heavy]) break;
-
-    working[heavy].splice(bestIdx, 1);
-    working[light].push(moving);
+    if (loads[best.to] + weightFn(moving) > loads[best.from]) break;
+    working[best.from].splice(best.idx, 1);
+    working[best.to].push(moving);
   }
 
   return working;
@@ -286,7 +321,7 @@ export function repairLoads(
 export function polishByCohesion(
   groups: Outlet[][],
   weightFn: (o: Outlet) => number,
-  tolerance: number = 0.08,
+  tolerance: Band = 0.08,
   maxPasses: number = 4,
 ): Outlet[][] {
   const working = groups.map(g => [...g]);
@@ -295,8 +330,7 @@ export function polishByCohesion(
   const loadOf = (g: Outlet[]) => g.reduce((s, o) => s + weightFn(o), 0);
   const total = working.reduce((s, g) => s + loadOf(g), 0);
   const target = total / working.length;
-  const lo = target * (1 - tolerance);
-  const hi = target * (1 + tolerance);
+  const { lo, hi } = bandOf(target, tolerance);
 
   /** Distance from an outlet to the nearest OTHER member of a group. */
   const nearestIn = (o: Outlet, g: Outlet[]): number => {
@@ -458,6 +492,44 @@ export function tourLength(group: Outlet[]): number {
 }
 
 /**
+ * What one leg of a route costs, with hops beyond the limit charged extra.
+ *
+ * Minimising total distance alone was the problem the user pointed at: it
+ * cheerfully accepts one 11km jump to save a handful of 200m ones, because the
+ * sum comes out smaller. But a rep does not experience a route as a sum. Two
+ * tight clusters with an 11km drive between them is a bad day even when the
+ * total is short. So every kilometre a hop runs past the limit is charged as
+ * ten, and the optimiser will spend real distance to get rid of it - which it
+ * can, on this data: of 182 day-routes, 14 had a hop over 4km, and only two of
+ * those were forced by an outlet with no neighbour within 4km of it.
+ */
+const HOP_PENALTY = 10;
+export function legCost(km: number, maxHopKm: number): number {
+  return maxHopKm > 0 && km > maxHopKm ? km + HOP_PENALTY * (km - maxHopKm) : km;
+}
+
+/** The route's driving distance plus the penalty for any hop over the limit. */
+export function routeCost(group: Outlet[], maxHopKm: number): number {
+  if (maxHopKm <= 0) return tourLength(group);
+  const tour = buildTour(group);
+  let total = 0;
+  for (let i = 0; i < tour.length - 1; i++) {
+    total += legCost(geoDist(tour[i].latitude, tour[i].longitude, tour[i + 1].latitude, tour[i + 1].longitude), maxHopKm);
+  }
+  return total;
+}
+
+/** The longest single hop in the route as driven. */
+export function longestHop(group: Outlet[]): number {
+  const tour = buildTour(group);
+  let worst = 0;
+  for (let i = 0; i < tour.length - 1; i++) {
+    worst = Math.max(worst, geoDist(tour[i].latitude, tour[i].longitude, tour[i + 1].latitude, tour[i + 1].longitude));
+  }
+  return worst;
+}
+
+/**
  * Moves outlets between groups to shorten the distance actually driven.
  *
  * Every earlier pass optimised a stand-in for driving - distance to a centroid,
@@ -474,8 +546,9 @@ export function tourLength(group: Outlet[]): number {
 export function polishByTourLength(
   groups: Outlet[][],
   weightFn: (o: Outlet) => number,
-  tolerance: number = 0.08,
+  tolerance: Band = 0.08,
   maxPasses: number = 4,
+  maxHopKm: number = 0,
 ): Outlet[][] {
   const working = groups.map(g => [...g]);
   if (working.length < 2) return working;
@@ -483,9 +556,10 @@ export function polishByTourLength(
   const loadOf = (g: Outlet[]) => g.reduce((s, o) => s + weightFn(o), 0);
   const total = working.reduce((s, g) => s + loadOf(g), 0);
   const target = total / working.length;
-  const lo = target * (1 - tolerance);
-  const hi = target * (1 + tolerance);
-  const d = (a: Outlet, b: Outlet) => geoDist(a.latitude, a.longitude, b.latitude, b.longitude);
+  const { lo, hi } = bandOf(target, tolerance);
+  // Every leg is priced with the hop penalty, so an outlet stranded at the far
+  // end of a long jump shows a large removal gain and gets moved.
+  const d = (a: Outlet, b: Outlet) => legCost(geoDist(a.latitude, a.longitude, b.latitude, b.longitude), maxHopKm);
 
   for (let pass = 0; pass < maxPasses; pass++) {
     const tours = working.map(buildTour);
@@ -694,9 +768,10 @@ export function partitionByHilbert(
 export function recutPairs(
   groups: Outlet[][],
   weightFn: (o: Outlet) => number,
-  tolerance: number = 0.08,
+  tolerance: Band = 0.08,
   rounds: number = 6,
   neighbours: number = 6,
+  maxHopKm: number = 0,
 ): Outlet[][] {
   const working = groups.map(g => [...g]);
   if (working.length < 2) return working;
@@ -704,8 +779,7 @@ export function recutPairs(
   const loadOf = (g: Outlet[]) => g.reduce((s, o) => s + weightFn(o), 0);
   const total = working.reduce((s, g) => s + loadOf(g), 0);
   const target = total / working.length;
-  const lo = target * (1 - tolerance);
-  const hi = target * (1 + tolerance);
+  const { lo, hi } = bandOf(target, tolerance);
 
   for (let round = 0; round < rounds; round++) {
     let improved = false;
@@ -724,14 +798,16 @@ export function recutPairs(
         .slice(0, neighbours);
 
       for (const j of near) {
-        const before = tourLength(working[i]) + tourLength(working[j]);
+        const before = routeCost(working[i], maxHopKm) + routeCost(working[j], maxHopKm);
         if (before === 0) continue;
 
         const union = [...working[i], ...working[j]];
         const cut = polishByTourLength(
-          repairLoads(growBalancedRegions(union, 2, weightFn), weightFn, tolerance),
+          repairLoads(growBalancedRegions(union, 2, weightFn), weightFn, tolerance, maxHopKm),
           weightFn,
           tolerance,
+          4,
+          maxHopKm,
         );
         if (cut.length !== 2 || cut[0].length === 0 || cut[1].length === 0) continue;
 
@@ -739,7 +815,7 @@ export function recutPairs(
         const loadB = loadOf(cut[1]);
         if (loadA < lo || loadA > hi || loadB < lo || loadB > hi) continue;
 
-        const after = tourLength(cut[0]) + tourLength(cut[1]);
+        const after = routeCost(cut[0], maxHopKm) + routeCost(cut[1], maxHopKm);
         if (after >= before - 1e-6) continue;
 
         working[i] = cut[0];
@@ -754,4 +830,208 @@ export function recutPairs(
   }
 
   return working;
+}
+
+/* ------------------------------------------------------------------ *
+ * Stranded-cluster rotation
+ * ------------------------------------------------------------------ */
+
+/**
+ * Finds day-routes with a hop over the limit and rotates the stranded end of
+ * the route out through the neighbouring days: A hands the stranded cluster to
+ * the day B that physically adjoins it; B hands an equal weight of the outlets
+ * on its border with C to C; C hands an equal weight of the outlets on its
+ * border with A's core back to A. Loads never change, so the day-size band
+ * cannot block it, and every parcel travels one border, so no new long hop is
+ * created. A two-day rotation (A <-> B) is the plain swap.
+ *
+ * This is the move the other passes cannot make. A route with one long hop is
+ * a dumbbell - a tight core, a gap, and a small cluster on the far side. Single-
+ * outlet polishing cannot fix it: moving one outlet off the far cluster leaves
+ * the hop where it was, and the day-size floor stops the rest following. Re-
+ * cutting the pair cannot fix it either, because the far cluster is a fifth of
+ * the day and an equal cut will not separate it. And a plain swap fails on a
+ * chain-shaped territory, where the day next to the stranded cluster has
+ * nothing bordering the core to hand back - the rotation goes round via a
+ * third day that borders both.
+ */
+export function swapStranded(
+  groups: Outlet[][],
+  weightFn: (o: Outlet) => number,
+  tolerance: Band,
+  maxHopKm: number,
+  rounds: number = 4,
+): Outlet[][] {
+  if (maxHopKm <= 0) return groups.map(g => [...g]);
+  const working = groups.map(g => [...g]);
+  if (working.length < 2) return working;
+
+  const loadOf = (g: Outlet[]) => g.reduce((s, o) => s + weightFn(o), 0);
+  const total = working.reduce((s, g) => s + loadOf(g), 0);
+  const target = total / working.length;
+  const { lo, hi } = bandOf(target, tolerance);
+  const d = (a: Outlet, b: Outlet) => geoDist(a.latitude, a.longitude, b.latitude, b.longitude);
+  const nearestTo = (o: Outlet, g: Outlet[]) => {
+    let best = Infinity;
+    for (const x of g) { const dd = d(o, x); if (dd < best) best = dd; }
+    return best;
+  };
+  // The outlets of `from` on its border with `toward`, up to `weight`.
+  const parcelToward = (from: Outlet[], toward: Outlet[], weight: number, exclude: Set<string>): Outlet[] => {
+    const ranked = from
+      .filter(o => !exclude.has(o.id))
+      .map(o => ({ o, gap: nearestTo(o, toward) }))
+      .sort((x, y) => x.gap - y.gap);
+    const out: Outlet[] = [];
+    let w = 0;
+    for (const { o } of ranked) {
+      if (w >= weight) break;
+      out.push(o);
+      w += weightFn(o);
+    }
+    return out;
+  };
+
+  for (let round = 0; round < rounds; round++) {
+    let improved = false;
+
+    for (let a = 0; a < working.length; a++) {
+      if (working[a].length < 4) continue;
+      const tour = buildTour(working[a]);
+
+      // The longest leg, and the smaller side of it: that is the stranded end.
+      let cutAt = -1, worst = 0;
+      for (let i = 0; i < tour.length - 1; i++) {
+        const leg = d(tour[i], tour[i + 1]);
+        if (leg > worst) { worst = leg; cutAt = i; }
+      }
+      if (worst <= maxHopKm || cutAt < 0) continue;
+      const left = tour.slice(0, cutAt + 1);
+      const right = tour.slice(cutAt + 1);
+      const stranded = left.length <= right.length ? left : right;
+      const core = stranded === left ? right : left;
+      if (stranded.length === 0 || core.length === 0) continue;
+      // Give away at most a third of the day; beyond that this is not a
+      // stranded cluster but two comparable halves, which is a re-cut's job.
+      if (stranded.length > working[a].length / 3) continue;
+
+      const strandedWeight = loadOf(stranded);
+      const strandedIds = new Set(stranded.map(o => o.id));
+
+      // Days that adjoin the stranded cluster, nearest first.
+      const adjoining = working
+        .map((g, b) => ({ b, gap: b === a || g.length === 0 ? Infinity : gapBetween(stranded, g) }))
+        .filter(x => x.gap <= maxHopKm)
+        .sort((x, y) => x.gap - y.gap)
+        .slice(0, 4);
+
+      const before = routeCost(working[a], maxHopKm);
+      let bestGain = 0;
+      let bestPlan: { b: number; c: number; fromB: Outlet[]; fromC: Outlet[] } | null = null;
+
+      for (const { b } of adjoining) {
+        // Two-day rotation: B gives back its border with A's core.
+        {
+          const fromB = parcelToward(working[b], core, strandedWeight, new Set());
+          const ids = new Set(fromB.map(o => o.id));
+          const nextA = [...core, ...fromB];
+          const nextB = [...working[b].filter(o => !ids.has(o.id)), ...stranded];
+          const la = loadOf(nextA), lb = loadOf(nextB);
+          if (la >= lo && la <= hi && lb >= lo && lb <= hi) {
+            const gain = before + routeCost(working[b], maxHopKm)
+                       - routeCost(nextA, maxHopKm) - routeCost(nextB, maxHopKm);
+            if (gain > bestGain) { bestGain = gain; bestPlan = { b, c: -1, fromB, fromC: [] }; }
+          }
+        }
+        // Three-day rotation via a C that adjoins both B and A's core.
+        for (let c = 0; c < working.length; c++) {
+          if (c === a || c === b || working[c].length === 0) continue;
+          if (gapBetween(working[c], core) > maxHopKm) continue;
+          if (gapBetween(working[c], working[b]) > maxHopKm) continue;
+          const fromB = parcelToward(working[b], working[c], strandedWeight, new Set());
+          const idsB = new Set(fromB.map(o => o.id));
+          const fromC = parcelToward(working[c], core, strandedWeight, new Set());
+          const idsC = new Set(fromC.map(o => o.id));
+          const nextA = [...core, ...fromC];
+          const nextB = [...working[b].filter(o => !idsB.has(o.id)), ...stranded];
+          const nextC = [...working[c].filter(o => !idsC.has(o.id)), ...fromB];
+          const la = loadOf(nextA), lb = loadOf(nextB), lc = loadOf(nextC);
+          if (la < lo || la > hi || lb < lo || lb > hi || lc < lo || lc > hi) continue;
+          const gain = before + routeCost(working[b], maxHopKm) + routeCost(working[c], maxHopKm)
+                     - routeCost(nextA, maxHopKm) - routeCost(nextB, maxHopKm) - routeCost(nextC, maxHopKm);
+          if (gain > bestGain) { bestGain = gain; bestPlan = { b, c, fromB, fromC }; }
+        }
+      }
+
+      if (bestPlan && bestGain > 1e-6) {
+        const { b, c, fromB, fromC } = bestPlan;
+        const idsB = new Set(fromB.map(o => o.id));
+        if (c < 0) {
+          working[b] = [...working[b].filter(o => !idsB.has(o.id)), ...stranded];
+          working[a] = [...working[a].filter(o => !strandedIds.has(o.id)), ...fromB];
+        } else {
+          const idsC = new Set(fromC.map(o => o.id));
+          working[b] = [...working[b].filter(o => !idsB.has(o.id)), ...stranded];
+          working[c] = [...working[c].filter(o => !idsC.has(o.id)), ...fromB];
+          working[a] = [...working[a].filter(o => !strandedIds.has(o.id)), ...fromC];
+        }
+        improved = true;
+      }
+    }
+
+    if (!improved) break;
+  }
+
+  return working;
+}
+
+/* ------------------------------------------------------------------ *
+ * Reachability components
+ * ------------------------------------------------------------------ */
+
+/**
+ * Splits outlets into groups that can reach each other in hops no longer than
+ * `maxHopKm` - the connected components of the "within reach" graph.
+ *
+ * This is the structure a hop limit actually imposes. Two outlets in different
+ * components cannot be on the same day-route without a hop over the limit, no
+ * matter how the rest of the day is arranged. So the components tell the
+ * partition where the unavoidable cuts are, and the partition can respect them
+ * up front rather than have the polishing passes discover them one long hop at
+ * a time. On the Damascus data, one rep's territory is a core of 210 outlets
+ * and three pockets of 26, 26 and 22 that no route can bridge under 4km: each
+ * pocket is one whole day, and the core is divided among the rest.
+ */
+export function reachabilityComponents(outlets: Outlet[], maxHopKm: number): Outlet[][] {
+  if (maxHopKm <= 0 || outlets.length === 0) return [outlets.slice()];
+  const parent = outlets.map((_, i) => i);
+  const find = (x: number): number => {
+    while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+    return x;
+  };
+  for (let i = 0; i < outlets.length; i++) {
+    for (let j = i + 1; j < outlets.length; j++) {
+      if (geoDist(outlets[i].latitude, outlets[i].longitude, outlets[j].latitude, outlets[j].longitude) <= maxHopKm) {
+        const a = find(i), b = find(j);
+        if (a !== b) parent[a] = b;
+      }
+    }
+  }
+  const byRoot = new Map<number, Outlet[]>();
+  outlets.forEach((o, i) => {
+    const r = find(i);
+    if (!byRoot.has(r)) byRoot.set(r, []);
+    byRoot.get(r)!.push(o);
+  });
+  return Array.from(byRoot.values()).sort((a, b) => b.length - a.length);
+}
+
+/** Straight-line gap between two groups: their closest pair of outlets. */
+export function gapBetween(a: Outlet[], b: Outlet[]): number {
+  let best = Infinity;
+  for (const x of a) for (const y of b) {
+    const d = geoDist(x.latitude, x.longitude, y.latitude, y.longitude);
+    if (d < best) best = d;
+  }
+  return best;
 }

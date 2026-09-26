@@ -141,8 +141,12 @@ def main():
 
     total = sum(weights)
     target = total / k
-    lo = max(1, int(math.floor(target * (1 - tolerance))))
-    hi = max(lo, int(math.ceil(target * (1 + tolerance))))
+    # Separate room below and above the mean, when given: a floor of 20 on a
+    # mean of 20.9 leaves almost none below and plenty above.
+    below = float(req.get("toleranceBelow", tolerance))
+    above = float(req.get("toleranceAbove", tolerance))
+    lo = max(1, int(math.floor(target * (1 - below))))
+    hi = max(lo, int(math.ceil(target * (1 + above))))
     # The band has to be able to hold everything, or the flow has nowhere to go.
     while hi * k < total:
         hi += 1

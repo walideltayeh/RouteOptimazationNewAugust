@@ -1,3 +1,4 @@
+import type { Band } from "./day-balancer";
 import { spawn } from "child_process";
 import path from "path";
 import type { Outlet } from "@shared/schema";
@@ -31,7 +32,7 @@ export async function solveBalancedGroups(
   k: number,
   /** Relative weight per outlet; must be a positive integer (flow is integral). */
   weightFn: (o: Outlet) => number,
-  tolerance: number = 0.06,
+  tolerance: Band = 0.06,
 ): Promise<Outlet[][] | null> {
   if (k <= 1 || outlets.length <= k) return null;
   if (solverAvailable === false) return null;
@@ -40,7 +41,9 @@ export async function solveBalancedGroups(
     points: outlets.map(o => [o.latitude, o.longitude]),
     weights: outlets.map(o => Math.max(1, Math.round(weightFn(o)))),
     k,
-    tolerance,
+    tolerance: typeof tolerance === 'number' ? tolerance : Math.max(tolerance.below, tolerance.above),
+    toleranceBelow: typeof tolerance === 'number' ? tolerance : tolerance.below,
+    toleranceAbove: typeof tolerance === 'number' ? tolerance : tolerance.above,
     iterations: 12,
   });
 
