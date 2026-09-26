@@ -23,7 +23,8 @@ export function generateScheduleExcel(
   // Create overview sheet
   const overviewData = reps.map(rep => {
     const repSchedules = schedules.filter(s => s.repId === rep.id);
-    const totalZones = new Set(repSchedules.filter(s => s.week <= 2).map(s => `week${s.week}-day${s.dayOfWeek}`)).size;
+    // Every day-route in the plan, not weeks 1 and 2 only.
+    const totalZones = new Set(repSchedules.map(s => `week${s.week}-day${s.dayOfWeek}`)).size;
     
     return {
       'Rep Name': rep.name,

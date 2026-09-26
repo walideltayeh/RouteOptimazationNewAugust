@@ -4326,10 +4326,41 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Only now that the file has parsed into at least one usable outlet is it
       // safe to replace what is loaded.
+      //
+      // Decisions survive the upload. Outlets the user held out of the plan -
+      // removed duplicates, outliers set aside - are matched to the new rows
+      // by client code, or by name and coordinates when the file has no
+      // codes, and held out again. Before this, re-uploading the list (which
+      // every refreshed customer file requires) silently brought every removed
+      // duplicate back.
+      // Matching is by COUNT per key, because a duplicate pair can be two
+      // identical rows - same code, same name, same coordinates - and only one
+      // of them was removed. Matching by identity alone held out both.
+      const previouslyHeld = (await storage.getOutlets()).filter(o => o.territory === 'Excluded');
+      const spotKey = (o: { name: string; latitude: number; longitude: number }) => `${o.name.trim().toLowerCase()}|${o.latitude.toFixed(5)}|${o.longitude.toFixed(5)}`;
+      const heldByCode = new Map<string, number>();
+      const heldBySpot = new Map<string, number>();
+      for (const o of previouslyHeld) {
+        const code = (o.code || '').trim();
+        if (code) heldByCode.set(code, (heldByCode.get(code) ?? 0) + 1);
+        else heldBySpot.set(spotKey(o), (heldBySpot.get(spotKey(o)) ?? 0) + 1);
+      }
       await storage.deleteAllOutlets();
 
       // Create outlets in storage
       const createdOutlets = await storage.createOutlets(outlets);
+      let carriedOver = 0;
+      for (const o of createdOutlets) {
+        const code = (o.code || '').trim();
+        let hold = false;
+        if (code && (heldByCode.get(code) ?? 0) > 0) { heldByCode.set(code, heldByCode.get(code)! - 1); hold = true; }
+        else if (!code && (heldBySpot.get(spotKey(o)) ?? 0) > 0) { heldBySpot.set(spotKey(o), heldBySpot.get(spotKey(o))! - 1); hold = true; }
+        if (hold) {
+          await storage.updateOutlet(o.id, { territory: 'Excluded', repId: null, cluster: null });
+          carriedOver++;
+        }
+      }
+      if (carriedOver > 0) console.log(`[exclude] ${carriedOver} previously held-out outlet(s) matched in the new file and held out again`);
 
       // Highlight outlets whose GPS point sits far outside the dataset's
       // core coverage area (market + rural belt). Flag only - the user
@@ -4398,6 +4429,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // How many rows had no visit frequency of their own, and what was
           // assumed for them. Drives the "we guessed this" notice on upload.
           rowsUsingDefaultVf,
+          heldOutCarriedOver: carriedOver,
           defaultVisitFrequencyUsed: defaultVisitFrequency
         }
       });
@@ -5932,6 +5964,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try { fs.unlinkSync(scenarioFile(id)); } catch { /* already gone */ }
   };
   loadScenarioIndex();
+  // Put the saved plan settings back into effect at startup. Loading them
+  // alone left the module on its defaults - four weeks, Monday first, plan
+  // dated from tomorrow - until the next optimization ran, so after a restart
+  // the exports and the map labelled every week wrong.
+  applyPlanSettings();
 
   // Captures whatever plan is currently in storage as a scenario and returns
   // its id. Used by /api/optimize so no run is ever lost.
