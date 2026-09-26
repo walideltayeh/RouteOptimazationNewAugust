@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useRef } from "react";
+import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -169,6 +169,27 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
     message: string;
   } | null>(null);
   const [selectedGeoExclusions, setSelectedGeoExclusions] = useState<Set<string>>(new Set());
+  // Possible duplicate outlets, suggested by GPS and name and confirmed by the
+  // user before anything leaves the plan.
+  interface DuplicateMember { id: string; name: string; address: string; latitude: number; longitude: number; visitFrequency: number; repId: string | null }
+  interface DuplicateCluster { confidence: 'high' | 'medium' | 'low'; reason: string; maxDistanceM: number; keepId: string; members: DuplicateMember[]; suggestedRemoveIds: string[] }
+  const { data: duplicateScan } = useQuery<{ radiusM: number; clusters: DuplicateCluster[]; counts: { high: number; medium: number; low: number } }>({
+    queryKey: ['/api/outlets/duplicates'],
+  });
+  const [selectedDupExclusions, setSelectedDupExclusions] = useState<Set<string>>(new Set());
+  const [dupLevel, setDupLevel] = useState<'high' | 'medium' | 'low'>('medium');
+  const dupSeeded = useRef(false);
+  // Pre-tick the high-confidence suggestions once, when the scan first arrives.
+  useEffect(() => {
+    if (dupSeeded.current || !duplicateScan) return;
+    dupSeeded.current = true;
+    const seed = new Set<string>();
+    for (const c of duplicateScan.clusters) if (c.confidence === 'high') c.suggestedRemoveIds.forEach(id => seed.add(id));
+    setSelectedDupExclusions(seed);
+  }, [duplicateScan]);
+  const toggleDupExclusion = (outletId: string) => {
+    setSelectedDupExclusions(prev => { const next = new Set(prev); if (next.has(outletId)) next.delete(outletId); else next.add(outletId); return next; });
+  };
   const [activeExcludedIds, setActiveExcludedIds] = useState<string[]>([]);
 
   // Common settings
@@ -374,6 +395,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       if (selectedExclusions.has(s.territory)) ids.push(...s.outletIds);
     }
     ids.push(...Array.from(selectedGeoExclusions));
+    ids.push(...Array.from(selectedDupExclusions));
     const combined = Array.from(new Set([...activeExcludedIds, ...ids]));
     setActiveExcludedIds(combined);
     handleOptimization(combined);
@@ -397,7 +419,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
     });
   };
 
-  const totalSelectedExclusions = selectedExclusions.size + selectedGeoExclusions.size;
+  const totalSelectedExclusions = selectedExclusions.size + selectedGeoExclusions.size + selectedDupExclusions.size;
 
   return (
     <Card>
@@ -780,6 +802,67 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
             </p>
           </div>
         )}
+
+        {duplicateScan && duplicateScan.clusters.length > 0 && (() => {
+          const order = { high: 0, medium: 1, low: 2 } as const;
+          const shown = duplicateScan.clusters.filter(c => order[c.confidence] <= order[dupLevel]);
+          const badge = (c: DuplicateCluster['confidence']) => c === 'high' ? 'bg-red-100 text-red-800' : c === 'medium' ? 'bg-amber-100 text-amber-800' : 'bg-gray-100 text-gray-700';
+          return (
+            <div className="p-4 bg-amber-50 rounded-lg border border-amber-200 space-y-3" data-testid="duplicate-outlets">
+              <h4 className="font-semibold text-amber-900">
+                Possible duplicate outlets ({duplicateScan.counts.high} likely · {duplicateScan.counts.medium} possible · {duplicateScan.counts.low} same spot)
+              </h4>
+              <p className="text-xs text-amber-800">
+                Outlets within {duplicateScan.radiusM} m of each other. The same shop is sometimes entered twice — once
+                in Arabic, once in English — but in a busy street two different shops share GPS to the metre, so
+                nothing is removed until you tick it. <strong>Likely</strong> duplicates (same spot, same name or
+                Arabic/English pair) are pre-ticked; the rest are for you to judge. The ticked outlet is the one that leaves;
+                the plan keeps the other.
+              </p>
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <span className="text-amber-900">Show:</span>
+                {(['high', 'medium', 'low'] as const).map(l => (
+                  <button key={l} type="button" onClick={() => setDupLevel(l)} data-testid={`button-dup-level-${l}`}
+                    className={`rounded-full border px-2.5 py-1 ${dupLevel === l ? 'border-transparent bg-amber-900 text-white' : 'border-amber-300 text-amber-900'}`}>
+                    {l === 'high' ? 'Likely only' : l === 'medium' ? 'Likely + possible' : 'Everything within range'}
+                  </button>
+                ))}
+                <span className="ml-auto text-amber-900">{selectedDupExclusions.size} ticked to remove</span>
+              </div>
+              <div className="space-y-2 max-h-80 overflow-y-auto">
+                {shown.map((c, idx) => (
+                  <div key={idx} className="rounded border border-amber-200 bg-white p-2 text-sm" data-testid={`dup-cluster-${idx}`}>
+                    <div className="mb-1 flex items-center gap-2 text-xs">
+                      <span className={`rounded px-1.5 py-0.5 font-medium ${badge(c.confidence)}`}>
+                        {c.confidence === 'high' ? 'Likely duplicate' : c.confidence === 'medium' ? 'Possible duplicate' : 'Same spot'}
+                      </span>
+                      <span className="text-gray-600">{c.reason}</span>
+                    </div>
+                    {c.members.map(m => (
+                      <label key={m.id} className="flex items-start gap-2 py-0.5 cursor-pointer">
+                        <input type="checkbox" className="mt-1" checked={selectedDupExclusions.has(m.id)} onChange={() => toggleDupExclusion(m.id)} data-testid={`checkbox-dup-${m.id}`} />
+                        <span className={selectedDupExclusions.has(m.id) ? 'line-through text-gray-500' : ''}>
+                          <strong>{m.name}</strong> · VF{m.visitFrequency}
+                          {m.id === c.keepId && !selectedDupExclusions.has(m.id) && <span className="ml-1 text-xs text-green-700">keep</span>}
+                          <span className="block text-xs text-gray-500">{m.address} · ({m.latitude.toFixed(5)}, {m.longitude.toFixed(5)})</span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                ))}
+              </div>
+              <Button
+                variant="outline"
+                className="w-full border-amber-400 text-amber-900"
+                disabled={disabled || optimizationMutation.isPending || totalSelectedExclusions === 0}
+                onClick={handleExcludeAndRerun}
+                data-testid="button-dup-exclude-rerun"
+              >
+                Remove {selectedDupExclusions.size} duplicate{selectedDupExclusions.size === 1 ? '' : 's'} and re-optimize
+              </Button>
+            </div>
+          );
+        })()}
 
         {geoOutliers.length > 0 && (
           <div className="p-4 bg-red-50 rounded-lg border border-red-200 space-y-3" data-testid="geo-outliers">
