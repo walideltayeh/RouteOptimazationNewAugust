@@ -3386,8 +3386,11 @@ async function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[]
   }
 
   let dailyClusters: Outlet[][] = [];
+  pocketGroups = new Set<number>();
   for (let i = 0; i < pieces.length; i++) {
-    dailyClusters.push(...await partitionPiece(pieces[i], days[i]));
+    const groups = await partitionPiece(pieces[i], days[i]);
+    if (i > 0) for (let g = 0; g < groups.length; g++) pocketGroups.add(dailyClusters.length + g);
+    dailyClusters.push(...groups);
   }
 
   // Guardrail. The failure this replaced looked perfect on every count-based
@@ -3435,9 +3438,18 @@ async function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[]
 
 // STEP 3+4 of the anchor-aware scheduler: per-day VF rotation with spatial
 // sub-clustering, shared by both the flat-pool and zone-preserving builders.
+// Day-groups that are pockets - whole days carved out because nothing else is
+// within a legal hop of them - and the cells they became, per rep. The
+// territory feedback pass reads this: a pocket's spare capacity is not room
+// the rep's core can use, and a pocket's overflow cannot be shed.
+let pocketGroups = new Set<number>();
+const pocketCellsByRep = new Map<string, Set<string>>();
+
 function scheduleFromDailyClusters(rep: Rep, dailyClusters: Outlet[][], repOutlets: Outlet[]): InsertSchedule[] {
   const { repeats, dayGroups, cycleDays, planDays } = cycleShape(workingWeek.length || rep.workingDaysPerWeek || 5);
   const bonusCells = new Set<string>();
+  const pocketCells = new Set<string>();
+  pocketCellsByRep.set(rep.id, pocketCells);
 
   const subCluster = (outlets: Outlet[], k: number): Outlet[][] => {
     const buckets: Outlet[][] = Array.from({ length: k }, () => []);
@@ -3608,6 +3620,7 @@ function scheduleFromDailyClusters(rep: Rep, dailyClusters: Outlet[][], repOutle
         totalDistance: Math.round(dist * 100) / 100,
         estimatedDuration: optimized.length * 15,
       });
+      if (pocketGroups.has(d)) pocketCells.add(`${cell.week}:${cell.dayOfWeek}`);
 
       // The bonus day(s): a month one day longer than its pattern continues
       // into the next cycle's first day, driving pattern day 1 again. The rep
@@ -5294,6 +5307,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // straight lines instead, so territories tile it without overlapping,
       // and the balance comes from where each cut falls.
       const monthlyVisitsOf = (o: Outlet) => o.visitFrequency ?? 1;
+      // The territory band follows from the day band and the cycle, exactly as
+      // the day band does: a rep's visits per cycle divided by their day-routes
+      // must land inside min..max a day. With 25-30 a day over 26 days and 5
+      // reps the mean is 29.8 - 0.6% under the ceiling - so a territory even
+      // 1% over the mean cannot be routed under 30 a day, and a tolerance of
+      // 2.5% produced forty days of 31. The room above the mean is whatever the
+      // ceiling leaves, and the room below whatever the floor leaves.
+      //
+      // But the band is a ceiling on unevenness, not a licence for it: inside
+      // it, territories should still come out as even as they can (2.5%),
+      // because the passes stop pushing toward the mean once a territory is
+      // legal, and a plan whose reps sit anywhere between 600 and 720 visits
+      // has days of 24 next to days of 31. So each side is the tighter of the
+      // two: what the floor or ceiling leaves, or 2.5%.
+      const meanVisitsPerRep = totalMonthlyVisits / Math.max(1, allReps.length);
+      const territoryBand: Band = meanVisitsPerRep > 0
+        ? {
+            below: Math.min(0.025, Math.max(0.005, (meanVisitsPerRep - minVisitsPerDay * cycleDays) / meanVisitsPerRep)),
+            above: Math.min(0.025, Math.max(0.005, (maxVisitsPerDay * cycleDays - meanVisitsPerRep) / meanVisitsPerRep)),
+          }
+        : balanceTolerance;
+      console.log(`[balance] territory band: ${(meanVisitsPerRep * (1 - (typeof territoryBand === 'number' ? territoryBand : territoryBand.below))).toFixed(0)}-${(meanVisitsPerRep * (1 + (typeof territoryBand === 'number' ? territoryBand : territoryBand.above))).toFixed(0)} visits/rep (mean ${meanVisitsPerRep.toFixed(0)}; ${minVisitsPerDay}-${maxVisitsPerDay} a day x ${cycleDays} days)`);
       // Territories are cut from a space-filling curve for the same reason the
       // days are: greedy growing gave some reps a tidy 3.5km patch and others
       // a 22km sprawl across most of the metro, because whichever territory
@@ -5311,21 +5346,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
           polishByCohesion(
             swapForCompactness(
               repairLoads(
-              (await solveBalancedGroups(outlets, allReps.length, monthlyVisitsOf, balanceTolerance))
-                ?? growBalancedRegions(outlets, allReps.length, monthlyVisitsOf),
-              monthlyVisitsOf,
-              // Territories should come out as even as they can, not merely
-              // inside the band: a rep whose territory holds pockets that must
-              // be whole days needs every outlet its share allows for the rest.
-              0.025,
-            ),
+                (await solveBalancedGroups(outlets, allReps.length, monthlyVisitsOf, territoryBand))
+                  ?? growBalancedRegions(outlets, allReps.length, monthlyVisitsOf),
+                monthlyVisitsOf,
+                territoryBand,
+              ),
               monthlyVisitsOf,
             ),
             monthlyVisitsOf,
+            territoryBand,
           ),
           monthlyVisitsOf,
+          territoryBand,
         ),
         monthlyVisitsOf,
+        territoryBand,
       );
       const zoneAssignments = assignZonesToRepsBalanced(clusters, allReps, balanceTolerance);
       {
@@ -5338,38 +5373,140 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       await emitProgress(70, 'Scheduling', `Generating schedules for ${allReps.length} reps...`);
       
-      // Generate schedules for each rep
+      // Generate schedules for each rep. Schedule from the rep's balanced
+      // outlet set: passing repZones here would re-introduce the pre-balance
+      // membership and undo the boundary trades made just above.
       console.log('Generating schedules for', allReps.length, 'reps');
+      const built: InsertSchedule[][] = [];
       for (let repIndex = 0; repIndex < allReps.length; repIndex++) {
         const rep = allReps[repIndex];
         const repZones = zoneAssignments[repIndex] || [];
         const repOutlets = repOutletGroups[repIndex] || [];
-
         if (repOutlets.length > 0) {
           console.log(`${rep.name} will cover zones: ${repZones.map(z => z.id + 1).join(', ')} (${repOutlets.length} outlets after balancing)`);
-
-          // Record ownership: repId on the outlet is the source of truth
-          // that reassignment and targeted re-optimization rely on.
-          for (const outlet of repOutlets) {
-            await storage.updateOutlet(outlet.id, { repId: rep.id });
-          }
-
-          // Schedule from the rep's balanced outlet set. Passing repZones here
-          // would re-introduce the pre-balance membership and undo the boundary
-          // trades made just above.
-          const repSchedules = await buildAnchorAwareSchedulesFromZones(rep, [repOutlets]);
-          console.log(`Generated ${repSchedules.length} schedules for ${rep.name}`);
-
-          for (const schedule of repSchedules) {
-            await storage.createSchedule(schedule);
-          }
         }
-        
-        // Yield and emit progress every 5 reps
+        built.push(repOutlets.length > 0 ? await buildAnchorAwareSchedulesFromZones(rep, [repOutlets]) : []);
         if (repIndex % 5 === 0) {
-          const scheduleProgress = 70 + Math.floor((repIndex / allReps.length) * 15);
-          await emitProgress(scheduleProgress, 'Scheduling', `Generating schedule for rep ${repIndex + 1} of ${allReps.length}...`);
+          await emitProgress(70 + Math.floor((repIndex / allReps.length) * 12), 'Scheduling', `Generating schedule for rep ${repIndex + 1} of ${allReps.length}...`);
         }
+      }
+
+      // Second pass: let the days correct the territories.
+      //
+      // The territory balance shares outlets out evenly, but an even share is
+      // not an even day. A rep whose territory holds pockets that must be whole
+      // days - 26 outlets more than 4km from anything else - has fewer slots
+      // left for the core, and the core starves (days of 19 under a floor of
+      // 20) or overflows (days of 31 under a ceiling of 30) while the rep next
+      // door sits comfortably at the mean. The territory pass cannot see this,
+      // because pockets only exist once the days are cut. So: cut the days,
+      // measure each rep's shortfall or excess, move that many outlets across
+      // the nearest territory border, and cut the days again for the reps that
+      // changed. One pass; it is bounded, and it only ever moves an outlet to
+      // the territory whose outlets are nearest to it.
+      {
+        const wd = Math.max(1, workingWeek.length);
+        const cellDay = (sc: InsertSchedule) => (sc.week - 1) * wd + Math.max(0, workingWeek.indexOf(sc.dayOfWeek)) - cycleStartSlot + 1;
+        // Per rep: outlets its core is short of, outlets its core must shed,
+        // and outlets its core can still absorb. Pocket days are left out of
+        // all three - their spare capacity is not the core's, and their
+        // overflow is one outlet over on a day that cannot be split.
+        const measure = (i: number) => {
+          const pockets = pocketCellsByRep.get(allReps[i].id) ?? new Set<string>();
+          const cells = built[i].filter(sc => cellDay(sc) <= cycleDays && !pockets.has(`${sc.week}:${sc.dayOfWeek}`));
+          const outlets = repOutletGroups[i]?.length ?? 0;
+          if (cells.length === 0 || outlets === 0) return { short: 0, excess: 0, room: 0 };
+          let over = 0, under = 0, spare = 0, visits = 0;
+          for (const sc of cells) {
+            const n = (sc.outletIds as string[]).length;
+            visits += n;
+            if (n > maxVisitsPerDay) over += n - maxVisitsPerDay;
+            else spare += maxVisitsPerDay - n;
+            if (n < minVisitsPerDay) under += minVisitsPerDay - n;
+          }
+          const cv = visits / outlets; // cell-visits one outlet adds
+          return cv > 0
+            ? { short: Math.round(under / cv), excess: Math.round(over / cv), room: Math.floor(spare / cv) }
+            : { short: 0, excess: 0, room: 0 };
+        };
+        // Two passes: the first re-cut usually lands within an outlet or two,
+        // and the second closes it. Each pass is bounded by what it measures.
+        for (let pass = 0; pass < 2; pass++) {
+        const stats = allReps.map((_, i) => measure(i));
+        const anyShort = stats.some(x => x.short > 0);
+        const anyExcess = stats.some(x => x.excess > 0);
+        if (!anyShort && !anyExcess) break;
+        {
+          console.log(`[feedback] day cuts vs territories: ${allReps.map((r, i) => `${r.name} short ${stats[i].short} / excess ${stats[i].excess} / room ${stats[i].room}`).join('; ')}`);
+          const touched = new Set<number>();
+          const reach = (maxHopKm > 0 ? maxHopKm : 4) * 2;
+          // The outlet of rep `from` nearest to rep `to`'s territory.
+          const nearestBorderOutlet = (from: number, to: number) => {
+            let bestK = -1, bestD = Infinity;
+            const mine = repOutletGroups[to] || [];
+            const theirs = repOutletGroups[from] || [];
+            for (let k = 0; k < theirs.length; k++) {
+              const o = theirs[k];
+              if (o.geoStatus === 'offset') continue;
+              for (const m of mine) {
+                const d = geoDist(o.latitude, o.longitude, m.latitude, m.longitude);
+                if (d < bestD) { bestD = d; bestK = k; }
+              }
+            }
+            return { k: bestK, d: bestD };
+          };
+          const move = (from: number, to: number) => {
+            const { k, d } = nearestBorderOutlet(from, to);
+            if (k < 0 || d > reach) return false;
+            const [o] = repOutletGroups[from].splice(k, 1);
+            repOutletGroups[to].push(o);
+            touched.add(from);
+            touched.add(to);
+            return true;
+          };
+          // Starved cores pull from the nearest neighbour with excess, else room.
+          for (let to = 0; to < allReps.length; to++) {
+            for (let n = 0; n < stats[to].short; n++) {
+              const donors = allReps.map((_, j) => j).filter(j => j !== to && (stats[j].excess > 0 || stats[j].room > 0))
+                .sort((x, y) => (stats[y].excess > 0 ? 1 : 0) - (stats[x].excess > 0 ? 1 : 0) || nearestBorderOutlet(x, to).d - nearestBorderOutlet(y, to).d);
+              const from = donors.find(j => move(j, to));
+              if (from === undefined) break;
+              if (stats[from].excess > 0) stats[from].excess -= 1; else stats[from].room -= 1;
+              stats[to].short -= 1;
+            }
+          }
+          // Overflowing cores push to the nearest neighbour with room.
+          for (let from = 0; from < allReps.length; from++) {
+            for (let n = 0; n < stats[from].excess; n++) {
+              const takers = allReps.map((_, j) => j).filter(j => j !== from && stats[j].room > 0)
+                .sort((x, y) => nearestBorderOutlet(from, x).d - nearestBorderOutlet(from, y).d);
+              const to = takers.find(j => move(from, j));
+              if (to === undefined) break;
+              stats[to].room -= 1;
+              stats[from].excess -= 1;
+            }
+          }
+          for (const i of Array.from(touched)) {
+            built[i] = repOutletGroups[i].length > 0 ? await buildAnchorAwareSchedulesFromZones(allReps[i], [repOutletGroups[i]]) : [];
+          }
+          if (touched.size > 0) console.log(`[feedback] pass ${pass + 1}: territories adjusted and days re-cut for ${Array.from(touched).map(i => allReps[i].name).join(', ')}`);
+          if (touched.size === 0) break;
+        }
+        }
+      }
+
+      await emitProgress(83, 'Scheduling', 'Saving schedules...');
+      for (let repIndex = 0; repIndex < allReps.length; repIndex++) {
+        const rep = allReps[repIndex];
+        // Record ownership: repId on the outlet is the source of truth that
+        // reassignment and targeted re-optimization rely on.
+        for (const outlet of repOutletGroups[repIndex] || []) {
+          await storage.updateOutlet(outlet.id, { repId: rep.id });
+        }
+        for (const schedule of built[repIndex]) {
+          await storage.createSchedule(schedule);
+        }
+        if (built[repIndex].length > 0) console.log(`Generated ${built[repIndex].length} schedules for ${rep.name}`);
       }
       
       finalRequiredReps = allReps.length;
