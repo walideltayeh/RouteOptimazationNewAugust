@@ -63,9 +63,15 @@ export default function SchedulesPage() {
   const repStats = useMemo(() => {
     const owned = outlets.filter(o => o.repId === repId && o.territory !== "Excluded");
     const monthlyVisits = owned.reduce((s, o) => s + (o.visitFrequency ?? 1), 0);
-    const capacity = rep ? (rep.workingDaysPerWeek || 5) * 4 * (rep.maxDailyVisits || 25) : 0;
+    // Day-slots this rep actually has in the cycle, counted from the plan
+    // rather than assumed to be four weeks: a 26-working-day cycle has 26.
+    const slots = new Set(
+      schedules.filter(s => s.repId === repId).map(s => `${s.week}:${s.dayOfWeek}`),
+    ).size;
+    const cycleSlots = slots > 0 ? slots : (rep?.workingDaysPerWeek || 5) * 4;
+    const capacity = rep ? cycleSlots * (rep.maxDailyVisits || 25) : 0;
     return { outlets: owned.length, monthlyVisits, capacity };
-  }, [outlets, repId, rep]);
+  }, [outlets, repId, rep, schedules]);
 
   const reassignMutation = useMutation({
     mutationFn: async (payload: { outletIds: string[]; toRepId: string }) => {

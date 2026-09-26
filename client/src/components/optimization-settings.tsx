@@ -89,6 +89,10 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
 
   // Common settings
   const [workingDaysPerWeek, setWorkingDaysPerWeek] = useState(5);
+  // Length of one journey-plan cycle, in working days. 0 = four weeks, which is
+  // what the app always assumed. A business that plans a 26-day cycle (13
+  // day-routes driven twice) gets days sized for 26, not 24.
+  const [cycleWorkingDays, setCycleWorkingDays] = useState(0);
   
   // Progress modal state
   const [showProgressModal, setShowProgressModal] = useState(false);
@@ -98,6 +102,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
     minVisitsPerDay: number;
     maxVisitsPerDay: number;
     workingDaysPerWeek: number;
+    cycleWorkingDays: number;
     weightMode: WeightMode;
     distanceMode: DistanceModel;
     maxZoneRadiusKm: number;
@@ -127,25 +132,26 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
     
     if (totalOutlets === 0) return { feasible: true, message: "", warning: false };
     
-    // Actual visits per week: vf is visits per 4-week cycle (VF4 weekly,
-    // VF2 biweekly, VF1 monthly), so weekly load is the monthly total / 4.
-    const totalWeeklyVisits = Math.ceil(((analysis.vf1 || 0) + (analysis.vf2 * 2) + (analysis.vf4 * 4)) / 4);
-    
-    const maxWeeklyCapacityPerRep = workingDaysPerWeek * maxVisitsPerDay;
-    const estimatedRepsNeeded = Math.ceil(totalWeeklyVisits / maxWeeklyCapacityPerRep);
+    // Visits per cycle, spread over the day-slots one rep has in that cycle.
+    // This used to divide by a hardcoded four-week month, which over-counted
+    // every day's load on any cycle that is not exactly four weeks.
+    const totalCycleVisits = (analysis.vf1 || 0) + (analysis.vf2 * 2) + (analysis.vf4 * 4);
+    const cycleDays = cycleWorkingDays > 0 ? cycleWorkingDays : workingDaysPerWeek * 4;
+    const estimatedRepsNeeded = Math.max(1, Math.ceil(totalCycleVisits / (cycleDays * maxVisitsPerDay)));
 
     return {
       feasible: true,
-      message: `Will create ~${estimatedRepsNeeded} routes (${minVisitsPerDay}-${maxVisitsPerDay} visits/day, ${workingDaysPerWeek} days/week)`,
+      message: `Will create ~${estimatedRepsNeeded} routes (${minVisitsPerDay}-${maxVisitsPerDay} visits/day over a ${cycleDays}-working-day cycle)`,
       warning: false
     };
-  }, [analysis, metrics, workingDaysPerWeek, minVisitsPerDay, maxVisitsPerDay]);
+  }, [analysis, metrics, workingDaysPerWeek, cycleWorkingDays, minVisitsPerDay, maxVisitsPerDay]);
 
   const optimizationMutation = useMutation({
     mutationFn: async (settings: {
       minVisitsPerDay: number;
       maxVisitsPerDay: number;
       workingDaysPerWeek: number;
+      cycleWorkingDays?: number;
       weightMode?: WeightMode;
       distanceMode?: DistanceModel;
       maxZoneRadiusKm?: number;
@@ -231,6 +237,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       minVisitsPerDay,
       maxVisitsPerDay,
       workingDaysPerWeek,
+      cycleWorkingDays,
       weightMode,
       distanceMode,
       maxZoneRadiusKm,
@@ -335,6 +342,31 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
               <SelectItem value="7">7 Days</SelectItem>
             </SelectContent>
           </Select>
+        </div>
+
+        <div>
+          <Label htmlFor="cycleDays">Cycle Length</Label>
+          <Select
+            value={cycleWorkingDays.toString()}
+            onValueChange={(value) => setCycleWorkingDays(parseInt(value))}
+            disabled={disabled}
+          >
+            <SelectTrigger className="mt-1" disabled={disabled} data-testid="select-cycle-days">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="0">4 weeks ({workingDaysPerWeek * 4} working days)</SelectItem>
+              <SelectItem value="20">20 working days (10 routes x 2)</SelectItem>
+              <SelectItem value="22">22 working days (11 routes x 2)</SelectItem>
+              <SelectItem value="24">24 working days (6 routes x 4)</SelectItem>
+              <SelectItem value="26">26 working days (13 routes x 2)</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-gray-500 mt-1">
+            How many working days one full journey plan covers before it repeats. A
+            26-day cycle is 13 distinct day-routes, each driven twice, 13 working
+            days apart - the daily load is sized for 26 days, not 24.
+          </p>
         </div>
 
         <div>

@@ -662,3 +662,96 @@ export function partitionByHilbert(
  * ------------------------------------------------------------------ */
 
 
+
+/* ------------------------------------------------------------------ *
+ * Pairwise re-cut
+ * ------------------------------------------------------------------ */
+
+/**
+ * Take two neighbouring day-groups, throw away the boundary between them, and
+ * cut their union in two again - keeping the new cut only if the pair is
+ * shorter to drive and both halves stay inside the load band.
+ *
+ * This exists because of a gap the 26-day cycle exposed. On a four-week cycle a
+ * rep's territory is split into six day-groups and each of those is split again
+ * into the weeks it serves, and that second, local cut is tour-length driven -
+ * it is most of why those day-routes come out tight. A 26-day cycle is thirteen
+ * day-groups driven twice, so there is no second cut, and the flat thirteen-way
+ * partition has to be right first time. It is not: on Damascus it left one rep
+ * with a 17.7km day-route crossing a 25.7km territory, against 9.6km worst-case
+ * in the plan the business actually drives.
+ *
+ * Outlet-at-a-time polishing cannot fix that, because no single move improves a
+ * route that is wrong in its shape. Re-cutting the pair can: it is the same
+ * local, tour-length-driven split the four-week path gets for free.
+ *
+ * Six rounds over each group's six nearest neighbours is measured, not assumed:
+ * on Damascus, four/four gives 679km and ten/ten gives 673km, while six/six
+ * gives 664. Searching wider is worse as well as slower, because a pair that is
+ * not actually adjacent can be re-cut into two halves that are shorter together
+ * and wrong for every group around them.
+ */
+export function recutPairs(
+  groups: Outlet[][],
+  weightFn: (o: Outlet) => number,
+  tolerance: number = 0.08,
+  rounds: number = 6,
+  neighbours: number = 6,
+): Outlet[][] {
+  const working = groups.map(g => [...g]);
+  if (working.length < 2) return working;
+
+  const loadOf = (g: Outlet[]) => g.reduce((s, o) => s + weightFn(o), 0);
+  const total = working.reduce((s, g) => s + loadOf(g), 0);
+  const target = total / working.length;
+  const lo = target * (1 - tolerance);
+  const hi = target * (1 + tolerance);
+
+  for (let round = 0; round < rounds; round++) {
+    let improved = false;
+    const centroids = working.map(centroidOf);
+
+    // Only neighbouring pairs are worth re-cutting: two groups on opposite
+    // sides of the territory have no shared boundary to move.
+    for (let i = 0; i < working.length; i++) {
+      if (working[i].length === 0) continue;
+      const near = working
+        .map((_, j) => j)
+        .filter(j => j !== i && working[j].length > 0)
+        .sort((a, b) =>
+          geoDist(centroids[i].lat, centroids[i].lng, centroids[a].lat, centroids[a].lng) -
+          geoDist(centroids[i].lat, centroids[i].lng, centroids[b].lat, centroids[b].lng))
+        .slice(0, neighbours);
+
+      for (const j of near) {
+        const before = tourLength(working[i]) + tourLength(working[j]);
+        if (before === 0) continue;
+
+        const union = [...working[i], ...working[j]];
+        const cut = polishByTourLength(
+          repairLoads(growBalancedRegions(union, 2, weightFn), weightFn, tolerance),
+          weightFn,
+          tolerance,
+        );
+        if (cut.length !== 2 || cut[0].length === 0 || cut[1].length === 0) continue;
+
+        const loadA = loadOf(cut[0]);
+        const loadB = loadOf(cut[1]);
+        if (loadA < lo || loadA > hi || loadB < lo || loadB > hi) continue;
+
+        const after = tourLength(cut[0]) + tourLength(cut[1]);
+        if (after >= before - 1e-6) continue;
+
+        working[i] = cut[0];
+        working[j] = cut[1];
+        centroids[i] = centroidOf(working[i]);
+        centroids[j] = centroidOf(working[j]);
+        improved = true;
+      }
+    }
+
+    if (!improved) break;
+  }
+
+  return working;
+}

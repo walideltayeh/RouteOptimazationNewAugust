@@ -204,6 +204,24 @@ export function RepMap() {
   }, [roleHierarchies, roleSchedules]);
 
 
+  // The weeks a cycle spans are a property of the plan, not a constant. Four was
+  // hardcoded here; a 26-working-day cycle on a 6-day week runs into a fifth
+  // week, and a shorter cycle into fewer, so both the chips and the filtering
+  // read the range off the schedules themselves.
+  const availableWeeks = useMemo(() => {
+    let max = 0;
+    for (const s of schedules) max = Math.max(max, s.week);
+    for (const rs of roleSchedules) max = Math.max(max, rs.week);
+    return Array.from({ length: Math.max(1, max || 4) }, (_, i) => i + 1);
+  }, [schedules, roleSchedules]);
+
+  // Older plans stored only weeks 1-2 and let weeks 3-4 mirror them. Newer ones
+  // store every week, and mirroring them would show the wrong outlets.
+  const mirrorsFortnight = useMemo(
+    () => !schedules.some(s => s.week > 2) && !roleSchedules.some(rs => rs.week > 2),
+    [schedules, roleSchedules],
+  );
+
   // Filter schedules for selected reps, days, weeks, and roles (now multi-select)
   const filteredSchedules = useMemo(() => {
     const allSchedules: (Schedule & { _role?: string })[] = [];
@@ -214,10 +232,9 @@ export function RepMap() {
         if (!selectedReps.includes(schedule.repId)) return false;
         if (!selectedDays.includes(schedule.dayOfWeek)) return false;
         
-        const matchingWeeks = selectedWeeks.some(selectedWeek => {
-          const sourceWeek = selectedWeek <= 2 ? selectedWeek : selectedWeek - 2;
-          return schedule.week === sourceWeek;
-        });
+        const matchingWeeks = selectedWeeks.some(selectedWeek =>
+          schedule.week === selectedWeek
+          || (mirrorsFortnight && selectedWeek > 2 && schedule.week === selectedWeek - 2));
         return matchingWeeks;
       });
       allSchedules.push(...repSchedulesFiltered.map(s => ({ ...s, _role: 'rep' })));
@@ -232,14 +249,9 @@ export function RepMap() {
         if (!selectedReps.includes(rs.repId)) return false;
         if (!selectedDays.includes(rs.dayOfWeek)) return false;
         
-        const matchingWeeks = selectedWeeks.some(selectedWeek => {
-          if (rs.week === selectedWeek) return true;
-          if (selectedWeek > 2) {
-            const mirrorWeek = selectedWeek - 2;
-            return rs.week === mirrorWeek;
-          }
-          return false;
-        });
+        const matchingWeeks = selectedWeeks.some(selectedWeek =>
+          rs.week === selectedWeek
+          || (mirrorsFortnight && selectedWeek > 2 && rs.week === selectedWeek - 2));
         return matchingWeeks;
       });
       
@@ -258,7 +270,7 @@ export function RepMap() {
     }
     
     return allSchedules;
-  }, [schedules, roleSchedules, selectedReps, selectedDays, selectedWeeks, selectedRoles]);
+  }, [schedules, roleSchedules, selectedReps, selectedDays, selectedWeeks, selectedRoles, mirrorsFortnight]);
 
   // Filter all linked role schedules for "Show All Linked Roles" mode (when only 'rep' selected)
   const linkedRoleSchedules = useMemo(() => {
@@ -272,17 +284,12 @@ export function RepMap() {
       if (!selectedReps.includes(rs.repId)) return false;
       if (!selectedDays.includes(rs.dayOfWeek)) return false;
       
-      const matchingWeeks = selectedWeeks.some(selectedWeek => {
-        if (rs.week === selectedWeek) return true;
-        if (selectedWeek > 2) {
-          const mirrorWeek = selectedWeek - 2;
-          return rs.week === mirrorWeek;
-        }
-        return false;
-      });
+      const matchingWeeks = selectedWeeks.some(selectedWeek =>
+        rs.week === selectedWeek
+        || (mirrorsFortnight && selectedWeek > 2 && rs.week === selectedWeek - 2));
       return matchingWeeks;
     });
-  }, [roleSchedules, selectedReps, selectedDays, selectedWeeks, showAllLinkedRoles, selectedRoles]);
+  }, [roleSchedules, selectedReps, selectedDays, selectedWeeks, showAllLinkedRoles, selectedRoles, mirrorsFortnight]);
 
   // Group outlets by rep, day, and week for the selected days
   const repDayOutlets = useMemo(() => {
@@ -951,10 +958,10 @@ export function RepMap() {
 
           <div className="space-y-2">
             <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Weeks</label>
-            {/* A 4-week cycle is a sequence, so it reads as a segmented row
-                rather than a column of checkboxes. */}
-            <div className="flex gap-1.5">
-              {[1, 2, 3, 4].map((week) => {
+            {/* A cycle is a sequence, so it reads as a segmented row rather than
+                a column of checkboxes. */}
+            <div className="flex flex-wrap gap-1.5">
+              {availableWeeks.map((week) => {
                 const on = selectedWeeks.includes(week);
                 return (
                   <button
@@ -977,12 +984,16 @@ export function RepMap() {
               })}
             </div>
             <div className="flex flex-wrap gap-2">
+              {availableWeeks.length >= 4 && (
+                <>
+                  <button type="button" className="text-xs text-muted-foreground hover:text-foreground"
+                    onClick={() => setSelectedWeeks([1, 3])}>Weeks 1 &amp; 3</button>
+                  <button type="button" className="text-xs text-muted-foreground hover:text-foreground"
+                    onClick={() => setSelectedWeeks([2, 4])}>Weeks 2 &amp; 4</button>
+                </>
+              )}
               <button type="button" className="text-xs text-muted-foreground hover:text-foreground"
-                onClick={() => setSelectedWeeks([1, 3])}>Weeks 1 &amp; 3</button>
-              <button type="button" className="text-xs text-muted-foreground hover:text-foreground"
-                onClick={() => setSelectedWeeks([2, 4])}>Weeks 2 &amp; 4</button>
-              <button type="button" className="text-xs text-muted-foreground hover:text-foreground"
-                onClick={() => setSelectedWeeks([1, 2, 3, 4])}>All</button>
+                onClick={() => setSelectedWeeks(availableWeeks)}>All</button>
             </div>
           </div>
 
