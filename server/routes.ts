@@ -3976,6 +3976,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
     return total > 0 ? (2 * shared) / total : 0;
   };
 
+  // Outlets currently held out of the plan, and the way to put them back.
+  app.get("/api/outlets/excluded", async (_req, res) => {
+    const all = await storage.getOutlets();
+    const held = all.filter(o => o.territory === 'Excluded');
+    res.json({ count: held.length, outlets: held.map(o => ({ id: o.id, name: o.name, code: o.code ?? null, address: o.address })) });
+  });
+  app.post("/api/outlets/restore", async (req, res) => {
+    const ids: string[] | null = Array.isArray(req.body?.outletIds) ? req.body.outletIds.filter((x: unknown) => typeof x === 'string') : null;
+    const all = await storage.getOutlets();
+    let restored = 0;
+    for (const o of all) {
+      if (o.territory !== 'Excluded') continue;
+      if (ids && !ids.includes(o.id)) continue;
+      await storage.updateOutlet(o.id, { territory: null });
+      restored++;
+    }
+    res.json({ restored, message: `${restored} outlet(s) restored; run Optimize to put them back in the plan.` });
+  });
+
   app.get("/api/outlets/duplicates", async (req, res) => {
     try {
       const radiusM = Math.max(1, Math.min(100, parseFloat(String(req.query.radiusM ?? 10)) || 10));
@@ -5138,11 +5157,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Outlets the user chose to exclude after reviewing coverage
       // suggestions (indirect-coverage candidates). They keep existing but
       // are left out of territories and schedules for this run.
-      const excludedOutletIds: string[] = Array.isArray(req.body.excludedOutletIds)
+      const requestedExclusions: string[] = Array.isArray(req.body.excludedOutletIds)
         ? req.body.excludedOutletIds.filter((x: unknown) => typeof x === 'string')
         : [];
+      // An exclusion is a decision, not a per-run parameter. Outlets already
+      // held out - duplicates the user removed, outliers they set aside - stay
+      // out of every later run until they are explicitly restored. Before this
+      // only the ids sent with THIS request were left out, so a page reload or
+      // the next Optimize click quietly brought every removed duplicate back.
+      const includeExcluded = req.body.includeExcluded === true;
+      const excludedOutletIds = Array.from(new Set([
+        ...requestedExclusions,
+        ...(includeExcluded ? [] : allStoredOutlets.filter(o => o.territory === 'Excluded').map(o => o.id)),
+      ]));
       const excludedSet = new Set(excludedOutletIds);
       const selectedOutlets = allStoredOutlets.filter(o => !excludedSet.has(o.id));
+      if (excludedOutletIds.length > 0) console.log(`[exclude] ${excludedOutletIds.length} outlet(s) held out of this run (${requestedExclusions.length} new)`);
       for (const o of allStoredOutlets) {
         if (excludedSet.has(o.id)) {
           await storage.updateOutlet(o.id, { territory: 'Excluded', cluster: null, repId: null });

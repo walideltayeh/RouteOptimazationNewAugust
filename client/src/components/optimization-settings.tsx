@@ -177,6 +177,24 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
     queryKey: ['/api/outlets/duplicates'],
   });
   const [selectedDupExclusions, setSelectedDupExclusions] = useState<Set<string>>(new Set());
+  // What is currently held out of the plan, as the server knows it - not as
+  // this page remembers it. Exclusions used to live only in component state,
+  // so a reload or the next Optimize click brought every removed duplicate
+  // back; now the server keeps them out until they are restored here.
+  const { data: heldOut } = useQuery<{ count: number; outlets: { id: string; name: string; code: string | null }[] }>({ queryKey: ['/api/outlets/excluded'] });
+  const restoreMutation = useMutation({
+    mutationFn: async (outletIds?: string[]) => {
+      const res = await apiRequest("POST", "/api/outlets/restore", outletIds ? { outletIds } : {});
+      return res.json() as Promise<{ restored: number; message: string }>;
+    },
+    onSuccess: (r) => {
+      queryClient.invalidateQueries({ queryKey: ['/api/outlets/excluded'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/outlets/duplicates'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/outlets'] });
+      setActiveExcludedIds([]);
+      toast({ title: "Restored", description: r.message });
+    },
+  });
   const [dupLevel, setDupLevel] = useState<'high' | 'medium' | 'low'>('medium');
   const dupSeeded = useRef(false);
   // Pre-tick the high-confidence suggestions once, when the scan first arrives.
@@ -295,6 +313,10 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       return response.json();
     },
     onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['/api/outlets/duplicates'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/outlets/excluded'] });
+      setSelectedDupExclusions(new Set());
+      setSelectedGeoExclusions(new Set());
       setCoverageSuggestions(data.coverageSuggestions || []);
       setTerritoryBalance(data.territoryBalance || null);
       setWeightModeUsed(data.coverageWeightModeUsed || '');
@@ -723,18 +745,24 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
           )}
         </Button>
 
-        {activeExcludedIds.length > 0 && (
-          <Alert className="border-gray-300 bg-gray-50">
+        {heldOut && heldOut.count > 0 && (
+          <Alert className="border-gray-300 bg-gray-50" data-testid="held-out-banner">
             <AlertCircle className="h-4 w-4 text-gray-600" />
             <AlertDescription className="text-gray-700 flex items-center justify-between gap-2">
-              <span>{activeExcludedIds.length} outlets are excluded from optimization (indirect coverage).</span>
+              <span>
+                <strong>{heldOut.count}</strong> outlet{heldOut.count === 1 ? '' : 's'} held out of the plan (removed duplicates, outliers, indirect coverage). They stay out of every run until restored.
+                <span className="block text-xs text-gray-500 mt-0.5">
+                  {heldOut.outlets.slice(0, 5).map(o => o.name).join(' · ')}{heldOut.count > 5 ? ` · +${heldOut.count - 5} more` : ''}
+                </span>
+              </span>
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => { setActiveExcludedIds([]); }}
-                data-testid="button-clear-exclusions"
+                disabled={restoreMutation.isPending}
+                onClick={() => restoreMutation.mutate(undefined)}
+                data-testid="button-restore-excluded"
               >
-                Clear
+                Restore all
               </Button>
             </AlertDescription>
           </Alert>
