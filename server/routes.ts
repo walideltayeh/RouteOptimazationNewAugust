@@ -3993,6 +3993,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json({ restored, message: `${restored} outlet(s) restored; run Optimize to put them back in the plan.` });
   });
 
+  // Delete several outlets at once - the lasso on the Territory Map - and say
+  // what that did to the count, so the user sees "had 1,938, now 1,901"
+  // before deciding to re-plan.
+  app.post("/api/outlets/delete-many", async (req, res) => {
+    const ids: string[] = Array.isArray(req.body?.outletIds) ? req.body.outletIds.filter((x: unknown) => typeof x === 'string') : [];
+    if (ids.length === 0) return res.status(400).json({ message: "outletIds must be a non-empty array" });
+    const before = (await storage.getOutlets()).length;
+    let deleted = 0;
+    for (const id of ids) if (await storage.deleteOutlet(id)) deleted++;
+    const after = (await storage.getOutlets()).length;
+    await storage.flush();
+    console.log(`[outlets] deleted ${deleted} of ${ids.length} requested; ${before} -> ${after}`);
+    res.json({ before, deleted, after });
+  });
+
   app.get("/api/outlets/duplicates", async (req, res) => {
     try {
       const radiusM = Math.max(1, Math.min(100, parseFloat(String(req.query.radiusM ?? 10)) || 10));
@@ -6289,6 +6304,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       daysOffNames: WEEKDAY_NAMES.filter((_, i) => !planSettings!.workingDays.includes(i + 1)),
       cycleDays: cycleShape(planSettings.workingDays.length || 5, planSettings.cycleWorkingDays).cycleDays,
       maxHopKm: planSettings.maxHopKm ?? 4,
+      cycleMode: planSettings.cycleMode ?? 'fixed',
+      planMonth: planSettings.planMonth ?? '',
+      monthEdges: planSettings.monthEdges ?? 'allDays',
       planStart: planSettings.planStart || null,
       planEnd: planSettings.planEnd || null,
       patternDays: cycleShape(planSettings.workingDays.length || 5, planSettings.cycleWorkingDays).cycleDays,
