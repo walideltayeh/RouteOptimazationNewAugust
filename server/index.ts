@@ -2,6 +2,7 @@ import "dotenv/config";
 import express, { type Request, Response, NextFunction } from "express";
 import cookieParser from "cookie-parser";
 import { registerRoutes } from "./routes";
+import { storage } from "./storage";
 import { setupVite, serveStatic, log } from "./vite";
 
 const app = express();
@@ -40,6 +41,10 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  // Serve nothing until the saved state is back: on the published site it
+  // comes from Postgres, and a request answered before that would see an
+  // empty store and could overwrite the real one.
+  await storage.ready;
   const server = await registerRoutes(app);
 
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
