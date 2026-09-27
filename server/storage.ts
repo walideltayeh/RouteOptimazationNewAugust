@@ -15,8 +15,7 @@ import {
   type InsertRoleSchedule,
 } from "@shared/schema";
 import { randomUUID } from "crypto";
-import * as fs from "fs";
-import * as path from "path";
+import { loadBlob, saveBlob } from "./persist";
 
 // --- File-backed persistence for the in-memory store ---
 // Every Map is wrapped so mutations bump a dirty counter; an autosave timer
@@ -25,8 +24,9 @@ import * as path from "path";
 // (deploys, Replit autoscale) silently wiped all outlets, reps and
 // schedules. Date fields come back as ISO strings after the JSON round
 // trip - identical over the API, which serialized them anyway.
-const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), "data");
-const SNAPSHOT_PATH = path.join(DATA_DIR, "storage-snapshot.json");
+// The snapshot goes through the blob store (Postgres on the published site,
+// disk elsewhere); see persist.ts for why files alone were not enough.
+const SNAPSHOT_KEY = "storage-snapshot";
 const AUTOSAVE_INTERVAL_MS = 5000;
 
 function trackedMap<K, V>(onMutate: () => void): Map<K, V> {
@@ -103,6 +103,10 @@ export interface IStorage {
   
   // Clear all data
   clearAll(): Promise<void>;
+  /** Persist any unsaved change now. */
+  flush(): Promise<void>;
+  /** Resolves once saved state has been loaded. */
+  readonly ready: Promise<void>;
 }
 
 export class MemStorage implements IStorage {
@@ -115,7 +119,10 @@ export class MemStorage implements IStorage {
 
   private dirtyCount = 0;
   private savedCount = 0;
+  private saving: Promise<void> | null = null;
   private readonly markDirty = () => { this.dirtyCount++; };
+  /** Resolves once the saved state has been loaded; the server waits for it. */
+  readonly ready: Promise<void>;
 
   // Every persisted Map, by its snapshot key. Adding a new Map field to the
   // store means adding it here - nothing else.
@@ -138,15 +145,14 @@ export class MemStorage implements IStorage {
     this.roleSchedules = trackedMap(this.markDirty);
     this.optimizationRuns = trackedMap(this.markDirty);
 
-    this.restoreFromDisk();
-
-    this.startAutosave();
+    this.ready = this.restore().then(() => this.startAutosave());
   }
 
-  private restoreFromDisk(): void {
+  private async restore(): Promise<void> {
     try {
-      if (!fs.existsSync(SNAPSHOT_PATH)) return;
-      const raw = JSON.parse(fs.readFileSync(SNAPSHOT_PATH, "utf-8"));
+      const text = await loadBlob(SNAPSHOT_KEY);
+      if (!text) return;
+      const raw = JSON.parse(text);
       const maps = this.persistedMaps();
       let restored = 0;
       for (const [key, map] of Object.entries(maps)) {
@@ -155,45 +161,49 @@ export class MemStorage implements IStorage {
         for (const [k, v] of entries) { map.set(k, v); restored++; }
       }
       this.savedCount = this.dirtyCount; // restoring is not a new change
-      console.log(`[storage] Restored ${restored} records from ${SNAPSHOT_PATH}`);
+      console.log(`[storage] Restored ${restored} records`);
     } catch (err) {
       console.error("[storage] Failed to restore snapshot (starting empty):", (err as Error).message);
     }
   }
 
-  private saveToDisk(): void {
-    try {
-      const maps = this.persistedMaps();
-      const snapshot: Record<string, [string, any][]> = {};
-      for (const [key, map] of Object.entries(maps)) {
-        snapshot[key] = Array.from(map.entries());
+  private async save(): Promise<void> {
+    // One save at a time; a change during a save is picked up by the next tick.
+    if (this.saving) return this.saving;
+    const at = this.dirtyCount;
+    this.saving = (async () => {
+      try {
+        const maps = this.persistedMaps();
+        const snapshot: Record<string, [string, any][]> = {};
+        for (const [key, map] of Object.entries(maps)) snapshot[key] = Array.from(map.entries());
+        await saveBlob(SNAPSHOT_KEY, JSON.stringify(snapshot));
+        this.savedCount = at;
+      } catch (err) {
+        console.error("[storage] Snapshot save failed:", (err as Error).message);
+      } finally {
+        this.saving = null;
       }
-      fs.mkdirSync(DATA_DIR, { recursive: true });
-      const tmp = SNAPSHOT_PATH + ".tmp";
-      fs.writeFileSync(tmp, JSON.stringify(snapshot));
-      fs.renameSync(tmp, SNAPSHOT_PATH);
-    } catch (err) {
-      console.error("[storage] Snapshot save failed:", (err as Error).message);
-    }
+    })();
+    return this.saving;
+  }
+
+  /** Writes any unsaved change now. Called after operations that must not be lost. */
+  async flush(): Promise<void> {
+    if (this.dirtyCount !== this.savedCount) await this.save();
   }
 
   private startAutosave(): void {
     const timer = setInterval(() => {
-      if (this.dirtyCount !== this.savedCount) {
-        const at = this.dirtyCount;
-        this.saveToDisk();
-        this.savedCount = at;
-      }
+      if (this.dirtyCount !== this.savedCount) void this.save();
     }, AUTOSAVE_INTERVAL_MS);
     timer.unref(); // never keep the process alive just for autosave
-    const flush = () => { if (this.dirtyCount !== this.savedCount) this.saveToDisk(); };
     // Signal handlers must still terminate the process - installing a
     // handler replaces Node's default exit-on-signal behavior, so without
     // the explicit exit a "killed" server would flush and keep running.
-    const flushAndExit = () => { flush(); process.exit(0); };
+    const flushAndExit = () => { this.flush().finally(() => process.exit(0)); };
     process.on("SIGTERM", flushAndExit);
     process.on("SIGINT", flushAndExit);
-    process.on("beforeExit", flush);
+    process.on("beforeExit", () => { void this.flush(); });
   }
 
   // Outlets

@@ -4,6 +4,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { createHash, randomUUID } from "crypto";
 import { storage } from "./storage";
+import { loadBlob, saveBlob, deleteBlob } from "./persist";
 import { isAdminConfigured, verifyAdmin, adminCredentialSource } from "./admin-credentials";
 import { solveBalancedGroups } from "./balanced-solver";
 import { totalWeeklyLoad, growBalancedRegions, partitionByHilbert, repairLoads, swapForCompactness, polishByCohesion, polishByTourLength, recutPairs, routeCost, longestHop, swapStranded, reachabilityComponents, gapBetween, weeklyLoadOf, type Band } from "./day-balancer";
@@ -2914,13 +2915,16 @@ interface PlanSettings {
   planEnd?: string;
   cycleStartSlot?: number;
 }
-const SETTINGS_FILE = path.join(process.env.DATA_DIR || path.join(process.cwd(), "data"), "plan-settings.json");
+// Kept in the blob store - Postgres on the published site - like the rest of
+// the app's state; see persist.ts.
+const SETTINGS_KEY = "plan-settings";
 let planSettings: PlanSettings | null = null;
 
-function loadPlanSettings() {
+async function loadPlanSettings() {
   try {
-    if (fs.existsSync(SETTINGS_FILE)) {
-      planSettings = JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf-8"));
+    const text = await loadBlob(SETTINGS_KEY);
+    if (text) {
+      planSettings = JSON.parse(text);
       console.log(`[settings] Restored plan settings: ${planSettings!.minVisitsPerDay}-${planSettings!.maxVisitsPerDay} visits/day, ${planSettings!.cycleWorkingDays || 'default'} day cycle`);
     }
   } catch (err) {
@@ -2930,14 +2934,7 @@ function loadPlanSettings() {
 }
 function savePlanSettings(next: PlanSettings) {
   planSettings = next;
-  try {
-    fs.mkdirSync(path.dirname(SETTINGS_FILE), { recursive: true });
-    const tmp = SETTINGS_FILE + ".tmp";
-    fs.writeFileSync(tmp, JSON.stringify(next, null, 2));
-    fs.renameSync(tmp, SETTINGS_FILE);
-  } catch (err) {
-    console.error("[settings] Failed to write:", (err as Error).message);
-  }
+  saveBlob(SETTINGS_KEY, JSON.stringify(next)).catch(err => console.error("[settings] Failed to write:", (err as Error).message));
 }
 /** Puts the saved settings back into the module state the builders read. */
 function applyPlanSettings(): PlanSettings | null {
@@ -2957,7 +2954,7 @@ function applyPlanSettings(): PlanSettings | null {
   setDistanceMode(planSettings.distanceMode === 'road' ? 'road' : 'haversine');
   return planSettings;
 }
-loadPlanSettings();
+// Loaded in registerRoutes, before the routes go live.
 
 // Which weekdays the reps actually work, as ISO numbers (1 = Monday ... 7 =
 // Sunday), in the order the week runs.
@@ -3992,6 +3989,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       await storage.updateOutlet(o.id, { territory: null });
       restored++;
     }
+    await storage.flush();
     res.json({ restored, message: `${restored} outlet(s) restored; run Optimize to put them back in the plan.` });
   });
 
@@ -4361,6 +4359,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
       if (carriedOver > 0) console.log(`[exclude] ${carriedOver} previously held-out outlet(s) matched in the new file and held out again`);
+      await storage.flush();
 
       // Highlight outlets whose GPS point sits far outside the dataset's
       // core coverage area (market + rural belt). Flag only - the user
@@ -5834,6 +5833,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.error("[scenarios] auto-capture failed:", (err as Error).message);
       }
 
+      await storage.flush();
       if (progressId) progressManager.complete(progressId);
 
       res.json({
@@ -5920,15 +5920,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // (name, params, KPIs - a couple of KB) lives in one small file, and each
   // scenario's heavy snapshot sits in its own file, written once at capture
   // and read only when the user applies it.
-  const SCENARIO_DIR = path.join(process.env.DATA_DIR || path.join(process.cwd(), "data"), "scenarios");
-  const SCENARIO_INDEX = path.join(SCENARIO_DIR, "index.json");
+  // Scenario state goes through the blob store (Postgres on the published
+  // site); the index is one small blob, each scenario's heavy snapshot its own.
+  const SCENARIO_INDEX_KEY = "scenario-index";
   type ScenarioSummary = Omit<Scenario, "snapshot">;
   let scenarioIndex: ScenarioSummary[] = [];
 
-  const loadScenarioIndex = () => {
+  // Scenarios saved by earlier builds live under data/scenarios/; read them
+  // from there when the blob store has nothing yet, so an upgrade keeps them.
+  const LEGACY_SCENARIO_DIR = path.join(process.env.DATA_DIR || path.join(process.cwd(), "data"), "scenarios");
+  const legacyRead = (file: string): string | null => {
+    try { const f = path.join(LEGACY_SCENARIO_DIR, file); return fs.existsSync(f) ? fs.readFileSync(f, "utf-8") : null; } catch { return null; }
+  };
+  const loadScenarioIndex = async () => {
     try {
-      if (fs.existsSync(SCENARIO_INDEX)) {
-        scenarioIndex = JSON.parse(fs.readFileSync(SCENARIO_INDEX, "utf-8"));
+      const text = (await loadBlob(SCENARIO_INDEX_KEY)) ?? legacyRead("index.json");
+      if (text) {
+        scenarioIndex = JSON.parse(text);
         console.log(`[scenarios] Restored ${scenarioIndex.length} scenario(s)`);
       }
     } catch (err) {
@@ -5937,37 +5945,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   };
   const saveScenarioIndex = () => {
-    try {
-      fs.mkdirSync(SCENARIO_DIR, { recursive: true });
-      const tmp = SCENARIO_INDEX + ".tmp";
-      fs.writeFileSync(tmp, JSON.stringify(scenarioIndex));
-      fs.renameSync(tmp, SCENARIO_INDEX);
-    } catch (err) {
-      console.error("[scenarios] Failed to write index:", (err as Error).message);
-    }
+    saveBlob(SCENARIO_INDEX_KEY, JSON.stringify(scenarioIndex))
+      .catch(err => console.error("[scenarios] Failed to write index:", (err as Error).message));
   };
-  const scenarioFile = (id: string) => path.join(SCENARIO_DIR, `${id}.json`);
-  const readScenarioSnapshot = (id: string): ScenarioSnapshot | null => {
+  const scenarioKey = (id: string) => `scenario:${id}`;
+  const readScenarioSnapshot = async (id: string): Promise<ScenarioSnapshot | null> => {
     try {
-      return JSON.parse(fs.readFileSync(scenarioFile(id), "utf-8"));
+      const text = (await loadBlob(scenarioKey(id))) ?? legacyRead(`${id}.json`);
+      return text ? JSON.parse(text) : null;
     } catch {
       return null;
     }
   };
   const writeScenarioSnapshot = (id: string, snapshot: ScenarioSnapshot) => {
-    fs.mkdirSync(SCENARIO_DIR, { recursive: true });
-    const tmp = scenarioFile(id) + ".tmp";
-    fs.writeFileSync(tmp, JSON.stringify(snapshot));
-    fs.renameSync(tmp, scenarioFile(id));
+    saveBlob(scenarioKey(id), JSON.stringify(snapshot))
+      .catch(err => console.error("[scenarios] Failed to write snapshot:", (err as Error).message));
   };
   const deleteScenarioSnapshot = (id: string) => {
-    try { fs.unlinkSync(scenarioFile(id)); } catch { /* already gone */ }
+    deleteBlob(scenarioKey(id)).catch(() => { /* already gone */ });
   };
-  loadScenarioIndex();
+  await loadScenarioIndex();
   // Put the saved plan settings back into effect at startup. Loading them
   // alone left the module on its defaults - four weeks, Monday first, plan
   // dated from tomorrow - until the next optimization ran, so after a restart
   // the exports and the map labelled every week wrong.
+  await loadPlanSettings();
   applyPlanSettings();
 
   // Captures whatever plan is currently in storage as a scenario and returns
@@ -6128,7 +6130,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const scenario = scenarioIndex.find(s => s.id === req.params.id);
       if (!scenario) return res.status(404).json({ message: "Scenario not found" });
-      const snapshot = readScenarioSnapshot(scenario.id);
+      const snapshot = await readScenarioSnapshot(scenario.id);
       if (!snapshot) return res.status(410).json({ message: "Scenario snapshot is no longer available" });
 
       for (const rep of await storage.getReps()) await storage.deleteRep(rep.id);
