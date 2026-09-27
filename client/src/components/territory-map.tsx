@@ -41,6 +41,14 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   const [needsReoptimization, setNeedsReoptimization] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isOptimizing, setIsOptimizing] = useState(false);
+  // Lasso selection: draw a loop around outlets, delete them together, then
+  // see what that did to the count and re-plan from scratch.
+  const [lassoActive, setLassoActive] = useState(false);
+  const lassoActiveRef = useRef(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const outletsRef = useRef<Outlet[]>([]);
+  const [deleteSummary, setDeleteSummary] = useState<{ before: number; deleted: number; after: number } | null>(null);
+  const [showLassoDeleteConfirm, setShowLassoDeleteConfirm] = useState(false);
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -55,6 +63,63 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
 
   const { data: reps = [] } = useQuery<Rep[]>({
     queryKey: ['/api/reps'],
+  });
+  useEffect(() => { outletsRef.current = outlets; }, [outlets]);
+  useEffect(() => { lassoActiveRef.current = lassoActive; }, [lassoActive]);
+
+  // The settings the last plan ran with; "optimize from scratch" reuses them.
+  const { data: planSettings } = useQuery<any>({ queryKey: ['/api/plan-settings'] });
+
+  const deleteManyMutation = useMutation({
+    mutationFn: async (outletIds: string[]) => {
+      const res = await apiRequest("POST", "/api/outlets/delete-many", { outletIds });
+      return res.json() as Promise<{ before: number; deleted: number; after: number }>;
+    },
+    onSuccess: (r) => {
+      setDeleteSummary(prev => prev ? { before: prev.before, deleted: prev.deleted + r.deleted, after: r.after } : r);
+      setSelectedIds(new Set());
+      setShowLassoDeleteConfirm(false);
+      queryClient.invalidateQueries({ queryKey: ['/api/outlets'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/schedules'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/outlets/duplicates'] });
+      toast({ title: `${r.deleted} outlet${r.deleted === 1 ? '' : 's'} deleted`, description: `${r.before.toLocaleString()} before, ${r.after.toLocaleString()} now.` });
+    },
+    onError: (e: Error) => toast({ title: "Delete failed", description: e.message, variant: "destructive" }),
+  });
+
+  // A fresh optimization on the outlets that remain, with the settings the
+  // last plan used - the same as starting a new optimization from the
+  // dashboard, without re-entering anything.
+  const freshOptimizeMutation = useMutation({
+    mutationFn: async () => {
+      if (!planSettings?.configured) throw new Error("No saved settings yet - run an optimization from the dashboard first.");
+      const body = {
+        workingDays: planSettings.workingDays,
+        workingDaysPerWeek: planSettings.workingDays?.length,
+        cycleMode: planSettings.cycleMode,
+        planMonth: planSettings.planMonth,
+        monthEdges: planSettings.monthEdges,
+        cycleWorkingDays: planSettings.cycleMode === 'calendarMonth' ? 0 : planSettings.cycleWorkingDays,
+        minVisitsPerDay: planSettings.minVisitsPerDay,
+        maxVisitsPerDay: planSettings.maxVisitsPerDay,
+        weightMode: planSettings.weightMode,
+        distanceMode: planSettings.distanceMode,
+        maxZoneRadiusKm: planSettings.maxZoneRadiusKm,
+        maxHopKm: planSettings.maxHopKm,
+      };
+      const res = await apiRequest("POST", "/api/optimize", body);
+      return res.json();
+    },
+    onSuccess: (data: any) => {
+      queryClient.invalidateQueries({ queryKey: ['/api/outlets'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/schedules'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/reps'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/plan-settings'] });
+      setDeleteSummary(null);
+      setNeedsReoptimization(false);
+      toast({ title: "New plan ready", description: data?.message || "Optimization complete." });
+    },
+    onError: (e: Error) => toast({ title: "Optimization failed", description: e.message, variant: "destructive" }),
   });
 
   // Delete outlet mutation
@@ -104,6 +169,116 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     if (!selectedOutlet) return;
     deleteMutation.mutate(selectedOutlet.id);
   };
+
+  // Ray-casting point-in-polygon on lng/lat; fine at city scale.
+  const insidePolygon = (pt: [number, number], ring: [number, number][]) => {
+    let inside = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const [xi, yi] = ring[i], [xj, yj] = ring[j];
+      const hit = ((yi > pt[1]) !== (yj > pt[1])) && (pt[0] < ((xj - xi) * (pt[1] - yi)) / ((yj - yi) || 1e-12) + xi);
+      if (hit) inside = !inside;
+    }
+    return inside;
+  };
+
+  // Lasso: while the tool is on, dragging on the map draws a loop instead of
+  // panning; releasing selects every outlet inside it. Shift adds to the
+  // current selection. Works with touch as well as the mouse.
+  useEffect(() => {
+    const m = map.current;
+    if (!m || !isMapLoaded) return;
+    // Listen on the container, not the canvas: the territory clusters are
+    // DOM markers sitting over the canvas, and a loop drawn across them
+    // must not break. Capture phase so the markers never see the drag.
+    const canvas = m.getCanvasContainer();
+    const mapCanvas = m.getCanvas();
+    let drawing = false;
+    let ring: [number, number][] = [];
+    const LASSO_SRC = 'lasso-src';
+    const ensureLayers = () => {
+      if (!m.getSource(LASSO_SRC)) {
+        m.addSource(LASSO_SRC, { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+        m.addLayer({ id: 'lasso-fill', type: 'fill', source: LASSO_SRC, paint: { 'fill-color': '#2563eb', 'fill-opacity': 0.12 } });
+        m.addLayer({ id: 'lasso-line', type: 'line', source: LASSO_SRC, paint: { 'line-color': '#2563eb', 'line-width': 2, 'line-dasharray': [2, 1.5] } });
+      }
+    };
+    const draw = () => {
+      ensureLayers();
+      const src = m.getSource(LASSO_SRC) as mapboxgl.GeoJSONSource;
+      src.setData(ring.length > 2
+        ? { type: 'FeatureCollection', features: [{ type: 'Feature', geometry: { type: 'Polygon', coordinates: [[...ring, ring[0]]] }, properties: {} }] }
+        : { type: 'FeatureCollection', features: [] });
+    };
+    const pointOf = (e: MouseEvent | TouchEvent): [number, number] => {
+      const rect = mapCanvas.getBoundingClientRect();
+      const src = 'touches' in e ? (e.touches[0] ?? (e as TouchEvent).changedTouches[0]) : (e as MouseEvent);
+      const ll = m.unproject([src.clientX - rect.left, src.clientY - rect.top]);
+      return [ll.lng, ll.lat];
+    };
+    const start = (e: MouseEvent | TouchEvent) => {
+      if (!lassoActiveRef.current) return;
+      e.preventDefault(); e.stopPropagation();
+      drawing = true; ring = [pointOf(e)]; draw();
+    };
+    const move = (e: MouseEvent | TouchEvent) => {
+      if (!drawing) return;
+      e.preventDefault(); e.stopPropagation();
+      ring.push(pointOf(e)); draw();
+    };
+    const end = (e: MouseEvent | TouchEvent) => {
+      if (!drawing) return;
+      drawing = false;
+      const additive = 'shiftKey' in e && (e as MouseEvent).shiftKey;
+      if (ring.length > 2) {
+        const hit = outletsRef.current.filter(o => insidePolygon([o.longitude, o.latitude], ring)).map(o => o.id);
+        setSelectedIds(prev => {
+          const next = additive ? new Set(prev) : new Set<string>();
+          hit.forEach(id => next.add(id));
+          return next;
+        });
+      }
+      ring = []; draw();
+    };
+    canvas.addEventListener('mousedown', start, true);
+    canvas.addEventListener('mousemove', move, true);
+    window.addEventListener('mouseup', end, true);
+    canvas.addEventListener('touchstart', start, { passive: false, capture: true });
+    canvas.addEventListener('touchmove', move, { passive: false, capture: true });
+    window.addEventListener('touchend', end, true);
+    return () => {
+      canvas.removeEventListener('mousedown', start, true);
+      canvas.removeEventListener('mousemove', move, true);
+      window.removeEventListener('mouseup', end, true);
+      canvas.removeEventListener('touchstart', start, true);
+      canvas.removeEventListener('touchmove', move, true);
+      window.removeEventListener('touchend', end, true);
+    };
+  }, [isMapLoaded]);
+
+  // The tool takes over dragging while it is on.
+  useEffect(() => {
+    const m = map.current;
+    if (!m || !isMapLoaded) return;
+    if (lassoActive) { m.dragPan.disable(); m.getCanvas().style.cursor = 'crosshair'; }
+    else { m.dragPan.enable(); m.getCanvas().style.cursor = ''; }
+  }, [lassoActive, isMapLoaded]);
+
+  // Selected outlets get a ring so the selection reads on the map.
+  useEffect(() => {
+    const m = map.current;
+    if (!m || !isMapLoaded) return;
+    const SRC = 'selected-outlets-src';
+    const features = outlets.filter(o => selectedIds.has(o.id)).map(o => ({
+      type: 'Feature' as const, geometry: { type: 'Point' as const, coordinates: [o.longitude, o.latitude] }, properties: { id: o.id },
+    }));
+    const data = { type: 'FeatureCollection' as const, features };
+    if (!m.getSource(SRC)) {
+      m.addSource(SRC, { type: 'geojson', data });
+      m.addLayer({ id: 'selected-outlets', type: 'circle', source: SRC, paint: { 'circle-radius': 9, 'circle-color': 'rgba(0,0,0,0)', 'circle-stroke-width': 3, 'circle-stroke-color': '#dc2626' } });
+    } else {
+      (m.getSource(SRC) as mapboxgl.GeoJSONSource).setData(data);
+    }
+  }, [selectedIds, outlets, isMapLoaded]);
 
   // Initialize map
   useEffect(() => {
@@ -401,7 +576,6 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
 
   // Day-slots in the plan, for the visits/day figure; four weeks of five if
   // no plan has been run yet.
-  const { data: planSettings } = useQuery<{ configured: boolean; cycleDays?: number }>({ queryKey: ['/api/plan-settings'] });
   const cycleSlots = planSettings?.configured && planSettings.cycleDays ? planSettings.cycleDays : 20;
 
   const getTerritoryColor = (territory: string) => {
@@ -468,6 +642,29 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                   Individual View
                 </Button>
               </div>
+              <div className="flex items-center gap-1">
+                <Button
+                  size="sm"
+                  variant={lassoActive ? 'default' : 'outline'}
+                  className={`rounded-full text-xs px-3 h-7 ${lassoActive ? 'bg-blue-600 text-white hover:bg-blue-600/90' : ''}`}
+                  onClick={() => setLassoActive(v => !v)}
+                  title="Draw a loop around outlets to select them. Hold Shift to add to the selection."
+                  data-testid="button-lasso"
+                >
+                  {lassoActive ? 'Lasso on — draw to select' : 'Lasso select'}
+                </Button>
+                {selectedIds.size > 0 && (
+                  <>
+                    <span className="text-xs font-medium text-red-700" data-testid="text-lasso-count">{selectedIds.size} selected</span>
+                    <Button size="sm" variant="destructive" className="rounded-full text-xs px-3 h-7" onClick={() => setShowLassoDeleteConfirm(true)} data-testid="button-lasso-delete">
+                      Delete {selectedIds.size}
+                    </Button>
+                    <Button size="sm" variant="ghost" className="rounded-full text-xs px-2 h-7" onClick={() => setSelectedIds(new Set())} data-testid="button-lasso-clear">
+                      Clear
+                    </Button>
+                  </>
+                )}
+              </div>
               <div className="flex items-center">
                 <MapPin className="mr-1 h-4 w-4" />
                 {outlets.length.toLocaleString()} Outlets
@@ -484,6 +681,39 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
           </div>
         </CardHeader>
       </Card>
+
+      {showLassoDeleteConfirm && selectedIds.size > 0 && (
+        <div className="mb-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-900" data-testid="lasso-delete-confirm">
+          <p className="mb-2">
+            Delete <strong>{selectedIds.size}</strong> selected outlet{selectedIds.size === 1 ? '' : 's'}? They are removed from the list for good — this is not the same as holding a duplicate out of the plan.
+          </p>
+          <div className="flex gap-2">
+            <Button size="sm" variant="destructive" disabled={deleteManyMutation.isPending} onClick={() => deleteManyMutation.mutate(Array.from(selectedIds))} data-testid="button-lasso-delete-confirm">
+              {deleteManyMutation.isPending ? 'Deleting…' : `Yes, delete ${selectedIds.size}`}
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => setShowLassoDeleteConfirm(false)}>Cancel</Button>
+          </div>
+        </div>
+      )}
+      {deleteSummary && (
+        <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900" data-testid="lasso-summary">
+          <p className="mb-2">
+            You had <strong>{deleteSummary.before.toLocaleString()}</strong> outlets, deleted <strong>{deleteSummary.deleted.toLocaleString()}</strong>, and now have <strong>{deleteSummary.after.toLocaleString()}</strong>.
+            The current plan still counts the deleted ones' days; re-plan to rebuild territories and routes on what remains.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button size="sm" disabled={freshOptimizeMutation.isPending || !planSettings?.configured} onClick={() => freshOptimizeMutation.mutate()} data-testid="button-optimize-fresh">
+              {freshOptimizeMutation.isPending ? 'Optimizing… (about half a minute)' : 'Optimize from scratch with the saved settings'}
+            </Button>
+            {planSettings?.configured && (
+              <span className="text-xs text-amber-800">
+                {planSettings.minVisitsPerDay}-{planSettings.maxVisitsPerDay} visits/day · {planSettings.workingDayNames?.[0]}-{planSettings.workingDayNames?.[planSettings.workingDayNames.length - 1]}{planSettings.planStart ? ` · ${planSettings.planStart} to ${planSettings.planEnd}` : ''}
+              </span>
+            )}
+            <Button size="sm" variant="ghost" onClick={() => setDeleteSummary(null)}>Dismiss</Button>
+          </div>
+        </div>
+      )}
 
       <div className="flex flex-1 gap-4">
         {/* Map */}
