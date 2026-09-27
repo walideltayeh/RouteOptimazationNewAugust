@@ -4680,83 +4680,197 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Export territories to Excel (outlets grouped by rep/territory)
-  app.get("/api/export/territories", async (_req, res) => {
+  // Export the Territory Map as it stands now - after deletions, moves and
+  // re-plans - not as it was when the plan was first built. One row per outlet
+  // with its rep, territory, client code, coordinates, call frequency and the
+  // route days it sits on; a per-rep sheet each; a summary per rep; and the
+  // outlets held out as duplicates on their own sheet so nothing is lost.
+  // ?repId=<id> narrows it to one rep.
+  app.get("/api/export/territories", async (req, res) => {
     try {
-      const reps = await storage.getReps();
-      const outlets = await storage.getOutlets();
-      
-      if (reps.length === 0 || outlets.length === 0) {
-        return res.status(400).json({ message: "No territories available to export" });
+      applyPlanSettings();
+      const repFilter = typeof req.query.repId === 'string' ? req.query.repId : '';
+      const allReps = await storage.getReps();
+      const allOutlets = await storage.getOutlets();
+      const schedules = await storage.getSchedules();
+      const reps = repFilter ? allReps.filter(r => r.id === repFilter) : allReps;
+      if (allOutlets.length === 0) {
+        return res.status(400).json({ message: "No outlets to export" });
       }
-      
-      const workbook = XLSX.utils.book_new();
-      
-      // Create a sheet for each rep's territory
-      for (const rep of reps) {
-        const repOutlets = outlets.filter(o => o.repId === rep.id);
-        
-        if (repOutlets.length === 0) continue;
-        
-        const data = repOutlets.map((outlet, index) => ({
-          '#': index + 1,
-          'Outlet Name': outlet.name,
-          'Address': outlet.address || '-',
-          'Latitude': outlet.latitude,
-          'Longitude': outlet.longitude,
-          'Visit Frequency': outlet.visitFrequency === 1 ? 'VF1' : outlet.visitFrequency === 2 ? 'VF2' : 'VF4',
-          'Cluster': outlet.cluster ?? '-',
-        }));
-        
-        const worksheet = XLSX.utils.json_to_sheet(data);
-        
-        // Set column widths
-        worksheet['!cols'] = [
-          { wch: 5 },   // #
-          { wch: 30 },  // Outlet Name
-          { wch: 40 },  // Address
-          { wch: 12 },  // Latitude
-          { wch: 12 },  // Longitude
-          { wch: 15 },  // Visit Frequency
-          { wch: 10 },  // Cluster
-        ];
-        
-        // Sanitize sheet name (max 31 chars, no special chars)
-        const sheetName = rep.name.substring(0, 31).replace(/[:\\/?*\[\]]/g, '_');
-        XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+      if (repFilter && reps.length === 0) {
+        return res.status(404).json({ message: "That rep no longer exists" });
       }
-      
-      // Also create a summary sheet
-      const summaryData = reps.map(rep => {
-        const repOutlets = outlets.filter(o => o.repId === rep.id);
+
+      const heldOut = allOutlets.filter(o => o.territory === 'Excluded');
+      const live = allOutlets.filter(o => o.territory !== 'Excluded');
+      const repById = new Map(allReps.map(r => [r.id, r]));
+      const vfLabel = (vf: number) => `VF${vf}`;
+      const shortDay = (d: number) => WEEKDAY_NAMES[d - 1]?.slice(0, 3) ?? `D${d}`;
+
+      // Calendar dates for the plan's cells, same rule as the schedule export.
+      const cycleDates = upcomingWorkingDates(200, workingWeek);
+      const dateOfCell = (week: number, dayOfWeek: number): string => {
+        const slot = workingWeek.indexOf(dayOfWeek);
+        if (slot < 0) return '';
+        const index = (week - 1) * workingWeek.length + slot - cycleStartSlot;
+        const d = index >= 0 ? cycleDates[index] : undefined;
+        return d ? ymd(d) : '';
+      };
+      const cellLabel = (week: number, dayOfWeek: number) => {
+        const date = dateOfCell(week, dayOfWeek);
+        return `W${week} ${shortDay(dayOfWeek)}${date ? ' ' + date.slice(5) : ''}`; // "W1 Sat 10-03"
+      };
+
+      // Which cells each outlet is visited on, in plan order.
+      const cellsOf = new Map<string, { week: number; day: number; stop: number }[]>();
+      const sorted = [...schedules].sort((a, b) => a.week - b.week || workingWeek.indexOf(a.dayOfWeek) - workingWeek.indexOf(b.dayOfWeek));
+      for (const sc of sorted) {
+        const order = ((sc.routeOrder as string[]) || []).length > 0 ? (sc.routeOrder as string[]) : ((sc.outletIds as string[]) || []);
+        order.forEach((oid, idx) => {
+          if (!cellsOf.has(oid)) cellsOf.set(oid, []);
+          cellsOf.get(oid)!.push({ week: sc.week, day: sc.dayOfWeek, stop: idx + 1 });
+        });
+      }
+      const routeDays = (o: Outlet) => (cellsOf.get(o.id) || []).map(c => cellLabel(c.week, c.day)).join('; ');
+
+      const rowFor = (o: Outlet) => {
+        const rep = o.repId ? repById.get(o.repId) : undefined;
         return {
-          'Rep Name': rep.name,
+          'Rep': rep?.name ?? '',
+          'Rep Code': rep?.code ?? '',
+          'Territory': rep ? (rep.territory || rep.name) : (o.territory === 'Excluded' ? 'Held out' : 'Unassigned'),
+          'Outlet Code': o.code || '',
+          'Outlet Name': o.name,
+          'Address': o.address || '',
+          'Latitude': o.latitude,
+          'Longitude': o.longitude,
+          'Visit Frequency': vfLabel(o.visitFrequency),
+          'Visits in Plan': (cellsOf.get(o.id) || []).length,
+          'Route Days': routeDays(o),
+          'Value': o.value ?? '',
+          'Status': o.territory === 'Excluded' ? 'Held out (duplicate)' : rep ? 'Assigned' : 'Unassigned',
+        };
+      };
+      const outletCols = [
+        { wch: 12 }, { wch: 10 }, { wch: 16 }, { wch: 14 }, { wch: 34 }, { wch: 36 },
+        { wch: 11 }, { wch: 11 }, { wch: 9 }, { wch: 9 }, { wch: 40 }, { wch: 9 }, { wch: 20 },
+      ];
+      const sheetName = (name: string, taken: Set<string>) => {
+        let base = name.replace(/[:\\/?*\[\]]/g, '_').slice(0, 31) || 'Sheet';
+        let candidate = base, n = 2;
+        while (taken.has(candidate)) candidate = `${base.slice(0, 28)}_${n++}`;
+        taken.add(candidate);
+        return candidate;
+      };
+
+      const workbook = XLSX.utils.book_new();
+      const taken = new Set<string>();
+
+      // Summary first.
+      const inScope = repFilter ? live.filter(o => o.repId === repFilter) : live;
+      const unassigned = live.filter(o => !o.repId || !repById.has(o.repId));
+      const perRep = reps.map(rep => {
+        const mine = live.filter(o => o.repId === rep.id);
+        const cells = schedules.filter(s => s.repId === rep.id && ((s.outletIds as string[]) || []).length > 0);
+        const visits = cells.reduce((n, s) => n + ((s.outletIds as string[]) || []).length, 0);
+        const perDay = cells.map(s => ((s.outletIds as string[]) || []).length);
+        const cLat = mine.length ? mine.reduce((a, o) => a + o.latitude, 0) / mine.length : 0;
+        const cLng = mine.length ? mine.reduce((a, o) => a + o.longitude, 0) / mine.length : 0;
+        const spread = mine.length ? Math.max(...mine.map(o => calculateDistance(cLat, cLng, o.latitude, o.longitude))) : 0;
+        return {
+          'Rep': rep.name,
           'Rep Code': rep.code,
-          'Territory': rep.territory,
-          'Total Outlets': repOutlets.length,
-          'VF1 Outlets': repOutlets.filter(o => o.visitFrequency === 1).length,
-          'VF2 Outlets': repOutlets.filter(o => o.visitFrequency === 2).length,
-          'VF4 Outlets': repOutlets.filter(o => o.visitFrequency === 4).length,
+          'Territory': rep.territory || rep.name,
+          'Outlets': mine.length,
+          'VF1': mine.filter(o => o.visitFrequency === 1).length,
+          'VF2': mine.filter(o => o.visitFrequency === 2).length,
+          'VF3': mine.filter(o => o.visitFrequency === 3).length,
+          'VF4': mine.filter(o => o.visitFrequency === 4).length,
+          'Visits in Plan': visits,
+          'Route Days': cells.length,
+          'Avg Visits/Day': cells.length ? Math.round((visits / cells.length) * 10) / 10 : 0,
+          'Lightest Day': perDay.length ? Math.min(...perDay) : 0,
+          'Heaviest Day': perDay.length ? Math.max(...perDay) : 0,
+          'Centre Lat': Math.round(cLat * 1e5) / 1e5,
+          'Centre Lng': Math.round(cLng * 1e5) / 1e5,
+          'Spread (km)': Math.round(spread * 10) / 10,
         };
       });
-      
-      const summarySheet = XLSX.utils.json_to_sheet(summaryData);
-      summarySheet['!cols'] = [
-        { wch: 25 }, { wch: 15 }, { wch: 20 }, { wch: 15 }, { wch: 12 }, { wch: 12 }, { wch: 12 }
+      const totals = {
+        'Rep': 'TOTAL', 'Rep Code': '', 'Territory': `${reps.length} rep${reps.length === 1 ? '' : 's'}`,
+        'Outlets': perRep.reduce((n, r) => n + r.Outlets, 0),
+        'VF1': perRep.reduce((n, r) => n + r.VF1, 0), 'VF2': perRep.reduce((n, r) => n + r.VF2, 0),
+        'VF3': perRep.reduce((n, r) => n + r.VF3, 0), 'VF4': perRep.reduce((n, r) => n + r.VF4, 0),
+        'Visits in Plan': perRep.reduce((n, r) => n + r['Visits in Plan'], 0),
+        'Route Days': perRep.reduce((n, r) => n + r['Route Days'], 0),
+        'Avg Visits/Day': '', 'Lightest Day': '', 'Heaviest Day': '', 'Centre Lat': '', 'Centre Lng': '', 'Spread (km)': '',
+      };
+      const ps = planSettings;
+      const header: (string | number)[][] = [
+        ['Territory Map export', new Date().toISOString().slice(0, 19).replace('T', ' ')],
+        ['Outlets on the map', live.length],
+        ['Assigned to a rep', live.length - unassigned.length],
+        ['Unassigned', unassigned.length],
+        ['Held out as duplicates', heldOut.length],
+        ['Reps', allReps.length],
       ];
-      XLSX.utils.book_append_sheet(workbook, summarySheet, 'Summary');
-      
+      if (ps) {
+        header.push(['Working week', workingWeek.map(d => WEEKDAY_NAMES[d - 1]).join(', ')]);
+        header.push(['Visits per day', `${ps.minVisitsPerDay}-${ps.maxVisitsPerDay}`]);
+        if (ps.planStart) header.push(['Plan dates', `${ps.planStart} to ${ps.planEnd || ''}`]);
+        header.push(['Max drive between stops (km)', ps.maxHopKm ?? 4]);
+      }
+      if (repFilter) header.push(['Filtered to rep', reps[0].name]);
+      header.push([]);
+      const summary = XLSX.utils.aoa_to_sheet(header);
+      XLSX.utils.sheet_add_json(summary, [...perRep, totals], { origin: -1 });
+      summary['!cols'] = [{ wch: 28 }, { wch: 12 }, { wch: 16 }, { wch: 9 }, { wch: 6 }, { wch: 6 }, { wch: 6 }, { wch: 6 }, { wch: 13 }, { wch: 11 }, { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 11 }, { wch: 11 }, { wch: 11 }];
+      XLSX.utils.book_append_sheet(workbook, summary, sheetName('Summary', taken));
+
+      // Every live outlet, rep by rep, then by route day and stop.
+      const repOrder = new Map(allReps.map((r, i) => [r.id, i]));
+      const firstCell = (o: Outlet) => { const c = cellsOf.get(o.id)?.[0]; return c ? c.week * 1000 + workingWeek.indexOf(c.day) * 100 + c.stop : 99999; };
+      const repRank = (o: Outlet) => (o.repId ? repOrder.get(o.repId) : undefined) ?? 999;
+      const bySequence = (a: Outlet, b: Outlet) =>
+        repRank(a) - repRank(b) || firstCell(a) - firstCell(b) || a.name.localeCompare(b.name);
+      const allRows = [...inScope].sort(bySequence).map((o, i) => ({ '#': i + 1, ...rowFor(o) }));
+      const allSheet = XLSX.utils.json_to_sheet(allRows);
+      allSheet['!cols'] = [{ wch: 5 }, ...outletCols];
+      XLSX.utils.book_append_sheet(workbook, allSheet, sheetName('All Outlets', taken));
+
+      // One sheet per rep.
+      for (const rep of reps) {
+        const mine = live.filter(o => o.repId === rep.id).sort(bySequence);
+        if (mine.length === 0) continue;
+        const rows = mine.map((o, i) => ({ '#': i + 1, ...rowFor(o) }));
+        const ws = XLSX.utils.json_to_sheet(rows);
+        ws['!cols'] = [{ wch: 5 }, ...outletCols];
+        XLSX.utils.book_append_sheet(workbook, ws, sheetName(rep.territory || rep.name, taken));
+      }
+
+      if (!repFilter && unassigned.length > 0) {
+        const ws = XLSX.utils.json_to_sheet(unassigned.map((o, i) => ({ '#': i + 1, ...rowFor(o) })));
+        ws['!cols'] = [{ wch: 5 }, ...outletCols];
+        XLSX.utils.book_append_sheet(workbook, ws, sheetName('Unassigned', taken));
+      }
+      if (!repFilter && heldOut.length > 0) {
+        const ws = XLSX.utils.json_to_sheet(heldOut.map((o, i) => ({ '#': i + 1, ...rowFor(o) })));
+        ws['!cols'] = [{ wch: 5 }, ...outletCols];
+        XLSX.utils.book_append_sheet(workbook, ws, sheetName('Held out', taken));
+      }
+
       const excelBuffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
-      
+      const stamp = new Date().toISOString().split('T')[0];
+      const fname = repFilter ? `territory_${(reps[0].territory || reps[0].name).replace(/[^A-Za-z0-9_-]+/g, '_')}_${stamp}.xlsx` : `territory_map_${stamp}.xlsx`;
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-      res.setHeader('Content-Disposition', `attachment; filename=territories_${new Date().toISOString().split('T')[0]}.xlsx`);
+      res.setHeader('Content-Disposition', `attachment; filename=${fname}`);
       res.send(excelBuffer);
     } catch (error) {
       console.error("Error exporting territories:", error);
-      res.status(500).json({ message: "Failed to export territories" });
+      res.status(500).json({ message: "Failed to export the territory map" });
     }
   });
 
-  // Export clusters to Excel (outlets grouped by cluster)
   app.get("/api/export/clusters", async (req, res) => {
     try {
       const outlets = await storage.getOutlets();

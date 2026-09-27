@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { MapPin, Users, Navigation, Trash2, RefreshCw } from 'lucide-react';
+import { MapPin, Users, Navigation, Trash2, RefreshCw, Download } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { apiRequest } from '@/lib/queryClient';
 import type { Outlet, Rep } from '@shared/schema';
@@ -168,6 +168,34 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   const handleDeleteOutlet = () => {
     if (!selectedOutlet) return;
     deleteMutation.mutate(selectedOutlet.id);
+  };
+
+  // Excel of the map as it is right now: every outlet with its rep, territory,
+  // code, coordinates and route days; a sheet per rep; the held-out duplicates.
+  const [isExporting, setIsExporting] = useState(false);
+  const exportTerritories = async (repId?: string) => {
+    setIsExporting(true);
+    try {
+      const response = await fetch(repId ? `/api/export/territories?repId=${encodeURIComponent(repId)}` : '/api/export/territories');
+      if (!response.ok) {
+        let msg = 'Export failed';
+        try { msg = (await response.json()).message || msg; } catch {}
+        throw new Error(msg);
+      }
+      const blob = await response.blob();
+      const disposition = response.headers.get('Content-Disposition') || '';
+      const name = /filename=([^;]+)/.exec(disposition)?.[1]?.trim() || `territory_map_${new Date().toISOString().split('T')[0]}.xlsx`;
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = name;
+      document.body.appendChild(a); a.click();
+      window.URL.revokeObjectURL(url); document.body.removeChild(a);
+      toast({ title: 'Exported', description: `${name} - ${outlets.length.toLocaleString()} outlets as they stand now.` });
+    } catch (e: any) {
+      toast({ title: 'Export failed', description: e?.message || 'Could not build the Excel file', variant: 'destructive' });
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   // Ray-casting point-in-polygon on lng/lat; fine at city scale.
@@ -337,19 +365,126 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
       }
     });
     drilldownHandlersRef.current = [];
-    drilldownLayersRef.current.forEach(id => {
-      if (map.current?.getLayer(id)) map.current.removeLayer(id);
-      if (map.current?.getSource(id)) map.current.removeSource(id);
-    });
-    drilldownLayersRef.current = [];
+    clearDrilldownLayers();
 
     if (viewMode === 'cluster') {
       renderTerritoryVisualization();
+      const drilled = drilledTerritoryRef.current;
+      if (drilled && territoryGroups[drilled]?.length) drillIntoTerritory(drilled);
+      else drilledTerritoryRef.current = null;
     } else {
+      drilledTerritoryRef.current = null;
       renderGeoJSONIndividualView();
     }
+    // Keep the selection rings above whatever was just drawn.
+    if (map.current.getLayer('selected-outlets')) map.current.moveLayer('selected-outlets');
 
   }, [outlets, isMapLoaded, viewMode]);
+
+  // Remove every layer we drew, then every source. Mapbox will not remove a
+  // source while a layer still uses it - it only fires an error event - so
+  // removing in push order used to leave sources behind, and the "source
+  // already there" guard below then skipped re-drawing the layer: after any
+  // change to the outlet list the individual view went blank.
+  const clearDrilldownLayers = () => {
+    const m = map.current;
+    if (!m) return;
+    const ids = drilldownLayersRef.current;
+    ids.forEach(id => { if (m.getLayer(id)) m.removeLayer(id); });
+    ids.forEach(id => { if (m.getSource(id)) m.removeSource(id); });
+    drilldownLayersRef.current = [];
+  };
+
+  // Zoom into one territory and draw its outlets one by one. Remembered in
+  // drilledTerritoryRef so a data refresh (a deletion, a re-plan) re-opens the
+  // same territory instead of dropping back to the cluster bubbles.
+  const drilledTerritoryRef = useRef<string | null>(null);
+  const drillIntoTerritory = (territory: string) => {
+    const territoryOutlets = territoryGroups[territory];
+    if (!territoryOutlets || territoryOutlets.length === 0 || !map.current) return;
+    drilledTerritoryRef.current = territory;
+    const territoryBounds = new mapboxgl.LngLatBounds();
+    territoryOutlets.forEach(outlet => {
+      territoryBounds.extend([outlet.longitude, outlet.latitude]);
+    });
+    map.current!.fitBounds(territoryBounds, { padding: 50 });
+
+    drilldownHandlersRef.current.forEach(({ layerId, click, mouseenter, mouseleave }) => {
+      if (map.current) {
+        map.current.off('click', layerId, click);
+        map.current.off('mouseenter', layerId, mouseenter);
+        map.current.off('mouseleave', layerId, mouseleave);
+      }
+    });
+    drilldownHandlersRef.current = [];
+    clearDrilldownLayers();
+
+    const sourceId = `drilldown-source-${territory}`;
+    const circleLayerId = `drilldown-circles-${territory}`;
+    const symbolLayerId = `drilldown-labels-${territory}`;
+    const color = getTerritoryColor(territory);
+
+    const geojson: GeoJSON.FeatureCollection = {
+      type: 'FeatureCollection',
+      features: territoryOutlets.map((outlet, idx) => ({
+        type: 'Feature' as const,
+        geometry: { type: 'Point' as const, coordinates: [outlet.longitude, outlet.latitude] },
+        properties: { id: outlet.id, name: outlet.name, index: idx + 1, outletJson: JSON.stringify(outlet) }
+      }))
+    };
+
+    map.current!.addSource(sourceId, { type: 'geojson', data: geojson });
+    map.current!.addLayer({
+      id: circleLayerId,
+      type: 'circle',
+      source: sourceId,
+      paint: {
+        'circle-radius': 6,
+        'circle-color': color,
+        'circle-stroke-width': 2,
+        'circle-stroke-color': '#ffffff'
+      }
+    });
+    map.current!.addLayer({
+      id: symbolLayerId,
+      type: 'symbol',
+      source: sourceId,
+      layout: {
+        'text-field': ['get', 'index'],
+        'text-size': 9,
+        'text-offset': [0, -1.2]
+      },
+      paint: { 'text-color': color }
+    });
+
+    drilldownLayersRef.current.push(circleLayerId, symbolLayerId, sourceId);
+
+    const clickHandler = (e: any) => {
+      if (e.features && e.features[0]) {
+        const props = e.features[0].properties;
+        if (props?.outletJson) {
+          setSelectedOutlet(JSON.parse(props.outletJson));
+        }
+      }
+    };
+    const mouseenterHandler = () => {
+      if (map.current) map.current.getCanvas().style.cursor = 'pointer';
+    };
+    const mouseleaveHandler = () => {
+      if (map.current) map.current.getCanvas().style.cursor = '';
+    };
+
+    map.current!.on('click', circleLayerId, clickHandler);
+    map.current!.on('mouseenter', circleLayerId, mouseenterHandler);
+    map.current!.on('mouseleave', circleLayerId, mouseleaveHandler);
+
+    drilldownHandlersRef.current.push({
+      layerId: circleLayerId,
+      click: clickHandler,
+      mouseenter: mouseenterHandler,
+      mouseleave: mouseleaveHandler
+    });
+  };
 
   // Render territory clusters instead of individual markers for performance
   const renderTerritoryVisualization = () => {
@@ -384,93 +519,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
         </div>
       `);
 
-      clusterEl.addEventListener('click', () => {
-        const territoryBounds = new mapboxgl.LngLatBounds();
-        territoryOutlets.forEach(outlet => {
-          territoryBounds.extend([outlet.longitude, outlet.latitude]);
-        });
-        map.current!.fitBounds(territoryBounds, { padding: 50 });
-
-        drilldownHandlersRef.current.forEach(({ layerId, click, mouseenter, mouseleave }) => {
-          if (map.current) {
-            map.current.off('click', layerId, click);
-            map.current.off('mouseenter', layerId, mouseenter);
-            map.current.off('mouseleave', layerId, mouseleave);
-          }
-        });
-        drilldownHandlersRef.current = [];
-        drilldownLayersRef.current.forEach(id => {
-          if (map.current?.getLayer(id)) map.current.removeLayer(id);
-          if (map.current?.getSource(id)) map.current.removeSource(id);
-        });
-        drilldownLayersRef.current = [];
-
-        const sourceId = `drilldown-source-${territory}`;
-        const circleLayerId = `drilldown-circles-${territory}`;
-        const symbolLayerId = `drilldown-labels-${territory}`;
-        const color = getTerritoryColor(territory);
-
-        const geojson: GeoJSON.FeatureCollection = {
-          type: 'FeatureCollection',
-          features: territoryOutlets.map((outlet, idx) => ({
-            type: 'Feature' as const,
-            geometry: { type: 'Point' as const, coordinates: [outlet.longitude, outlet.latitude] },
-            properties: { id: outlet.id, name: outlet.name, index: idx + 1, outletJson: JSON.stringify(outlet) }
-          }))
-        };
-
-        map.current!.addSource(sourceId, { type: 'geojson', data: geojson });
-        map.current!.addLayer({
-          id: circleLayerId,
-          type: 'circle',
-          source: sourceId,
-          paint: {
-            'circle-radius': 6,
-            'circle-color': color,
-            'circle-stroke-width': 2,
-            'circle-stroke-color': '#ffffff'
-          }
-        });
-        map.current!.addLayer({
-          id: symbolLayerId,
-          type: 'symbol',
-          source: sourceId,
-          layout: {
-            'text-field': ['get', 'index'],
-            'text-size': 9,
-            'text-offset': [0, -1.2]
-          },
-          paint: { 'text-color': color }
-        });
-
-        drilldownLayersRef.current.push(circleLayerId, symbolLayerId, sourceId);
-
-        const clickHandler = (e: any) => {
-          if (e.features && e.features[0]) {
-            const props = e.features[0].properties;
-            if (props?.outletJson) {
-              setSelectedOutlet(JSON.parse(props.outletJson));
-            }
-          }
-        };
-        const mouseenterHandler = () => {
-          if (map.current) map.current.getCanvas().style.cursor = 'pointer';
-        };
-        const mouseleaveHandler = () => {
-          if (map.current) map.current.getCanvas().style.cursor = '';
-        };
-
-        map.current!.on('click', circleLayerId, clickHandler);
-        map.current!.on('mouseenter', circleLayerId, mouseenterHandler);
-        map.current!.on('mouseleave', circleLayerId, mouseleaveHandler);
-
-        drilldownHandlersRef.current.push({
-          layerId: circleLayerId,
-          click: clickHandler,
-          mouseenter: mouseenterHandler,
-          mouseleave: mouseleaveHandler
-        });
-      });
+      clusterEl.addEventListener('click', () => drillIntoTerritory(territory));
 
       const marker = new mapboxgl.Marker(clusterEl)
         .setLngLat([centerLng, centerLat])
@@ -505,11 +554,10 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
 
       territoryOutlets.forEach(o => bounds.extend([o.longitude, o.latitude]));
 
-      if (!map.current!.getSource(sourceId)) {
-        map.current!.addSource(sourceId, {
-          type: 'geojson',
-          data: { type: 'FeatureCollection', features }
-        });
+      const existing = map.current!.getSource(sourceId) as mapboxgl.GeoJSONSource | undefined;
+      if (existing) existing.setData({ type: 'FeatureCollection', features });
+      else map.current!.addSource(sourceId, { type: 'geojson', data: { type: 'FeatureCollection', features } });
+      if (!map.current!.getLayer(circleLayerId)) {
 
         map.current!.addLayer({
           id: circleLayerId,
@@ -669,6 +717,18 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                 <MapPin className="mr-1 h-4 w-4" />
                 {outlets.length.toLocaleString()} Outlets
               </div>
+              <Button
+                size="sm"
+                variant="outline"
+                className="rounded-full text-xs px-3 h-7"
+                disabled={isExporting || outlets.length === 0}
+                onClick={() => exportTerritories()}
+                title="Export every territory to Excel, as the map stands now"
+                data-testid="button-export-territory-map"
+              >
+                <Download className="mr-1 h-3.5 w-3.5" />
+                {isExporting ? 'Exporting…' : 'Export to Excel'}
+              </Button>
               <div className="flex items-center">
                 <Users className="mr-1 h-4 w-4" />
                 {reps.length} Reps
