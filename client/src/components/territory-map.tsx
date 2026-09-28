@@ -5,6 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { MapPin, Users, Navigation, Trash2, RefreshCw, Download } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { apiRequest } from '@/lib/queryClient';
@@ -21,6 +22,15 @@ interface TerritoryMapProps {
 }
 
 // Territory colors for visual distinction
+function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
 const TERRITORY_COLORS = [
   '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7',
   '#DDA0DD', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E9'
@@ -49,6 +59,14 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   const outletsRef = useRef<Outlet[]>([]);
   const [deleteSummary, setDeleteSummary] = useState<{ before: number; deleted: number; after: number } | null>(null);
   const [showLassoDeleteConfirm, setShowLassoDeleteConfirm] = useState(false);
+  // Move the selection to another rep; the touched territories are re-planned
+  // on the spot by the server, and the result is shown here.
+  const [reassignTargetId, setReassignTargetId] = useState<string>('');
+  const [reworkSummary, setReworkSummary] = useState<{
+    movedOutlets: number; toRep: { id: string; name: string };
+    repsReworked: { repId: string; name: string; outlets: number; monthlyVisits: number; schedules: number; overCapacity: boolean }[];
+    warnings: string[];
+  } | null>(null);
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -85,6 +103,59 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
       toast({ title: `${r.deleted} outlet${r.deleted === 1 ? '' : 's'} deleted`, description: `${r.before.toLocaleString()} before, ${r.after.toLocaleString()} now.` });
     },
     onError: (e: Error) => toast({ title: "Delete failed", description: e.message, variant: "destructive" }),
+  });
+
+  // Reps ranked by how close their territory is to the selection: the
+  // nearest outlet of each rep to the selection's centre. A rep that already
+  // owns part of the selection is listed with that count.
+  const rankedTargetReps = useMemo(() => {
+    if (selectedIds.size === 0) return [] as { rep: Rep; distKm: number; owns: number }[];
+    const sel = outlets.filter(o => selectedIds.has(o.id));
+    if (sel.length === 0) return [];
+    const cLat = sel.reduce((a, o) => a + o.latitude, 0) / sel.length;
+    const cLng = sel.reduce((a, o) => a + o.longitude, 0) / sel.length;
+    const nearest = new Map<string, number>();
+    const owns = new Map<string, number>();
+    for (const o of outlets) {
+      if (!o.repId || o.territory === 'Excluded') continue;
+      if (selectedIds.has(o.id)) { owns.set(o.repId, (owns.get(o.repId) ?? 0) + 1); continue; }
+      const d = haversineKm(cLat, cLng, o.latitude, o.longitude);
+      const cur = nearest.get(o.repId);
+      if (cur === undefined || d < cur) nearest.set(o.repId, d);
+    }
+    return reps
+      .map(rep => ({ rep, distKm: nearest.get(rep.id) ?? Infinity, owns: owns.get(rep.id) ?? 0 }))
+      .sort((a, b) => a.distKm - b.distKm);
+  }, [selectedIds, outlets, reps]);
+
+  // Default the target to the nearest rep that does not already own the
+  // whole selection.
+  useEffect(() => {
+    if (rankedTargetReps.length === 0) { setReassignTargetId(''); return; }
+    const first = rankedTargetReps.find(r => r.owns < selectedIds.size) ?? rankedTargetReps[0];
+    setReassignTargetId(prev => (prev && rankedTargetReps.some(r => r.rep.id === prev)) ? prev : first.rep.id);
+  }, [rankedTargetReps, selectedIds.size]);
+
+  const reassignSelectionMutation = useMutation({
+    mutationFn: async ({ outletIds, toRepId }: { outletIds: string[]; toRepId: string }) => {
+      const res = await apiRequest("POST", "/api/reps/reassign-outlets", { outletIds, toRepId });
+      return res.json() as Promise<{
+        movedOutlets: number; toRep: { id: string; name: string };
+        repsReworked: { repId: string; name: string; outlets: number; monthlyVisits: number; schedules: number; overCapacity: boolean }[];
+        warnings: string[]; message: string;
+      }>;
+    },
+    onSuccess: (r) => {
+      setReworkSummary({ movedOutlets: r.movedOutlets, toRep: r.toRep, repsReworked: r.repsReworked || [], warnings: r.warnings || [] });
+      setSelectedIds(new Set());
+      setLassoActive(false);
+      queryClient.invalidateQueries({ queryKey: ['/api/outlets'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/schedules'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/reps'] });
+      const n = (r.repsReworked || []).length;
+      toast({ title: `${r.movedOutlets} outlet${r.movedOutlets === 1 ? '' : 's'} moved to ${r.toRep.name}`, description: `${n} territor${n === 1 ? 'y' : 'ies'} re-planned.` });
+    },
+    onError: (e: Error) => toast({ title: "Move failed", description: e.message, variant: "destructive" }),
   });
 
   // A fresh optimization on the outlets that remain, with the settings the
@@ -143,20 +214,19 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   // Reoptimize mutation
   const reoptimizeMutation = useMutation({
     mutationFn: async () => {
-      const response = await apiRequest("POST", "/api/optimize", {
-        minVisitsPerDay: 15,
-        maxVisitsPerDay: 25,
-        workingDaysPerWeek: 5,
-        calculationMode: 'manual'
-      });
+      // No body: the server rebuilds every rep's routes with the settings
+      // the plan was built on. This used to post 15-25 visits over a
+      // five-day week, whatever the dashboard said.
+      const response = await apiRequest("POST", "/api/reoptimize", {});
       return response.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/outlets'] });
       queryClient.invalidateQueries({ queryKey: ['/api/schedules'] });
       queryClient.invalidateQueries({ queryKey: ['/api/reps'] });
-      toast({ title: "Success", description: "Routes reoptimized successfully" });
+      toast({ title: "Routes rebuilt", description: "Every rep's routes were re-planned with the saved settings." });
       setNeedsReoptimization(false);
+      setReworkSummary(null);
       setIsOptimizing(false);
     },
     onError: () => {
@@ -707,6 +777,31 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                     <Button size="sm" variant="destructive" className="rounded-full text-xs px-3 h-7" onClick={() => setShowLassoDeleteConfirm(true)} data-testid="button-lasso-delete">
                       Delete {selectedIds.size}
                     </Button>
+                    <Select value={reassignTargetId} onValueChange={setReassignTargetId}>
+                      <SelectTrigger className="h-7 w-[220px] rounded-full text-xs" data-testid="select-lasso-target-rep">
+                        <SelectValue placeholder="Move to rep…" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {rankedTargetReps.map(({ rep, distKm, owns }, idx) => (
+                          <SelectItem key={rep.id} value={rep.id}>
+                            {rep.territory || rep.name} · {rep.name}
+                            {Number.isFinite(distKm) ? ` — ${distKm < 1 ? `${Math.round(distKm * 1000)} m` : `${distKm.toFixed(1)} km`}` : ''}
+                            {idx === 0 ? ' · closest' : ''}
+                            {owns > 0 ? ` · owns ${owns}` : ''}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      size="sm"
+                      className="rounded-full text-xs px-3 h-7"
+                      disabled={!reassignTargetId || reassignSelectionMutation.isPending}
+                      onClick={() => reassignSelectionMutation.mutate({ outletIds: Array.from(selectedIds), toRepId: reassignTargetId })}
+                      title="Move the selected outlets to this rep and re-plan the territories involved"
+                      data-testid="button-lasso-move"
+                    >
+                      {reassignSelectionMutation.isPending ? 'Moving…' : `Move ${selectedIds.size}`}
+                    </Button>
                     <Button size="sm" variant="ghost" className="rounded-full text-xs px-2 h-7" onClick={() => setSelectedIds(new Set())} data-testid="button-lasso-clear">
                       Clear
                     </Button>
@@ -752,6 +847,31 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
               {deleteManyMutation.isPending ? 'Deleting…' : `Yes, delete ${selectedIds.size}`}
             </Button>
             <Button size="sm" variant="outline" onClick={() => setShowLassoDeleteConfirm(false)}>Cancel</Button>
+          </div>
+        </div>
+      )}
+      {reworkSummary && (
+        <div className="mb-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900" data-testid="lasso-rework-summary">
+          <p className="mb-1">
+            Moved <strong>{reworkSummary.movedOutlets}</strong> outlet{reworkSummary.movedOutlets === 1 ? '' : 's'} to <strong>{reworkSummary.toRep.name}</strong> and re-planned {reworkSummary.repsReworked.length} territor{reworkSummary.repsReworked.length === 1 ? 'y' : 'ies'} with the saved settings:
+          </p>
+          <ul className="mb-2 ml-4 list-disc">
+            {reworkSummary.repsReworked.map(r => (
+              <li key={r.repId}>
+                {r.name}: {r.outlets} outlets, {r.monthlyVisits} visits over {r.schedules} route day{r.schedules === 1 ? '' : 's'}
+                {r.schedules > 0 ? ` (${(r.monthlyVisits / r.schedules).toFixed(1)}/day)` : ''}
+                {r.overCapacity ? ' — over capacity' : ''}
+              </li>
+            ))}
+          </ul>
+          {reworkSummary.warnings.length > 0 && (
+            <p className="mb-2 text-amber-800">{reworkSummary.warnings.join(' ')}</p>
+          )}
+          <div className="flex flex-wrap items-center gap-2">
+            <Button size="sm" variant="outline" disabled={isOptimizing} onClick={() => { setIsOptimizing(true); reoptimizeMutation.mutate(); }} data-testid="button-reoptimize-after-move">
+              {isOptimizing ? 'Rebuilding…' : "Rebuild every rep's routes"}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setReworkSummary(null)}>Dismiss</Button>
           </div>
         </div>
       )}
