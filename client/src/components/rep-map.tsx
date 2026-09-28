@@ -77,6 +77,19 @@ const VF_LABELS: Record<number, string> = {
 };
 const vfColor = (vf: number | null | undefined) => VF_COLORS[vf ?? 1] || VF_COLORS[1];
 
+// Module-level on purpose. This used to be a const inside the component,
+// declared *below* the memos that call it; a memo runs during render, so the
+// first time one had an outlet to measure (the moment Reassign was clicked)
+// it hit the const before its initialisation and the whole page went white.
+function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
 export function RepMap() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
@@ -569,7 +582,7 @@ export function RepMap() {
     if (!editingOutlet) return [];
     const byZone = new Map<string, Outlet[]>();
     for (const o of outlets) {
-      if (!o.territory || o.territory === editingOutlet.territory) continue;
+      if (!o.territory || o.territory === 'Excluded' || o.territory === editingOutlet.territory) continue;
       if (!byZone.has(o.territory)) byZone.set(o.territory, []);
       byZone.get(o.territory)!.push(o);
     }
@@ -660,15 +673,6 @@ export function RepMap() {
   };
 
   // --- Rep reassignment queue + misfit detection ---
-
-  const haversineKm = (lat1: number, lng1: number, lat2: number, lng2: number) => {
-    const R = 6371;
-    const dLat = (lat2 - lat1) * Math.PI / 180;
-    const dLng = (lng2 - lng1) * Math.PI / 180;
-    const a = Math.sin(dLat / 2) ** 2 +
-      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
-    return 2 * R * Math.asin(Math.sqrt(a));
-  };
 
   // Territory centers per rep (mean of owned outlets)
   const repCentroids = useMemo(() => {
