@@ -624,10 +624,13 @@ export function RepMap() {
         }]
       });
     },
-    onSuccess: () => {
+    onSuccess: (_r, data) => {
       queryClient.invalidateQueries({ queryKey: ['/api/outlets'] });
       queryClient.invalidateQueries({ queryKey: ['/api/schedules'] });
-      toast({ title: "Success", description: "Outlet reassigned successfully" });
+      queryClient.invalidateQueries({ queryKey: ['/api/reps'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/reps/misfit-outlets'] });
+      const toRep = data.newRepId ? reps.find(r => r.id === data.newRepId)?.name : undefined;
+      toast({ title: "Outlet moved", description: `Now in ${data.newTerritory}${toRep ? ` with ${toRep}` : ''}; the routes involved were rebuilt.` });
       setEditingOutlet(null);
       setNewZone('');
       setNewRepId('');
@@ -661,10 +664,18 @@ export function RepMap() {
     deleteMutation.mutate(editingOutlet.id);
   };
 
+  // The rep who owns the chosen zone. Moving an outlet into a zone means
+  // moving it to that rep's routes; a zone label on its own changes nothing
+  // the map draws. This used to send the zone alone with no rep, the server
+  // (rightly) kept the old owner, and the outlet stayed put in the old
+  // rep's colour and route days while the toast said it had moved.
+  const zoneOwnerId = (zone: string) => rankedZones.find(z => z.zone === zone)?.ownerId || '';
+
   const handleReassignOutlet = () => {
     if (!editingOutlet || !newZone) return;
-    // Handle "keep-current" sentinel: undefined means don't change rep
-    const resolvedRepId = newRepId === 'keep-current' || newRepId === '' ? undefined : newRepId;
+    const explicitRep = newRepId === 'keep-current' || newRepId === '' ? '' : newRepId;
+    const owner = zoneOwnerId(newZone);
+    const resolvedRepId = explicitRep || (owner && owner !== editingOutlet.currentRepId ? owner : undefined);
     reassignMutation.mutate({
       outletId: editingOutlet.id,
       newTerritory: newZone,
@@ -2361,6 +2372,11 @@ export function RepMap() {
                     )}
                   </p>
                 )}
+                {newZone && (newRepId === '' || newRepId === 'keep-current') && zoneOwnerId(newZone) && zoneOwnerId(newZone) !== editingOutlet?.currentRepId && (
+                  <p className="text-xs text-blue-700 mt-1" data-testid="text-zone-owner">
+                    Moving to {newZone} puts this outlet on {reps.find(r => r.id === zoneOwnerId(newZone))?.name}'s routes.
+                  </p>
+                )}
               </div>
               <div>
                 <p className="text-sm text-gray-600 mb-2">Reassign to Rep (sorted by distance to this outlet):</p>
@@ -2405,8 +2421,11 @@ export function RepMap() {
                   <Button
                     onClick={handleReassignOutlet}
                     disabled={!newZone || reassignMutation.isPending}
+                    title={newZone && zoneOwnerId(newZone) && zoneOwnerId(newZone) !== editingOutlet?.currentRepId
+                      ? `Moves the outlet to ${reps.find(r => r.id === zoneOwnerId(newZone))?.name ?? 'the zone owner'}'s routes`
+                      : undefined}
                   >
-                    {reassignMutation.isPending ? "Reassigning..." : "Move Zone"}
+                    {reassignMutation.isPending ? "Moving..." : "Move to Zone"}
                   </Button>
                 )}
               </div>
