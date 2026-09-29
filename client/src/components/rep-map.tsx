@@ -122,6 +122,7 @@ export function RepMap() {
     lng: number;
   } | null>(null);
   const [newZone, setNewZone] = useState<string>('');
+  const [newRoute, setNewRoute] = useState<string>(''); // `${repId}|${week}|${dayOfWeek}` of the chosen day route
   const [newRepId, setNewRepId] = useState<string>('');
   // Rep reassignments queued on the map; nothing executes until the user
   // hits "Apply & Reoptimize", then affected reps' schedules rework in one
@@ -720,11 +721,80 @@ export function RepMap() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editingOutlet, reps, outlets]);
 
-  // Open the dialog on the answer, not on a blank. The nearest zone is what the
-  // user almost always wants; anything else is a deliberate override.
+  // Day routes the outlet could move to, nearest first. A "route" is a rep's
+  // day-group: the cell and the cells that repeat it (W1+W3 for a fortnightly
+  // pattern), found by shared outlets. The outlet's own route is left out.
+  const rankedRoutes = useMemo(() => {
+    if (!editingOutlet) return [] as { key: string; repId: string; repName: string; dayOfWeek: number; dayName: string; weeks: number[]; stops: number; nearestKm: number }[];
+    const byId = new Map(outlets.map(o => [o.id, o]));
+    const repById = new Map(reps.map(r => [r.id, r]));
+    type G = { key: string; repId: string; dayOfWeek: number; weeks: number[]; ids: Set<string>; stops: number };
+    const groups: G[] = [];
+    const overlap = (a: Set<string>, b: string[]) => {
+      let shared = 0; for (const id of b) if (a.has(id)) shared++;
+      return shared / Math.max(1, Math.min(a.size, b.length));
+    };
+    for (const c of [...schedules].sort((a, b) => a.week - b.week)) {
+      const ids = (c.outletIds as string[]) || [];
+      if (ids.length === 0) continue;
+      let g = groups.find(g => g.repId === c.repId && g.dayOfWeek === c.dayOfWeek && overlap(g.ids, ids) >= 0.4);
+      if (!g) { g = { key: `${c.repId}|${c.week}|${c.dayOfWeek}`, repId: c.repId, dayOfWeek: c.dayOfWeek, weeks: [], ids: new Set(), stops: ids.length }; groups.push(g); }
+      g.weeks.push(c.week); ids.forEach(id => g.ids.add(id));
+    }
+    return groups
+      .filter(g => !g.ids.has(editingOutlet.id))
+      .map(g => {
+        let nearestKm = Infinity;
+        g.ids.forEach(id => {
+          const o = byId.get(id);
+          if (!o) return;
+          const d = haversineKm(editingOutlet.lat, editingOutlet.lng, o.latitude, o.longitude);
+          if (d < nearestKm) nearestKm = d;
+        });
+        return { key: g.key, repId: g.repId, repName: repById.get(g.repId)?.name ?? 'Rep', dayOfWeek: g.dayOfWeek, dayName: daysOfWeek[g.dayOfWeek - 1] ?? `Day ${g.dayOfWeek}`, weeks: g.weeks, stops: g.stops, nearestKm };
+      })
+      .sort((a, b) => a.nearestKm - b.nearestKm);
+  }, [editingOutlet, schedules, outlets, reps]);
+
+  // Where the outlet is right now, as "Rep 1 · Saturday W1+W3".
+  const currentRouteLabel = useMemo(() => {
+    if (!editingOutlet) return '';
+    const cells = schedules.filter(c => ((c.outletIds as string[]) || []).includes(editingOutlet.id)).sort((a, b) => a.week - b.week);
+    if (cells.length === 0) return 'Not on any route';
+    const rep = reps.find(r => r.id === cells[0].repId)?.name ?? 'Rep';
+    const byDay = new Map<number, number[]>();
+    cells.forEach(c => byDay.set(c.dayOfWeek, [...(byDay.get(c.dayOfWeek) ?? []), c.week]));
+    return `${rep} · ` + Array.from(byDay.entries()).map(([d, ws]) => `${daysOfWeek[d - 1]} W${ws.join('+')}`).join(', ');
+  }, [editingOutlet, schedules, reps]);
+
+  const fmtKm = (km: number) => !Number.isFinite(km) ? '' : km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`;
+
+  // Put the outlet on the chosen route now. The server takes it out of its
+  // current cells, adds it to the route and its repeats, re-sequences those
+  // days, and pins it there so per-rep rebuilds keep it.
+  const moveToRouteMutation = useMutation({
+    mutationFn: async ({ outletId, key }: { outletId: string; key: string }) => {
+      const [repId, week, dayOfWeek] = key.split('|');
+      const res = await apiRequest("POST", `/api/outlets/${outletId}/move-to-route`, { repId, week: Number(week), dayOfWeek: Number(dayOfWeek) });
+      return res.json() as Promise<{ message: string }>;
+    },
+    onSuccess: (r) => {
+      queryClient.invalidateQueries({ queryKey: ['/api/outlets'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/schedules'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/reps'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/reps/misfit-outlets'] });
+      toast({ title: "Outlet moved", description: r.message });
+      setEditingOutlet(null); setNewRoute(''); setNewZone(''); setNewRepId('');
+    },
+    onError: (e: Error) => toast({ title: "Move failed", description: e.message, variant: "destructive" }),
+  });
+
+  // Open the dialog on the answer, not on a blank: the nearest route and the
+  // nearest zone are what the user almost always wants.
   useEffect(() => {
-    if (!editingOutlet || rankedZones.length === 0) return;
-    setNewZone(rankedZones[0].zone);
+    if (!editingOutlet) return;
+    if (rankedZones.length > 0) setNewZone(rankedZones[0].zone);
+    setNewRoute(rankedRoutes[0]?.key ?? '');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editingOutlet?.id]);
 
@@ -2327,8 +2397,9 @@ export function RepMap() {
                 <p className="font-medium">{editingOutlet?.name}</p>
               </div>
               <div>
-                <p className="text-sm text-gray-600">Current Zone:</p>
-                <Badge variant="outline">{editingOutlet?.territory || 'Unassigned'}</Badge>
+                <p className="text-sm text-gray-600">Current route:</p>
+                <Badge variant="outline" data-testid="text-current-route">{currentRouteLabel}</Badge>
+                {editingOutlet?.territory && <span className="ml-2 text-xs text-gray-500">{editingOutlet.territory}</span>}
               </div>
               <div>
                 <p className="text-sm text-gray-600">Current Rep:</p>
@@ -2339,44 +2410,34 @@ export function RepMap() {
                 </Badge>
               </div>
               <div>
-                <p className="text-sm text-gray-600 mb-2">New Zone (closest first):</p>
-                {/* Nearest at the top, with the real distance and the rep who
-                    owns it. The list used to be every zone in alphabetical
-                    order - "Zone 1, Zone 10, Zone 11..." across 84 of them -
-                    with two of them merely labelled "Recommended", so finding
-                    the zone next door meant scrolling and guessing. */}
-                <Select value={newZone} onValueChange={setNewZone}>
-                  <SelectTrigger data-testid="select-reassign-zone">
-                    <SelectValue placeholder="Select new zone" />
+                <p className="text-sm text-gray-600 mb-2">Move to route (closest first):</p>
+                {/* A route, not a zone label. Day routes are cut from geography,
+                    so changing the zone name - or even the rep - dropped the
+                    outlet straight back into the same day. Picking the route
+                    puts it there and pins it. */}
+                <Select value={newRoute} onValueChange={setNewRoute}>
+                  <SelectTrigger data-testid="select-move-route">
+                    <SelectValue placeholder="Select a route" />
                   </SelectTrigger>
                   <SelectContent>
-                    {rankedZones.map(({ zone, nearestKm, outlets: n, ownerName }, idx) => (
-                      <SelectItem key={zone} value={zone}>
-                        {zone} — {nearestKm < 1 ? `${Math.round(nearestKm * 1000)} m` : `${nearestKm.toFixed(1)} km`}
-                        {ownerName ? ` · ${ownerName}` : ''} · {n} outlet{n === 1 ? '' : 's'}
-                        {idx === 0 ? ' · closest' : ''}
+                    {rankedRoutes.map((r, idx) => (
+                      <SelectItem key={r.key} value={r.key}>
+                        {r.repName} · {r.dayName} W{r.weeks.join('+')} — {fmtKm(r.nearestKm)} · {r.stops} stops{idx === 0 ? ' · closest' : ''}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-                {rankedZones.length > 0 && (
-                  <p className="text-xs text-gray-500 mt-1" data-testid="text-nearest-zone">
-                    Nearest route: <span className="font-medium">{rankedZones[0].zone}</span>
-                    {rankedZones[0].ownerName ? ` (${rankedZones[0].ownerName})` : ''}, {' '}
-                    {rankedZones[0].nearestKm < 1
-                      ? `${Math.round(rankedZones[0].nearestKm * 1000)} m`
-                      : `${rankedZones[0].nearestKm.toFixed(1)} km`} from this outlet.
-                    {newZone && newZone !== rankedZones[0].zone && (
-                      <button type="button" className="ml-1 underline hover:text-gray-700"
-                        onClick={() => setNewZone(rankedZones[0].zone)}>Use it</button>
+                {rankedRoutes.length > 0 && (
+                  <p className="text-xs text-gray-500 mt-1" data-testid="text-nearest-route">
+                    Nearest route: <span className="font-medium">{rankedRoutes[0].repName} · {rankedRoutes[0].dayName} W{rankedRoutes[0].weeks.join('+')}</span>, {fmtKm(rankedRoutes[0].nearestKm)} from this outlet.
+                    {newRoute && newRoute !== rankedRoutes[0].key && (
+                      <button type="button" className="ml-1 underline hover:text-gray-700" onClick={() => setNewRoute(rankedRoutes[0].key)}>Use it</button>
                     )}
                   </p>
                 )}
-                {newZone && (newRepId === '' || newRepId === 'keep-current') && zoneOwnerId(newZone) && zoneOwnerId(newZone) !== editingOutlet?.currentRepId && (
-                  <p className="text-xs text-blue-700 mt-1" data-testid="text-zone-owner">
-                    Moving to {newZone} puts this outlet on {reps.find(r => r.id === zoneOwnerId(newZone))?.name}'s routes.
-                  </p>
-                )}
+                <p className="text-xs text-gray-500 mt-1">
+                  The outlet leaves its current route, joins this one on every repeat, and stays there when routes are rebuilt. A new optimization from the dashboard starts clean.
+                </p>
               </div>
               <div>
                 <p className="text-sm text-gray-600 mb-2">Reassign to Rep (sorted by distance to this outlet):</p>
@@ -2419,13 +2480,11 @@ export function RepMap() {
                   </Button>
                 ) : (
                   <Button
-                    onClick={handleReassignOutlet}
-                    disabled={!newZone || reassignMutation.isPending}
-                    title={newZone && zoneOwnerId(newZone) && zoneOwnerId(newZone) !== editingOutlet?.currentRepId
-                      ? `Moves the outlet to ${reps.find(r => r.id === zoneOwnerId(newZone))?.name ?? 'the zone owner'}'s routes`
-                      : undefined}
+                    onClick={() => editingOutlet && newRoute && moveToRouteMutation.mutate({ outletId: editingOutlet.id, key: newRoute })}
+                    disabled={!newRoute || moveToRouteMutation.isPending}
+                    data-testid="button-move-route"
                   >
-                    {reassignMutation.isPending ? "Moving..." : "Move to Zone"}
+                    {moveToRouteMutation.isPending ? "Moving..." : "Move to Route"}
                   </Button>
                 )}
               </div>
