@@ -5464,10 +5464,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       await emitProgress(10, 'Preparing', 'Clearing existing data...');
 
-      // Clear existing reps first
+      // Clear existing reps first. Hand placements were pinned to those reps'
+      // routes, so they go with them: a fresh plan starts clean.
       const existingReps = await storage.getReps();
       for (const rep of existingReps) {
         await storage.deleteRep(rep.id);
+      }
+      for (const o of await storage.getOutlets()) {
+        if (o.pinnedRoute) await storage.updateOutlet(o.id, { pinnedRoute: null });
       }
 
       await emitProgress(15, 'Clustering', `Analyzing ${outlets.length} outlets for geographic patterns...`);
@@ -6690,6 +6694,166 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({ message: "Failed to export routes" });
     }
   });
+  // ---- Manual route moves ("put this outlet on that route") ----
+  //
+  // Day routes are cut from geography, so relabelling an outlet's zone, or
+  // even moving it to another rep, puts it straight back into whichever day
+  // its coordinates fall in. When the user says "move it to that route" they
+  // mean the route. So the outlet is taken out of the cells it is in, put
+  // into the chosen cell and the cells that repeat the same day, and pinned
+  // there: every per-rep rebuild re-applies the pin, and only a fresh
+  // optimization from the dashboard (new reps, new routes) clears it.
+  type PinnedRoute = { repId: string; week: number; dayOfWeek: number };
+  function parsePin(o: Outlet): PinnedRoute | null {
+    if (!o.pinnedRoute) return null;
+    try {
+      const p = JSON.parse(o.pinnedRoute);
+      return p && typeof p.repId === 'string' && Number.isInteger(p.week) && Number.isInteger(p.dayOfWeek) ? p : null;
+    } catch { return null; }
+  }
+
+  // The cells that repeat the target's day-group: same rep, same weekday,
+  // and sharing a good part of its outlets (the fortnightly and weekly
+  // outlets recur on every repeat). Target first, then by week.
+  function mirrorCells(target: Schedule, cells: Schedule[]): Schedule[] {
+    const t = new Set(target.outletIds as string[]);
+    const mirrors = cells.filter(c => {
+      if (c.id === target.id) return true;
+      if (c.repId !== target.repId || c.dayOfWeek !== target.dayOfWeek) return false;
+      const ids = c.outletIds as string[];
+      if (ids.length === 0 || t.size === 0) return false;
+      const shared = ids.filter(id => t.has(id)).length;
+      return shared >= Math.max(1, Math.ceil(0.4 * Math.min(ids.length, t.size)));
+    });
+    return mirrors.sort((a, b) => (a.id === target.id ? -1 : b.id === target.id ? 1 : a.week - b.week));
+  }
+
+  // Cheapest-insertion position for one stop in an existing route order.
+  function insertStop(order: string[], id: string, byId: Map<string, Outlet>): string[] {
+    const o = byId.get(id);
+    if (!o || order.length === 0) return [...order, id];
+    const d = (a: string, b: string) => {
+      const x = byId.get(a), y = byId.get(b);
+      return x && y ? calculateDistance(x.latitude, x.longitude, y.latitude, y.longitude) : 0;
+    };
+    const dTo = (a: string) => { const x = byId.get(a); return x ? calculateDistance(x.latitude, x.longitude, o.latitude, o.longitude) : 0; };
+    let bestAt = order.length, bestCost = dTo(order[order.length - 1]);
+    for (let i = 0; i < order.length - 1; i++) {
+      const cost = dTo(order[i]) + dTo(order[i + 1]) - d(order[i], order[i + 1]);
+      if (cost < bestCost) { bestCost = cost; bestAt = i + 1; }
+    }
+    if (dTo(order[0]) < bestCost) bestAt = 0;
+    return [...order.slice(0, bestAt), id, ...order.slice(bestAt)];
+  }
+
+  // Take the outlet out of the cells it sits in and put it into the target
+  // route (and the cells that repeat it), keeping its visit count. Returns
+  // the cells it left and the cells it joined.
+  async function placeOutletInRoute(outlet: Outlet, target: Schedule): Promise<{ from: Schedule[]; to: Schedule[] }> {
+    const all = await storage.getSchedules();
+    const byId = new Map((await storage.getOutlets()).map(o => [o.id, o]));
+    const current = all.filter(c => (c.outletIds as string[]).includes(outlet.id));
+    const group = mirrorCells(target, all);
+    const visits = Math.max(1, current.length || Math.min(outlet.visitFrequency ?? 1, group.length));
+    const to = group.slice(0, Math.min(visits, group.length));
+    const toIds = new Set(to.map(c => c.id));
+    const keepElsewhere = Math.max(0, visits - to.length);
+    // Cells to leave: other reps' cells first, so any visit kept beyond the
+    // target group stays with the receiving rep.
+    const leaving = current.filter(c => !toIds.has(c.id))
+      .sort((a, b) => (a.repId === target.repId ? 1 : 0) - (b.repId === target.repId ? 1 : 0));
+    const from = leaving.slice(0, Math.max(0, leaving.length - keepElsewhere));
+    for (const c of from) {
+      await storage.updateSchedule(c.id, {
+        outletIds: (c.outletIds as string[]).filter(id => id !== outlet.id),
+        routeOrder: ((c.routeOrder as string[]) || []).filter(id => id !== outlet.id),
+        totalDistance: null, estimatedDuration: null,
+      });
+    }
+    const joined: Schedule[] = [];
+    for (const c of to) {
+      const ids = c.outletIds as string[];
+      if (ids.includes(outlet.id)) { joined.push(c); continue; }
+      const order = ((c.routeOrder as string[]) || []).length > 0 ? (c.routeOrder as string[]) : ids;
+      const updated = await storage.updateSchedule(c.id, {
+        outletIds: [...ids, outlet.id],
+        routeOrder: insertStop(order, outlet.id, byId),
+        totalDistance: null, estimatedDuration: null,
+      });
+      if (updated) joined.push(updated);
+    }
+    return { from, to: joined };
+  }
+
+  // After a rep's routes are rebuilt, put every outlet pinned to one of this
+  // rep's routes back where the user left it. Pins that no longer apply (the
+  // outlet moved to another rep, the cell is gone) are dropped.
+  async function applyPinsForRep(repId: string): Promise<number> {
+    let applied = 0;
+    for (const o of (await storage.getOutlets()).filter(o => o.pinnedRoute)) {
+      const pin = parsePin(o);
+      if (!pin) { await storage.updateOutlet(o.id, { pinnedRoute: null }); continue; }
+      if (pin.repId !== repId) continue;
+      if (o.repId !== repId) { await storage.updateOutlet(o.id, { pinnedRoute: null }); continue; }
+      const cells = await storage.getSchedulesByRepId(repId);
+      const target = cells.find(c => c.week === pin.week && c.dayOfWeek === pin.dayOfWeek);
+      if (!target) { await storage.updateOutlet(o.id, { pinnedRoute: null }); continue; }
+      await placeOutletInRoute(o, target);
+      applied++;
+    }
+    return applied;
+  }
+
+  app.post("/api/outlets/:id/move-to-route", async (req, res) => {
+    try {
+      const repId = typeof req.body?.repId === 'string' ? req.body.repId : '';
+      const week = Number(req.body?.week);
+      const dayOfWeek = Number(req.body?.dayOfWeek);
+      if (!repId || !Number.isInteger(week) || !Number.isInteger(dayOfWeek)) {
+        return res.status(400).json({ message: "repId, week and dayOfWeek are required" });
+      }
+      const outlet = (await storage.getOutlets()).find(o => o.id === req.params.id);
+      if (!outlet) return res.status(404).json({ message: "Outlet not found" });
+      const rep = await storage.getRep(repId);
+      if (!rep) return res.status(404).json({ message: "That rep no longer exists - the plan was rebuilt. Pick a route on the current plan." });
+      const target = (await storage.getSchedulesByRepId(repId)).find(c => c.week === week && c.dayOfWeek === dayOfWeek);
+      if (!target) return res.status(404).json({ message: "That route no longer exists - the plan was rebuilt. Pick a route on the current plan." });
+
+      // The outlet takes the route's zone label, so lists and exports agree
+      // with the map.
+      const outletsNow = await storage.getOutlets();
+      const zoneCount = new Map<string, number>();
+      for (const id of target.outletIds as string[]) {
+        const z = outletsNow.find(o => o.id === id)?.territory;
+        if (z && z !== 'Excluded') zoneCount.set(z, (zoneCount.get(z) ?? 0) + 1);
+      }
+      const zone = Array.from(zoneCount.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? outlet.territory;
+
+      const fromRepId = outlet.repId;
+      await storage.updateOutlet(outlet.id, {
+        repId, territory: zone,
+        pinnedRoute: JSON.stringify({ repId, week, dayOfWeek } satisfies PinnedRoute),
+      });
+      const fresh = (await storage.getOutlets()).find(o => o.id === outlet.id)!;
+      const { from, to } = await placeOutletInRoute(fresh, target);
+      await storage.flush();
+
+      const label = (c: Schedule) => `W${c.week} ${WEEKDAY_NAMES[c.dayOfWeek - 1]?.slice(0, 3) ?? c.dayOfWeek}`;
+      res.json({
+        success: true,
+        outlet: fresh,
+        fromRepId,
+        toRep: { id: rep.id, name: rep.name },
+        from: from.map(c => ({ repId: c.repId, week: c.week, dayOfWeek: c.dayOfWeek })),
+        to: to.map(c => ({ repId: c.repId, week: c.week, dayOfWeek: c.dayOfWeek })),
+        message: `${fresh.name} is now on ${rep.name} ${to.map(label).join(' + ')}${zone ? ` (${zone})` : ''}, and stays there when routes are rebuilt.`,
+      });
+    } catch (error) {
+      console.error("move-to-route error:", error);
+      res.status(500).json({ message: "Failed to move the outlet to that route" });
+    }
+  });
+
   async function regenerateSchedulesForReps(repIds: string[]) {
     const uniqueRepIds = Array.from(new Set(repIds.filter(Boolean)));
     // Rebuild with the settings the plan was built on - the day band, the
@@ -6728,6 +6892,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const schedules = await buildAnchorAwareSchedulesFromZones(rep, Array.from(byZone.values()));
         for (const s of schedules) await storage.createSchedule(s);
         created = schedules.length;
+        // Outlets the user placed on a route by hand go back onto it.
+        await applyPinsForRep(rep.id);
 
         const repSchedules = await storage.getSchedulesByRepId(rep.id);
         const repHierarchies = allHierarchies
@@ -7091,6 +7257,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Save new schedules
       await storage.createSchedules(schedules);
+      for (const rep of reps) await applyPinsForRep(rep.id);
       
       // Validate the new schedules
       const allSchedules = await storage.getSchedules();
