@@ -4,11 +4,24 @@ import cookieParser from "cookie-parser";
 import { registerRoutes } from "./routes";
 import { storage } from "./storage";
 import { setupVite, serveStatic, log } from "./vite";
+import { randomUUID } from "crypto";
+import { persistenceMode } from "./persist";
+
+// One id per server process. The client compares it across responses: if two
+// ids answer the same page, two instances are running without a shared
+// database, and a change saved on one is invisible on the other.
+const INSTANCE_ID = randomUUID().slice(0, 8);
+const STARTED_AT = new Date().toISOString();
 
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
+
+app.use((_req, res, next) => {
+  res.setHeader("X-App-Instance", INSTANCE_ID);
+  next();
+});
 
 app.use((req, res, next) => {
   const start = Date.now();
@@ -45,6 +58,17 @@ app.use((req, res, next) => {
   // comes from Postgres, and a request answered before that would see an
   // empty store and could overwrite the real one.
   await storage.ready;
+
+  app.get("/api/health", async (_req, res) => {
+    res.json({
+      instance: INSTANCE_ID,
+      startedAt: STARTED_AT,
+      persistence: persistenceMode(),
+      outlets: (await storage.getOutlets()).length,
+      env: process.env.NODE_ENV || "development",
+    });
+  });
+
   const server = await registerRoutes(app);
 
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
