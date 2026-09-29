@@ -4738,7 +4738,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return {
           'Rep': rep?.name ?? '',
           'Rep Code': rep?.code ?? '',
-          'Territory': rep ? (rep.territory || rep.name) : (o.territory === 'Excluded' ? 'Held out' : 'Unassigned'),
+          'Territory': rep ? (rep.territory || rep.name) : (o.territory === 'Excluded' ? 'Held out' : o.territory === 'Needs Review' ? 'Needs review' : 'Unassigned'),
           'Outlet Code': o.code || '',
           'Outlet Name': o.name,
           'Address': o.address || '',
@@ -4748,7 +4748,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           'Visits in Plan': (cellsOf.get(o.id) || []).length,
           'Route Days': routeDays(o),
           'Value': o.value ?? '',
-          'Status': o.territory === 'Excluded' ? 'Held out (duplicate)' : rep ? 'Assigned' : 'Unassigned',
+          'Status': o.territory === 'Excluded' ? 'Held out (duplicate)' : o.territory === 'Needs Review' ? 'Needs review (far from the area)' : rep ? 'Assigned' : 'Unassigned',
         };
       };
       const outletCols = [
