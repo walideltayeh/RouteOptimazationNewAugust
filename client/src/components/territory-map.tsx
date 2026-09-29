@@ -31,6 +31,13 @@ function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): nu
   return 2 * R * Math.asin(Math.sqrt(a));
 }
 
+const HELD_OUT_LABEL = 'Held out (duplicates)';
+const FAR_AWAY_LABEL = 'Needs review (far from the area)';
+const UNOWNED_LABELS: Record<string, string> = {
+  [HELD_OUT_LABEL]: 'Duplicates you chose to hold out of the plan. They are kept on file and can be restored from the dashboard.',
+  [FAR_AWAY_LABEL]: 'Further from the core area than the max zone radius, so they were left out of the routes. Raise the radius or fix the coordinates, then optimize again.',
+  'Unassigned': 'Not in any rep\'s plan. Run a new optimization to place them.',
+};
 const TERRITORY_COLORS = [
   '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7',
   '#DDA0DD', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E9'
@@ -683,7 +690,11 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     const groups: Record<string, Outlet[]> = {};
     const labelOfRep = new Map(reps.map(r => [r.id, r.territory || r.name]));
     outlets.forEach(outlet => {
-      const territory = (outlet.repId && labelOfRep.get(outlet.repId)) || 'Unassigned';
+      // Three different things used to share the "Unassigned" label: the
+      // duplicates the user held out, the outlets too far from the area to
+      // route, and outlets no rep has. Name each for what it is.
+      const territory = (outlet.repId && labelOfRep.get(outlet.repId))
+        || (outlet.territory === 'Excluded' ? HELD_OUT_LABEL : outlet.territory === 'Needs Review' ? FAR_AWAY_LABEL : 'Unassigned');
       if (!groups[territory]) groups[territory] = [];
       groups[territory].push(outlet);
     });
@@ -697,8 +708,8 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   const cycleSlots = planSettings?.configured && planSettings.cycleDays ? planSettings.cycleDays : 20;
 
   const getTerritoryColor = (territory: string) => {
-    if (territory === 'Unassigned') return '#9CA3AF';
-    const territoryNames = Object.keys(territoryGroups).filter(t => t !== 'Unassigned').sort();
+    if (territory in UNOWNED_LABELS) return territory === HELD_OUT_LABEL ? '#D1D5DB' : territory === FAR_AWAY_LABEL ? '#F59E0B' : '#9CA3AF';
+    const territoryNames = Object.keys(territoryGroups).filter(t => !(t in UNOWNED_LABELS)).sort();
     const index = territoryNames.indexOf(territory) % TERRITORY_COLORS.length;
     return TERRITORY_COLORS[index];
   };
@@ -936,7 +947,8 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                 const vf4Count = territoryOutlets.filter(o => o.visitFrequency === 4).length;
 
                 return (
-                  <div key={territory} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                  <div key={territory} className="p-3 bg-gray-50 rounded-lg">
+                  <div className="flex items-center justify-between">
                     <div className="flex items-center space-x-3">
                       <div
                         className="w-4 h-4 rounded-full border border-gray-300"
@@ -954,10 +966,18 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                       <div className="text-xs text-gray-600">
                         VF2: {vf2Count} | VF4: {vf4Count}
                       </div>
-                      <div className="text-xs text-green-600">
-                        ~{Math.round(territoryOutlets.reduce((sum, o) => sum + (o.visitFrequency || 2), 0) / cycleSlots)} visits/day
-                      </div>
+                      {!(territory in UNOWNED_LABELS) && (
+                        <div className="text-xs text-green-600">
+                          ~{Math.round(territoryOutlets.reduce((sum, o) => sum + (o.visitFrequency || 2), 0) / cycleSlots)} visits/day
+                        </div>
+                      )}
                     </div>
+                  </div>
+                  {territory in UNOWNED_LABELS && (
+                    <p className="mt-2 text-xs text-gray-500" data-testid={`text-unowned-${territory === HELD_OUT_LABEL ? 'held-out' : territory === FAR_AWAY_LABEL ? 'far' : 'unassigned'}`}>
+                      {UNOWNED_LABELS[territory]}
+                    </p>
+                  )}
                   </div>
                 );
               })}
