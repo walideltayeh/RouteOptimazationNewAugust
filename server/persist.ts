@@ -44,6 +44,13 @@ export function usingDatabase(): boolean {
   return !!DATABASE_URL;
 }
 
+/** Where the state really lives right now, for the health endpoint. */
+export function persistenceMode(): "postgres" | "disk" | "disk-postgres-failed" | "postgres-pending" {
+  if (!DATABASE_URL) return "disk";
+  if (sqlClient === undefined) return "postgres-pending";
+  return sqlClient ? "postgres" : "disk-postgres-failed";
+}
+
 const fileFor = (key: string) => path.join(DATA_DIR, key.replace(/[^a-zA-Z0-9._-]/g, "_") + ".json");
 
 export async function loadBlob(key: string): Promise<string | null> {

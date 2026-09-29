@@ -13,6 +13,7 @@ import ScenariosPage from "@/pages/scenarios";
 import NotFound from "@/pages/not-found";
 import LandingPage from "@/components/landing-page";
 import LoginModal from "@/components/login-modal";
+import PersistenceBanner from "@/components/persistence-banner";
 import { useAuth } from "@/hooks/use-auth";
 
 function AppContent() {
@@ -44,6 +45,7 @@ function AppContent() {
     <div className="flex h-screen bg-gray-50">
       <Sidebar />
       <main className="flex-1 overflow-auto">
+        <PersistenceBanner />
         <Switch>
           <Route path="/" component={Dashboard} />
           <Route path="/territories" component={TerritoriesPage} />
