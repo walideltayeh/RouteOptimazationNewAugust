@@ -11,6 +11,8 @@ import RepMapPage from "@/pages/rep-map";
 import SchedulesPage from "@/pages/schedules";
 import ScenariosPage from "@/pages/scenarios";
 import NotFound from "@/pages/not-found";
+import UsersPage from "@/pages/users";
+import ChangePasswordDialog from "@/components/change-password-dialog";
 import LandingPage from "@/components/landing-page";
 import LoginModal from "@/components/login-modal";
 import PersistenceBanner from "@/components/persistence-banner";
@@ -18,7 +20,7 @@ import AppHeader from "@/components/app-header";
 import { useAuth } from "@/hooks/use-auth";
 
 function AppContent() {
-  const { isAuthenticated, isLoading, refetch } = useAuth();
+  const { isAuthenticated, isLoading, refetch, user } = useAuth();
   const [showLogin, setShowLogin] = useState(false);
   const [collapsed, setCollapsed] = useState<boolean>(() => { try { return localStorage.getItem("sidebar:collapsed") === "1"; } catch { return false; } });
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -58,9 +60,12 @@ function AppContent() {
           <Route path="/rep-map" component={RepMapPage} />
           <Route path="/schedules" component={SchedulesPage} />
           <Route path="/scenarios" component={ScenariosPage} />
+          <Route path="/users" component={UsersPage} />
           <Route component={NotFound} />
         </Switch>
         </main>
+        {/* A password an admin set has to be replaced before anything else. */}
+        <ChangePasswordDialog isOpen={!!user?.mustChangePassword} onClose={() => {}} required />
       </div>
     </div>
   );

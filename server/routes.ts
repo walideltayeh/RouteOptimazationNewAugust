@@ -3757,6 +3757,7 @@ function generateWeeklySchedules(rep: Rep, outlets: Outlet[]): InsertSchedule[] 
 
 import { generateScheduleExcel } from './export';
 import { jobs, captureResponse, type JobProgress } from './jobs';
+import { authStore, AuthError, canEdit, toPublic, ROLES, type Role, type User } from './auth';
 
 
 declare global {
@@ -3781,45 +3782,60 @@ function validateEmail(email: string): boolean {
 }
 
 
-// Admin credentials never live in this source file - the repo is public, and
-// the pair that used to be hardcoded here is still exposed in git history.
-// They come from env vars or from data/admin.json (see server/admin-credentials.ts).
+// Credentials never live in this source file - the repo is public, and the
+// pair that used to be hardcoded here is still exposed in git history.
+// Accounts live in the auth store (server/auth.ts). The old single admin
+// (SUPERUSER_* secrets or data/admin.json) is imported as the first account
+// only when no accounts exist yet; after that it is not consulted.
 const credentialSource = adminCredentialSource();
-if (credentialSource === 'none') {
-  console.warn('[auth] No admin login configured - sign-in is disabled.');
-  console.warn('[auth] Fix it with:  npm run set-admin -- you@example.com "your-password"');
-  console.warn('[auth] Or set SUPERUSER_EMAIL and SUPERUSER_PASSWORD (Replit Secrets / .env).');
+if (credentialSource !== 'none') {
+  console.log(`[auth] Legacy admin found in ${credentialSource === 'env' ? 'environment variables' : 'data/admin.json'}; used only to seed the first account.`);
 } else {
-  console.log(`[auth] Admin login configured from ${credentialSource === 'env' ? 'environment variables' : 'data/admin.json'}.`);
+  console.log('[auth] No legacy admin; on a fresh install the first visitor creates the admin account in the app.');
 }
 
-// Server-side session storage for superuser tokens
-const activeSuperuserSessions = new Set<string>();
-
-// Generate secure random token
-function generateSecureToken(): string {
-  return randomUUID() + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2);
-}
-
-// Validate superuser session token
-function isValidSuperuserSession(token: string | null): boolean {
-  if (!token) return false;
-  return activeSuperuserSessions.has(token);
-}
+const SESSION_COOKIE = 'session';
+const OPEN_PATHS = new Set(['/api/auth/login', '/api/auth/logout', '/api/auth/status', '/api/auth/setup', '/api/health', '/api/config/mapbox']);
 
 export async function registerRoutes(app: Express): Promise<Server> {
-  
-  app.use((req: Request, _res: Response, next: NextFunction) => {
-    const superuserCookie = req.cookies?.superuser_session || null;
+  await authStore.load();
 
-    // Validate superuser session server-side
-    const isSuperuserValid = isValidSuperuserSession(superuserCookie);
-
-    // Add superuser flag to request (only if token is valid)
-    (req as any).isSuperuser = isSuperuserValid;
-    
+  // Who is calling, and may they? Every /api route needs a signed-in user
+  // except the handful above; anything that changes data needs a planner
+  // or an admin; the accounts endpoints need an admin. Before this, the
+  // admin flag only hid two buttons and every endpoint answered anyone.
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    const token = req.cookies?.[SESSION_COOKIE] || null;
+    const user = authStore.resolveSession(token);
+    (req as any).user = user;
+    (req as any).isSuperuser = user?.role === 'admin';
+    if (!req.path.startsWith('/api')) return next();
+    if (OPEN_PATHS.has(req.path)) return next();
+    if (!user) return res.status(401).json({ message: 'Sign in to continue' });
+    if (req.path.startsWith('/api/users') && user.role !== 'admin') {
+      return res.status(403).json({ message: 'Only an admin can manage accounts' });
+    }
+    const mutating = !['GET', 'HEAD', 'OPTIONS'].includes(req.method);
+    if (mutating && !canEdit(user.role) && req.path !== '/api/auth/change-password') {
+      return res.status(403).json({ message: 'Your account is view-only; ask an admin for planner access to make changes' });
+    }
     next();
   });
+
+  const currentUser = (req: Request) => (req as any).user as User | null;
+  const setSessionCookie = (res: Response, token: string) => {
+    res.cookie(SESSION_COOKIE, token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+      sameSite: 'lax',
+    });
+  };
+  const authFail = (res: Response, err: unknown, fallback: string) => {
+    if (err instanceof AuthError) return res.status(err.status).json({ message: err.message });
+    console.error(fallback, err);
+    return res.status(500).json({ message: fallback });
+  };
 
   // A Mapbox public token is intentionally usable by browsers. The workspace
   // stores it without Vite's client-only prefix, so provide it through this
@@ -3830,68 +3846,95 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
   });
 
-  // Superuser login endpoint
   app.post("/api/auth/login", async (req: Request, res: Response) => {
     try {
-      const { email, password } = req.body;
-
-      if (!isAdminConfigured()) {
-        return res.status(503).json({
-          message: 'No admin login is configured yet. In the shell, run:  npm run set-admin -- you@example.com "your-password"  then restart the app.',
-          adminConfigured: false,
-        });
-      }
-
-      if (verifyAdmin(email, password)) {
-        // Generate a secure, random session token
-        const sessionToken = generateSecureToken();
-        activeSuperuserSessions.add(sessionToken);
-        
-        res.cookie('superuser_session', sessionToken, {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
-          sameSite: 'lax'
-        });
-        
-        return res.json({
-          success: true,
-          message: "Login successful",
-          isSuperuser: true
-        });
-      }
-      
-      return res.status(401).json({
-        message: "Invalid credentials"
-      });
-    } catch (error) {
-      console.error("Login error:", error);
-      res.status(500).json({ message: "Login failed" });
+      const user = authStore.verifyLogin(req.body?.email, req.body?.password);
+      const token = authStore.createSession(user.id);
+      setSessionCookie(res, token);
+      res.clearCookie('superuser_session');
+      return res.json({ success: true, user: toPublic(user) });
+    } catch (err) {
+      return authFail(res, err, "Login failed");
     }
   });
 
-  // Superuser logout endpoint
-  app.post("/api/auth/logout", async (req: Request, res: Response) => {
-    const sessionToken = req.cookies?.superuser_session;
-    if (sessionToken) {
-      activeSuperuserSessions.delete(sessionToken);
+  // First run: no accounts exist yet, so whoever reaches the app first
+  // creates the admin. Refused as soon as one account exists.
+  app.post("/api/auth/setup", async (req: Request, res: Response) => {
+    try {
+      if (!authStore.setupRequired()) return res.status(403).json({ message: "Accounts already exist; sign in, or ask an admin" });
+      const user = authStore.createUser({ email: req.body?.email, name: req.body?.name, role: 'admin', password: req.body?.password });
+      const token = authStore.createSession(user.id);
+      setSessionCookie(res, token);
+      return res.json({ success: true, user });
+    } catch (err) {
+      return authFail(res, err, "Setup failed");
     }
+  });
+
+  app.post("/api/auth/logout", async (req: Request, res: Response) => {
+    authStore.destroySession(req.cookies?.[SESSION_COOKIE]);
+    res.clearCookie(SESSION_COOKIE);
     res.clearCookie('superuser_session');
     res.json({ success: true, message: "Logged out" });
   });
 
-  // Check auth status
   app.get("/api/auth/status", async (req: Request, res: Response) => {
-    const isSuperuser = !!(req as any).isSuperuser;
-
+    const user = currentUser(req);
     res.json({
-      isAuthenticated: isSuperuser,
-      isSuperuser,
-      // Lets the login screen explain itself when no admin exists yet, instead
-      // of rejecting every attempt with "invalid credentials".
-      adminConfigured: isAdminConfigured(),
+      isAuthenticated: !!user,
+      isSuperuser: user?.role === 'admin',
+      canEdit: !!user && canEdit(user.role),
+      user: user ? toPublic(user) : null,
+      setupRequired: authStore.setupRequired(),
+      adminConfigured: !authStore.setupRequired(),
     });
   });
+
+  app.post("/api/auth/change-password", async (req: Request, res: Response) => {
+    try {
+      const user = currentUser(req)!;
+      authStore.changeOwnPassword(user, String(req.body?.currentPassword ?? ''), String(req.body?.newPassword ?? ''));
+      res.json({ success: true });
+    } catch (err) {
+      return authFail(res, err, "Could not change the password");
+    }
+  });
+
+  // ---- Accounts (admin only; the guard above enforces it) ----
+  app.get("/api/users", (_req: Request, res: Response) => res.json(authStore.listUsers()));
+  app.post("/api/users", (req: Request, res: Response) => {
+    try {
+      const { email, name, role, password } = req.body || {};
+      const user = authStore.createUser({ email, name, role: role as Role, password, mustChangePassword: true });
+      res.status(201).json(user);
+    } catch (err) {
+      return authFail(res, err, "Could not create the account");
+    }
+  });
+  app.patch("/api/users/:id", (req: Request, res: Response) => {
+    try {
+      const { name, role, isActive, password } = req.body || {};
+      const user = authStore.updateUser(req.params.id, {
+        ...(name !== undefined ? { name: String(name) } : {}),
+        ...(role !== undefined ? { role: role as Role } : {}),
+        ...(isActive !== undefined ? { isActive: !!isActive } : {}),
+        ...(password !== undefined ? { password: String(password) } : {}),
+      }, currentUser(req)!);
+      res.json(user);
+    } catch (err) {
+      return authFail(res, err, "Could not update the account");
+    }
+  });
+  app.delete("/api/users/:id", (req: Request, res: Response) => {
+    try {
+      authStore.deleteUser(req.params.id, currentUser(req)!);
+      res.json({ success: true });
+    } catch (err) {
+      return authFail(res, err, "Could not delete the account");
+    }
+  });
+  app.get("/api/users/roles", (_req: Request, res: Response) => res.json(ROLES));
 
   app.post("/api/outlets", async (req: Request, res: Response) => {
     try {

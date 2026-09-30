@@ -25,6 +25,7 @@ import type { DashboardMetrics, Rep, Outlet, Schedule, RoleHierarchy } from "@sh
 interface AuthStatus {
   isAuthenticated: boolean;
   isSuperuser: boolean;
+  canEdit: boolean;
 }
 
 interface RoleConfig {
@@ -237,7 +238,7 @@ export default function Dashboard() {
               <p className="text-sm text-[#86868b]">Upload outlets, set the working week and visit band, then optimize.</p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              {authStatus?.isSuperuser && (
+              {authStatus?.canEdit && (
                 <Button
                   onClick={handleStartNewOptimization}
                   disabled={resetAllMutation.isPending}
@@ -251,7 +252,7 @@ export default function Dashboard() {
                   Start New Optimization
                 </Button>
               )}
-              {authStatus?.isSuperuser && hasOutlets && (
+              {authStatus?.canEdit && hasOutlets && (
                 <Button variant="outline" onClick={handleCompareScenarios} data-testid="button-compare-scenarios">
                   <GitCompare className="mr-2 h-4 w-4" />
                   Re-run &amp; Compare
