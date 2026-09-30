@@ -7,7 +7,7 @@ import { storage } from "./storage";
 import { loadBlob, saveBlob, deleteBlob } from "./persist";
 import { isAdminConfigured, verifyAdmin, adminCredentialSource } from "./admin-credentials";
 import { solveBalancedGroups } from "./balanced-solver";
-import { totalWeeklyLoad, growBalancedRegions, partitionByHilbert, repairLoads, swapForCompactness, polishByCohesion, polishByTourLength, recutPairs, routeCost, longestHop, swapStranded, reachabilityComponents, gapBetween, weeklyLoadOf, type Band, improveByRouteCost, exchangePockets, tourLength, handOverStrays } from "./day-balancer";
+import { totalWeeklyLoad, growBalancedRegions, partitionByHilbert, repairLoads, swapForCompactness, polishByCohesion, polishByTourLength, recutPairs, routeCost, longestHop, swapStranded, reachabilityComponents, gapBetween, weeklyLoadOf, type Band, improveByRouteCost, exchangePockets, tourLength, handOverStrays, collapseBlocks, unitLoad } from "./day-balancer";
 import { 
   insertOptimizationRunSchema, 
   insertOutletSchema, 
@@ -2902,6 +2902,13 @@ let maxHopKm = 4;
 // as stated rather than as a symmetric tolerance around whatever the mean is.
 let dayVisitsMin = 0;
 let dayVisitsMax = 0;
+// Room below and above a mean for the day band. When the floor is above the
+// mean (or the ceiling below it) the rep count could not honour the band at
+// all - 466 biweekly outlets at 25-30 a day are 39 for one rep or 19.5 for
+// two - and a 2% room on that side would only shred villages to chase a
+// number no day can reach. Ten percent then.
+const roomBelow = (mean: number, atLeast: number) => dayVisitsMin > mean ? Math.max(atLeast, 0.10) : Math.min(0.35, Math.max(atLeast, (mean - dayVisitsMin) / mean));
+const roomAbove = (mean: number, atLeast: number) => dayVisitsMax < mean ? Math.max(atLeast, 0.10) : Math.min(0.35, Math.max(atLeast, (dayVisitsMax - mean) / mean));
 
 // The settings the last full optimization ran with, kept on disk.
 //
@@ -3073,7 +3080,7 @@ async function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[]
   // visits; an outlet needing more gets a second group (see membershipsFor),
   // and the overflow is budgeted there, not here. On a four-week cycle nothing
   // overflows and this is exactly the old vf/4.
-  const runLoadOf = (o: Outlet) => Math.min(o.visitFrequency ?? 1, cycleRuns) / cycleRuns;
+  const runLoadOf = unitLoad((o: Outlet) => Math.min(o.visitFrequency ?? 1, cycleRuns) / cycleRuns);
   const repOutlets = zoneGroups.flat();
   if (repOutlets.length === 0) return [];
 
@@ -3108,22 +3115,25 @@ async function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[]
   // split below it to tidy up after. See recutPairs.
   // Partition one connected piece of territory into k day-groups: exact
   // balanced assignment, then polish to convergence.
-  const partitionPiece = async (piece: Outlet[], k: number): Promise<Outlet[][]> => {
-    if (k <= 1 || piece.length <= 1) return [piece.slice()];
-    // Room below and above this piece's own mean, from the user's floor and
-    // ceiling. With a floor of 20 on a mean of 20.9 there is almost no room
-    // below and plenty above; the old symmetric tolerance around the mean gave
-    // 18.6 to 23.3 and let days come out at 19.
+  // Room below and above a piece's own mean, from the user's floor and
+  // ceiling. With a floor of 20 on a mean of 20.9 there is almost no room
+  // below and plenty above; the old symmetric tolerance around the mean gave
+  // 18.6 to 23.3 and let days come out at 19.
+  const bandFor = (piece: Outlet[], k: number, atLeast: number = 0.02): Band => {
     const mean = piece.reduce((sum, o) => sum + runLoadOf(o), 0) / k;
-    const band: Band = dayVisitsMin > 0 && dayVisitsMax > 0 && mean > 0
-      ? {
-          below: Math.min(0.35, Math.max(0.02, (mean - dayVisitsMin) / mean)),
-          above: Math.min(0.35, Math.max(0.02, (dayVisitsMax - mean) / mean)),
-        }
+    return dayVisitsMin > 0 && dayVisitsMax > 0 && mean > 0
+      ? { below: roomBelow(mean, atLeast), above: roomAbove(mean, atLeast) }
       : dayLoadTolerance;
+  };
+  // `atLeast` widens the band for a cut made of whole villages, which cannot
+  // balance to the outlet; the outlet-level repair afterwards restores the
+  // real band wherever the villages adjoin.
+  const partitionPiece = async (piece: Outlet[], k: number, atLeast: number = 0.02): Promise<Outlet[][]> => {
+    if (k <= 1 || piece.length <= 1) return [piece.slice()];
+    const band = bandFor(piece, k, atLeast);
     let groups = repairLoads(
       // Exact assignment when the solver is there; the curve when it is not.
-      (await solveBalancedGroups(piece, k, o => Math.min(o.visitFrequency ?? 1, cycleRuns), band))
+      (await solveBalancedGroups(piece, k, unitLoad(o => Math.min(o.visitFrequency ?? 1, cycleRuns)), band))
         ?? partitionByHilbert(piece, k, runLoadOf),
       runLoadOf,
       band,
@@ -3326,7 +3336,28 @@ async function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[]
   let dailyClusters: Outlet[][] = [];
   pocketGroups = new Set<number>();
   for (let i = 0; i < pieces.length; i++) {
-    const groups = await partitionPiece(pieces[i], days[i]);
+    // Villages and tight neighbourhoods that fit in a day are cut as one
+    // unit, so a day never takes half a village while another day takes the
+    // other half. Only when there are enough units to choose from.
+    const dayMean = pieces[i].reduce((s, o) => s + runLoadOf(o), 0) / Math.max(1, days[i]);
+    const blocksP = collapseBlocks(pieces[i], 0.5, runLoadOf, dayMean * 0.75);
+    // Only where villages are a real share of the ground (two outlets in
+    // five or more): in a dense city block-level units just coarsen the cut.
+    const villageShare = (pieces[i].length - blocksP.units.length + blocksP.blocks) / Math.max(1, pieces[i].length);
+    const useBlocks = blocksP.blocks > 0 && blocksP.units.length >= 4 * days[i] && villageShare >= 0.4;
+    if (useBlocks) console.log(`[villages] ${rep.name}: ${pieces[i].length} outlets in ${blocksP.units.length} units (${blocksP.blocks} whole villages) for ${days[i]} day-group(s)`);
+    // After the village-level cut, single outlets on a border fix whatever
+    // load imbalance whole villages could not: a village is cut only as much
+    // as the visits band requires.
+    // The village cut has to earn its place: it is kept only when the rep's
+    // plain driving distance is within five percent of the outlet-level cut.
+    let groups = await partitionPiece(pieces[i], days[i]);
+    if (useBlocks) {
+      const byVillage = repairLoads(blocksP.expand(await partitionPiece(blocksP.units, days[i], 0.12)), runLoadOf, bandFor(pieces[i], days[i]), maxHopKm);
+      const kmO = groups.reduce((s, g) => s + tourLength(g), 0), kmV = byVillage.reduce((s, g) => s + tourLength(g), 0);
+      if (kmV <= kmO * 1.05 + 0.5) { console.log(`[villages] ${rep.name}: village cut kept (${kmV.toFixed(1)}km vs ${kmO.toFixed(1)}km by outlets)`); groups = byVillage; }
+      else console.log(`[villages] ${rep.name}: village cut dropped (${kmV.toFixed(1)}km vs ${kmO.toFixed(1)}km by outlets)`);
+    }
     if (i > 0) for (let g = 0; g < groups.length; g++) pocketGroups.add(dailyClusters.length + g);
     dailyClusters.push(...groups);
   }
@@ -3500,17 +3531,28 @@ function scheduleFromDailyClusters(rep: Rep, dailyClusters: Outlet[][], repOutle
     // These buckets ARE the actual day-routes the rep drives, so the tour-length
     // polish belongs here as well as at the day-group level above: polishing the
     // group only shapes the pool that the weeks are then drawn from.
-    const oneVisit = () => 1;
-    const splitWeeks = (pool: Outlet[], buckets: number) => {
-      // Same band and hop limit as the day-groups above: the user's floor and
-      // ceiling against this pool's own mean, not a symmetric 5% around it.
-      const mean = pool.length / Math.max(1, buckets);
-      const band: Band = dayVisitsMin > 0 && dayVisitsMax > 0 && mean > 0
-        ? {
-            below: Math.min(0.35, Math.max(0.02, (mean - dayVisitsMin) / mean)),
-            above: Math.min(0.35, Math.max(0.02, (dayVisitsMax - mean) / mean)),
-          }
-        : 0.05;
+    const oneVisit = unitLoad(() => 1);
+    const splitWeeks = (pool: Outlet[], buckets: number): Outlet[][] => {
+      // Whole villages per week where they fit: a village of 15 in a day of
+      // 39 goes to one week, not 8 and 7 across both.
+      const weekMean = pool.length / Math.max(1, buckets);
+      const blocksW = collapseBlocks(pool, 0.5, () => 1, weekMean * 1.1);
+      const shareW = (pool.length - blocksW.units.length + blocksW.blocks) / Math.max(1, pool.length);
+      const byOutlet = splitWeekUnits(pool, buckets);
+      if (blocksW.blocks > 0 && blocksW.units.length >= 3 * buckets && shareW >= 0.4) {
+        const byVillage = repairLoads(blocksW.expand(splitWeekUnits(blocksW.units, buckets, 0.12)), () => 1, weekBand(pool.length / Math.max(1, buckets)), maxHopKm);
+        const kmO = byOutlet.reduce((s, g) => s + tourLength(g), 0), kmV = byVillage.reduce((s, g) => s + tourLength(g), 0);
+        if (kmV <= kmO * 1.05 + 0.2) return byVillage;
+      }
+      return byOutlet;
+    };
+    // Same band and hop limit as the day-groups above: the user's floor and
+    // ceiling against this pool's own mean, not a symmetric 5% around it.
+    const weekBand = (mean: number, atLeast: number = 0.02): Band => dayVisitsMin > 0 && dayVisitsMax > 0 && mean > 0
+      ? { below: roomBelow(mean, atLeast), above: roomAbove(mean, atLeast) }
+      : Math.max(0.05, atLeast);
+    const splitWeekUnits = (pool: Outlet[], buckets: number, atLeast: number = 0.02) => {
+      const band = weekBand(pool.reduce((s, o) => s + oneVisit(o), 0) / Math.max(1, buckets), atLeast);
       return repairLoads(
         polishByTourLength(growBalancedRegions(pool, buckets, oneVisit), oneVisit, band, 4, maxHopKm),
         oneVisit,
