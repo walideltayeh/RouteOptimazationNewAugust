@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
-import { FlaskConical, Play, Check, Trash2, AlertCircle } from "lucide-react";
+import { Play, Check, Trash2, AlertCircle } from "lucide-react";
 
 interface Kpis {
   outlets: number; activeOutlets: number; coveragePct: number; unscheduledOutlets: number;
@@ -117,16 +117,9 @@ export default function ScenariosPage() {
   };
 
   return (
-    <div className="p-6">
+    <div className="p-4 md:p-6">
       <div className="max-w-7xl mx-auto">
-        <header className="mb-6">
-          <h1 className="text-2xl font-bold flex items-center gap-2">
-            <FlaskConical className="h-6 w-6" /> Scenarios
-          </h1>
-          <p className="text-gray-500 mt-1">
-            Run the same outlet data under different parameters, compare the plans on real quality metrics, then apply the one you want.
-          </p>
-        </header>
+        <p className="mb-4 text-sm text-[#6e6e73] dark:text-[#98989d]">Run the same outlet data under different parameters, compare the plans on real quality metrics, then apply the one you want.</p>
 
         <Card className="mb-6">
           <CardHeader className="pb-3"><CardTitle className="text-base">Run a scenario</CardTitle></CardHeader>

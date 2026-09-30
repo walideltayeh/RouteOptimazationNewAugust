@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Switch, Route, Router } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -14,11 +14,15 @@ import NotFound from "@/pages/not-found";
 import LandingPage from "@/components/landing-page";
 import LoginModal from "@/components/login-modal";
 import PersistenceBanner from "@/components/persistence-banner";
+import AppHeader from "@/components/app-header";
 import { useAuth } from "@/hooks/use-auth";
 
 function AppContent() {
   const { isAuthenticated, isLoading, refetch } = useAuth();
   const [showLogin, setShowLogin] = useState(false);
+  const [collapsed, setCollapsed] = useState<boolean>(() => { try { return localStorage.getItem("sidebar:collapsed") === "1"; } catch { return false; } });
+  const [mobileOpen, setMobileOpen] = useState(false);
+  useEffect(() => { try { localStorage.setItem("sidebar:collapsed", collapsed ? "1" : "0"); } catch {} }, [collapsed]);
 
   if (isLoading) {
     return (
@@ -42,10 +46,12 @@ function AppContent() {
   }
 
   return (
-    <div className="flex h-screen bg-gray-50">
-      <Sidebar />
-      <main className="flex-1 overflow-auto">
+    <div className="flex h-screen bg-[#f5f5f7] dark:bg-black">
+      <Sidebar collapsed={collapsed} mobileOpen={mobileOpen} onMobileClose={() => setMobileOpen(false)} />
+      <div className="flex min-w-0 flex-1 flex-col">
+        <AppHeader collapsed={collapsed} onToggleCollapsed={() => setCollapsed(v => !v)} onOpenMobile={() => setMobileOpen(true)} />
         <PersistenceBanner />
+        <main className="min-h-0 flex-1 overflow-auto">
         <Switch>
           <Route path="/" component={Dashboard} />
           <Route path="/territories" component={TerritoriesPage} />
@@ -54,7 +60,8 @@ function AppContent() {
           <Route path="/scenarios" component={ScenariosPage} />
           <Route component={NotFound} />
         </Switch>
-      </main>
+        </main>
+      </div>
     </div>
   );
 }
