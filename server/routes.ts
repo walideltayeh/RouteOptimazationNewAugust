@@ -27,7 +27,7 @@ import Papa from "papaparse";
 import { exec } from "child_process";
 import { promisify } from "util";
 import { performAdvancedClustering as performAdvancedClusteringJS } from "./clustering-algorithms";
-import { geoDist, setDistanceMode, prefetchRoadMatrix, clearRoadMatrix, haversineKm, type DistanceMode } from "./road-distance";
+import { geoDist, setDistanceMode, prefetchRoadMatrix, clearRoadMatrix, haversineKm, setBarriers, type Barrier, type DistanceMode } from "./road-distance";
 import { generateAdvancedSchedule, reoptimizeSchedules, validateSchedule } from "./advanced-scheduling";
 
 const execAsync = promisify(exec);
@@ -2929,6 +2929,8 @@ interface PlanSettings {
   planStart?: string;
   planEnd?: string;
   cycleStartSlot?: number;
+  /** Rivers, railways, motorways without crossings: part of the plan, not of the code. */
+  barriers?: Barrier[];
 }
 // Kept in the blob store - Postgres on the published site - like the rest of
 // the app's state; see persist.ts.
@@ -2966,7 +2968,8 @@ function applyPlanSettings(): PlanSettings | null {
   monthEdges = planSettings.monthEdges ?? 'allDays';
   planStartDate = planSettings.planStart ?? '';
   cycleStartSlot = planSettings.cycleStartSlot ?? 0;
-  setDistanceMode(planSettings.distanceMode === 'road' ? 'road' : 'haversine');
+  setDistanceMode(planSettings.distanceMode === 'road' ? 'road' : planSettings.distanceMode === 'grid' ? 'grid' : 'haversine');
+  setBarriers(planSettings.barriers ?? []);
   return planSettings;
 }
 // Loaded in registerRoutes, before the routes go live.
@@ -3210,26 +3213,70 @@ async function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[]
 
   // Share the days out in proportion to load (largest-remainder), every piece
   // getting at least one.
-  const pieceLoads = pieces.map(loadOfPiece);
-  const quota = pieceLoads.map(l => l / targetLoad);
-  const days = quota.map(q => Math.max(1, Math.floor(q)));
-  let left = numDays - days.reduce((a, b) => a + b, 0);
-  // Remainder against what was actually allocated, not against the floor: a
-  // pocket of 22 with a quota of 0.99 already holds its one day, and counting
-  // its 0.99 as unmet gave it a second - two days of eleven.
-  const remainders = quota.map((q, i) => ({ i, r: q - days[i] })).sort((a, b) => b.r - a.r);
-  for (const { i } of remainders) { if (left <= 0) break; days[i] += 1; left -= 1; }
-  // Over-allocated (many pieces each forced to one day): take days back from
-  // the pieces whose days would stay fullest.
-  while (left < 0) {
-    let pick = -1, fullest = -Infinity;
-    for (let i = 0; i < pieces.length; i++) {
-      if (days[i] <= 1) continue;
-      const perDay = pieceLoads[i] / (days[i] - 1);
-      if (perDay > fullest) { fullest = perDay; pick = i; }
+  const apportion = (loads: number[]): number[] => {
+    const quota = loads.map(l => l / targetLoad);
+    const days = quota.map(q => Math.max(1, Math.floor(q)));
+    let left = numDays - days.reduce((a, b) => a + b, 0);
+    // Remainder against what was actually allocated, not against the floor: a
+    // pocket of 22 with a quota of 0.99 already holds its one day, and counting
+    // its 0.99 as unmet gave it a second - two days of eleven.
+    const remainders = quota.map((q, i) => ({ i, r: q - days[i] })).sort((a, b) => b.r - a.r);
+    for (const { i } of remainders) { if (left <= 0) break; days[i] += 1; left -= 1; }
+    // Over-allocated (many pieces each forced to one day): take days back from
+    // the pieces whose days would stay fullest.
+    while (left < 0) {
+      let pick = -1, fullest = -Infinity;
+      for (let i = 0; i < loads.length; i++) {
+        if (days[i] <= 1) continue;
+        const perDay = loads[i] / (days[i] - 1);
+        if (perDay > fullest) { fullest = perDay; pick = i; }
+      }
+      if (pick < 0) break;
+      days[pick] -= 1; left += 1;
     }
-    if (pick < 0) break;
-    days[pick] -= 1; left += 1;
+    return days;
+  };
+  let pieceLoads = pieces.map(loadOfPiece);
+  let days = apportion(pieceLoads);
+
+  // A pocket that cannot fill its days sits outside the band whatever the
+  // cut. Three pieces of 65, 59 and 40 run-visits on six day-groups can only
+  // be 2/2/2 (32, 30 and 20 a day) or 3/2/1 (22, 30 and 40): eight light days
+  // a month either way, and no polishing pass can touch them because nothing
+  // else is within reach. If joining a piece to its nearest neighbour - one
+  // hop over the limit, once per repeat - brings more days into the band than
+  // it takes out, join them and say so. Days of 17 are lost calls; one 5 km
+  // drive is a known cost.
+  if (pieces.length > 1) {
+    const lo = dayVisitsMin > 0 ? dayVisitsMin : targetLoad * (1 - dayLoadTolerance);
+    const hi = dayVisitsMax > 0 ? dayVisitsMax : targetLoad * (1 + dayLoadTolerance);
+    const daysOutOfBand = (loads: number[], alloc: number[]) =>
+      loads.reduce((n, l, i) => n + ((l / alloc[i] < lo - 0.5 || l / alloc[i] > hi + 0.5) ? alloc[i] : 0), 0);
+    let bad = daysOutOfBand(pieceLoads, days);
+    while (bad > 0 && pieces.length > 1) {
+      let best: { i: number; j: number; bad: number; gap: number } | null = null;
+      for (let i = 0; i < pieces.length; i++) {
+        let j = -1, gap = Infinity;
+        for (let k = 0; k < pieces.length; k++) {
+          if (k === i) continue;
+          const g = gapBetween(pieces[i], pieces[k]);
+          if (g < gap) { gap = g; j = k; }
+        }
+        if (j < 0) continue;
+        const merged = pieces.map((p, k) => k === i ? [...p, ...pieces[j]] : p).filter((_, k) => k !== j);
+        const loads = merged.map(loadOfPiece);
+        const b = daysOutOfBand(loads, apportion(loads));
+        if (b < bad && (!best || b < best.bad || (b === best.bad && gap < best.gap))) best = { i, j, bad: b, gap };
+      }
+      if (!best) break;
+      console.log(`[hops] ${rep.name}: joining a piece of ${pieces[best.i].length} outlets to one of ${pieces[best.j].length}, ${best.gap.toFixed(1)}km apart (over the ${maxHopKm}km limit) - kept apart, ${bad} day(s) a month would sit outside ${Math.round(lo)}-${Math.round(hi)} visits; joined, ${best.bad}.`);
+      const joined = [...pieces[best.i], ...pieces[best.j]];
+      pieces = pieces.filter((_, k) => k !== best!.i && k !== best!.j);
+      pieces.push(joined);
+      pieceLoads = pieces.map(loadOfPiece);
+      days = apportion(pieceLoads);
+      bad = best.bad;
+    }
   }
   if (pieces.length > 1) {
     console.log(`[hops] ${rep.name}: ${pieces.length} pieces within ${maxHopKm}km -> ` +
@@ -5333,6 +5380,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         : req.body.distanceMode === 'grid' ? 'grid'
         : 'haversine';
       setDistanceMode(distanceMode);
+      // Barriers come with the request (the settings page) and are saved with
+      // the plan. Nothing about any particular city is built in.
+      const barriers: Barrier[] = Array.isArray(req.body.barriers)
+        ? req.body.barriers.filter((b: any) => b && typeof b.name === 'string' && Array.isArray(b.points)).slice(0, 50)
+        : [];
+      setBarriers(barriers);
       clearRoadMatrix();
 
       // Set default values for rep constraints (use body params if provided)
@@ -5894,6 +5947,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         planStart: planStartDate,
         planEnd: planEndDate,
         cycleStartSlot,
+        barriers,
       });
 
       let capturedScenarioId: string | null = null;

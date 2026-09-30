@@ -34,25 +34,34 @@ const DETOUR_FACTOR = 1.3;
 // Typical extra driving to reach a bridge and come back on course.
 const BARRIER_PENALTY_KM = 4;
 
-// Named barrier polylines ([lat, lng] vertices, ordered along the barrier).
-// Crossing the straight line between two points over one of these implies a
-// bridge/causeway detour. Ships with the Tigris through Baghdad; extendable.
-const BARRIERS: { name: string; points: [number, number][] }[] = [
-  {
+// Barrier polylines ([lat, lng] vertices, ordered along the barrier). Crossing
+// the straight line between two points over one of these implies a bridge or
+// causeway detour. Barriers are part of the plan settings - a river with few
+// bridges, a railway, a motorway with no crossings - so the app carries no
+// assumption about which city it is planning. A named preset is kept as an
+// example of the shape.
+export interface Barrier { name: string; points: [number, number][] }
+let barriers: Barrier[] = [];
+
+export const BARRIER_PRESETS: Record<string, Barrier> = {
+  'tigris-baghdad': {
     name: 'Tigris (Baghdad)',
     points: [
-      [33.488, 44.375],
-      [33.455, 44.392],
-      [33.440, 44.400],
-      [33.410, 44.420],
-      [33.390, 44.430],
-      [33.370, 44.440],
-      [33.340, 44.490],
-      [33.300, 44.520],
-      [33.250, 44.580],
+      [33.488, 44.375], [33.455, 44.392], [33.440, 44.400], [33.410, 44.420], [33.390, 44.430],
+      [33.370, 44.440], [33.340, 44.490], [33.300, 44.520], [33.250, 44.580],
     ],
   },
-];
+};
+
+/** Replace the active barriers. Each needs a name and at least two [lat, lng] points. */
+export function setBarriers(list: Barrier[]): void {
+  barriers = (list || [])
+    .filter(b => b && typeof b.name === 'string' && Array.isArray(b.points) && b.points.length >= 2)
+    .map(b => ({ name: b.name.trim().slice(0, 80) || 'Barrier', points: b.points.map(([lat, lng]) => [Number(lat), Number(lng)] as [number, number]).filter(([lat, lng]) => Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180) }))
+    .filter(b => b.points.length >= 2)
+    .slice(0, 50);
+}
+export function getBarriers(): Barrier[] { return barriers.map(b => ({ name: b.name, points: b.points.map(p => [...p] as [number, number]) })); }
 
 export function setDistanceMode(mode: DistanceMode): void {
   currentMode = mode;
@@ -92,7 +101,7 @@ function segmentsIntersect(
 function countBarrierCrossings(lat1: number, lng1: number, lat2: number, lng2: number): number {
   let crossings = 0;
   const seg: [[number, number], [number, number]] = [[lat1, lng1], [lat2, lng2]];
-  for (const barrier of BARRIERS) {
+  for (const barrier of barriers) {
     for (let i = 1; i < barrier.points.length; i++) {
       if (segmentsIntersect(seg[0], seg[1], barrier.points[i - 1], barrier.points[i])) {
         crossings++;

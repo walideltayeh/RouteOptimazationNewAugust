@@ -927,8 +927,10 @@ export function RepMap() {
       const mapInstance = new mapboxgl.Map({
         container: mapContainer.current,
         style: 'mapbox://styles/mapbox/light-v11',
-        center: [35.8623, 33.8547], // Lebanon center
-        zoom: 8
+        // No home city: the render effect fits the map to whatever data is
+        // loaded. Until then, the world.
+        center: [20, 20],
+        zoom: 1.5
       });
 
       mapInstance.on('load', () => {
@@ -1257,448 +1259,157 @@ export function RepMap() {
   };
 
   // Update map when data changes
-  useEffect(() => {
-    if (!map.current || !isMapLoaded) return;
+  // One source and a handful of layers, whatever the plan size.
+  //
+  // This used to add a source, a circle layer, a label layer and a route
+  // layer PER REP-DAY, plus a click handler each: 27 reps x 24 days on a
+  // 9,000-outlet plan is 648 sources and near two thousand layers, torn down
+  // and rebuilt on every filter change. Now every point goes into one
+  // FeatureCollection with its colour and labels as properties, the layers
+  // are created once and fed with setData, and one click handler reads the
+  // feature it was given.
+  const POINTS_SRC = 'rep-points';
+  const ROUTES_SRC = 'rep-routes';
+  const layersReadyRef = useRef(false);
 
-    // Clear existing markers
+  useEffect(() => {
+    const m = map.current;
+    if (!m || !isMapLoaded) return;
+
+    // Legacy DOM markers and per-day layers from older renders, if any.
     markersRef.current.forEach(marker => marker.remove());
     markersRef.current = [];
-    
-    // Clean up GeoJSON layer event handlers before removing layers
-    geoJSONLayersRef.current.forEach(({ circleLayerId, handlers }) => {
-      if (map.current && map.current.getLayer(circleLayerId)) {
-        map.current.off('click', circleLayerId, handlers.click);
-        map.current.off('mouseenter', circleLayerId, handlers.mouseenter);
-        map.current.off('mouseleave', circleLayerId, handlers.mouseleave);
-      }
-    });
-    geoJSONLayersRef.current = [];
-
-    // Clean up only previously created layers and sources (tracked via ref)
-    // Remove layers first, then sources (sources can't be removed while layers reference them)
-    createdLayersRef.current.forEach(id => {
-      if (map.current?.getLayer(id)) map.current.removeLayer(id);
-    });
-    createdLayersRef.current.forEach(id => {
-      if (map.current?.getSource(id)) map.current.removeSource(id);
-    });
+    createdLayersRef.current.forEach(id => { if (m.getLayer(id)) m.removeLayer(id); });
+    createdLayersRef.current.forEach(id => { if (m.getSource(id)) m.removeSource(id); });
     createdLayersRef.current.clear();
-    
-    // UNIVERSE VIEW: Show all outlets grouped by zones
+
+    type PointProps = {
+      id: string; name: string; address: string; territory: string; repId: string; repName: string;
+      dayName: string; week: number; color: string; vf: number; order: number; orderStr: string;
+      lat: number; lng: number; view: 'universe' | 'schedule';
+    };
+    const points: GeoJSON.Feature<GeoJSON.Point, PointProps>[] = [];
+    const routes: GeoJSON.Feature<GeoJSON.LineString, { color: string; dashed: boolean }>[] = [];
+    const bounds = new mapboxgl.LngLatBounds();
+    let any = false;
+
     if (viewMode === 'universe' && universeViewData) {
-      
-      Object.entries(universeViewData.zoneGroups).forEach(([zoneName, zoneData], idx) => {
-        const safeZone = zoneName.replace(/[^a-zA-Z0-9]/g, '_');
-        const sourceId = `universe-zone-${safeZone}`;
-        const circleLayerId = `universe-circles-${safeZone}`;
-        const labelLayerId = `universe-labels-${safeZone}`;
-        
-        const features = zoneData.outlets.map((outlet, i) => ({
-          type: 'Feature' as const,
-          geometry: {
-            type: 'Point' as const,
-            coordinates: [outlet.longitude, outlet.latitude]
-          },
-          properties: {
-            id: outlet.id,
-            name: outlet.name,
-            address: outlet.address || '',
-            zone: zoneName,
-            color: zoneData.color,
-            vf: outlet.visitFrequency || 1,
-            order: i + 1,
-            lat: outlet.latitude,
-            lng: outlet.longitude,
-            repId: outlet.repId || ''
-          }
-        }));
-        
-        if (!map.current!.getSource(sourceId)) {
-          map.current!.addSource(sourceId, {
-            type: 'geojson',
-            data: { type: 'FeatureCollection', features }
-          });
-          createdLayersRef.current.add(sourceId);
-          
-          map.current!.addLayer({
-            id: circleLayerId,
-            type: 'circle',
-            source: sourceId,
-            paint: {
-              'circle-radius': 10,
-              'circle-color': colorBy === 'vf'
-                ? ['match', ['get', 'vf'],
-                    1, VF_COLORS[1],
-                    2, VF_COLORS[2],
-                    3, VF_COLORS[3],
-                    4, VF_COLORS[4],
-                    VF_COLORS[1]
-                  ] as any
-                : zoneData.color,
-              'circle-stroke-width': 2,
-              'circle-stroke-color': '#ffffff'
-            }
-          });
-          createdLayersRef.current.add(circleLayerId);
-          
-          map.current!.addLayer({
-            id: labelLayerId,
-            type: 'symbol',
-            source: sourceId,
-            layout: {
-              'text-field': ['get', 'order'],
-              'text-size': 10,
-              'text-font': ['DIN Pro Bold', 'Arial Unicode MS Bold'],
-              'text-allow-overlap': true
-            },
-            paint: { 'text-color': '#ffffff' }
-          });
-          createdLayersRef.current.add(labelLayerId);
-          
-          const universeClickHandler = (e: mapboxgl.MapMouseEvent & { features?: mapboxgl.MapboxGeoJSONFeature[] }) => {
-            if (!e.features?.[0]) return;
-            const props = e.features[0].properties;
-            const coords = (e.features[0].geometry as GeoJSON.Point).coordinates;
-            
-            const popup = new mapboxgl.Popup({ offset: 15 })
-              .setLngLat([coords[0], coords[1]])
-              .setHTML(`
-                <div>
-                  <strong>${props?.name}</strong><br/>
-                  ${props?.address ? `${props.address}<br/>` : ''}
-                  <span style="color: ${props?.color}">Zone: ${props?.zone}</span><br/>
-                  <span>Visit Frequency: VF${props?.vf}</span><br/>
-                  <button id="reassign-btn-${props?.id}" class="reassign-outlet-btn" style="margin-top: 8px; padding: 4px 12px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">
-                    Reassign
-                  </button>
-                </div>
-              `)
-              .addTo(map.current!);
-            
-            setTimeout(() => {
-              const btn = popup.getElement()?.querySelector(`#reassign-btn-${props?.id}`);
-              if (btn) {
-                btn.addEventListener('click', () => {
-                  setEditingOutlet({
-                    id: props?.id,
-                    name: props?.name,
-                    territory: props?.zone,
-                    currentRepId: props?.repId || null,
-                    lat: props?.lat,
-                    lng: props?.lng
-                  });
-                  setNewRepId('keep-current');
-                  popup.remove();
-                });
-              }
-            }, 100);
-          };
-          
-          const universeMouseenterHandler = () => {
-            if (map.current) map.current.getCanvas().style.cursor = 'pointer';
-          };
-          const universeMouseleaveHandler = () => {
-            if (map.current) map.current.getCanvas().style.cursor = '';
-          };
-
-          map.current!.on('click', circleLayerId, universeClickHandler);
-          map.current!.on('mouseenter', circleLayerId, universeMouseenterHandler);
-          map.current!.on('mouseleave', circleLayerId, universeMouseleaveHandler);
-
-          geoJSONLayersRef.current.push({
-            circleLayerId,
-            handlers: { click: universeClickHandler, mouseenter: universeMouseenterHandler, mouseleave: universeMouseleaveHandler }
-          });
-        }
-      });
-      
-      // Fit bounds to all universe outlets
-      const allOutlets = Object.values(universeViewData.zoneGroups).flatMap(z => z.outlets);
-      if (allOutlets.length > 0) {
-        const bounds = new mapboxgl.LngLatBounds();
-        allOutlets.forEach(outlet => bounds.extend([outlet.longitude, outlet.latitude]));
-        map.current.fitBounds(bounds, { padding: 50 });
-      }
-      
-      return; // Skip schedule view rendering
-    }
-
-    // Add markers and routes for each selected rep and day
-    // OPTIMIZED: Use GeoJSON layers for large datasets (faster than individual markers)
-    const totalOutlets = Object.values(repDayOutlets).reduce(
-      (sum, r) => sum + Object.values(r.daySchedules).reduce((s, d) => s + d.outlets.length, 0), 0
-    );
-    const useGeoJSONRendering = totalOutlets > 100; // Use optimized rendering for 100+ outlets
-    
-    Object.entries(repDayOutlets).forEach(([repId, repData]) => {
-      Object.entries(repData.daySchedules).forEach(([scheduleKey, dayData]) => {
-        if (useGeoJSONRendering && map.current) {
-          // OPTIMIZED: Use GeoJSON circle layer for fast rendering
-          const pointSourceId = `points-${repId}-${scheduleKey}`;
-          const circleLayerId = `circles-${repId}-${scheduleKey}`;
-          const labelLayerId = `labels-${repId}-${scheduleKey}`;
-          
-          // Create GeoJSON features for all outlets
-          const features = dayData.outlets.map((outlet, idx) => ({
-            type: 'Feature' as const,
-            geometry: {
-              type: 'Point' as const,
-              coordinates: [outlet.longitude, outlet.latitude]
-            },
+      for (const [zoneName, zoneData] of Object.entries(universeViewData.zoneGroups)) {
+        zoneData.outlets.forEach((outlet, i) => {
+          points.push({
+            type: 'Feature', geometry: { type: 'Point', coordinates: [outlet.longitude, outlet.latitude] },
             properties: {
-              id: outlet.id,
-              name: outlet.name,
-              address: outlet.address,
-              territory: outlet.territory || '',
-              repId: repId,
-              repName: repData.rep.name,
-              dayName: daysOfWeek[dayData.dayOfWeek - 1] || `Day ${dayData.dayOfWeek}`,
-              week: dayData.week,
-              color: dayData.color,
-              vf: outlet.visitFrequency ?? 1,
-              order: idx + 1,
-              orderStr: (idx + 1).toString(),
-              lat: outlet.latitude,
-              lng: outlet.longitude
-            }
-          }));
-          
-          // Add GeoJSON source
-          if (!map.current.getSource(pointSourceId)) {
-            map.current.addSource(pointSourceId, {
-              type: 'geojson',
-              data: {
-                type: 'FeatureCollection',
-                features
-              }
-            });
-            createdLayersRef.current.add(pointSourceId);
-            
-            // Add circle layer (faster than DOM markers)
-            map.current.addLayer({
-              id: circleLayerId,
-              type: 'circle',
-              source: pointSourceId,
-              paint: {
-                'circle-radius': 12,
-                'circle-color': colorBy === 'vf'
-                  ? ['match', ['get', 'vf'],
-                      1, VF_COLORS[1],
-                      2, VF_COLORS[2],
-                      3, VF_COLORS[3],
-                      4, VF_COLORS[4],
-                      VF_COLORS[1]
-                    ] as any
-                  : dayData.color,
-                'circle-stroke-width': 2,
-                'circle-stroke-color': '#ffffff'
-              }
-            });
-            createdLayersRef.current.add(circleLayerId);
-            
-            // Add label layer for outlet order numbers
-            map.current.addLayer({
-              id: labelLayerId,
-              type: 'symbol',
-              source: pointSourceId,
-              layout: {
-                'text-field': ['get', 'orderStr'],
-                'text-size': 11,
-                'text-font': ['DIN Pro Bold', 'Arial Unicode MS Bold'],
-                'text-allow-overlap': true
-              },
-              paint: {
-                'text-color': '#ffffff'
-              }
-            });
-            createdLayersRef.current.add(labelLayerId);
-            
-            // Store handlers for later cleanup
-            const clickHandler = (e: mapboxgl.MapMouseEvent & { features?: mapboxgl.MapboxGeoJSONFeature[] }) => {
-              if (!e.features?.[0]) return;
-              const props = e.features[0].properties;
-              const coords = (e.features[0].geometry as GeoJSON.Point).coordinates;
-              
-              const popup = new mapboxgl.Popup({ offset: 15 })
-                .setLngLat([coords[0], coords[1]])
-                .setHTML(`
-                  <div>
-                    <strong>${props?.name}</strong><br/>
-                    ${props?.address}<br/>
-                    <span style="color: ${props?.color}">${props?.repName} - ${props?.dayName} (Week ${props?.week})</span><br/>
-                    <span style="color: ${vfColor(props?.vf)}; font-weight: 600;">${VF_LABELS[props?.vf] || `VF${props?.vf}`}</span><br/>
-                    ${props?.territory ? `<span>Zone: ${props?.territory}</span><br/>` : ''}
-                    <button id="reassign-sched-btn-${props?.id}" class="reassign-outlet-btn" style="margin-top: 8px; padding: 4px 12px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">
-                      Reassign
-                    </button>
-                  </div>
-                `)
-                .addTo(map.current!);
-              
-              setTimeout(() => {
-                const btn = popup.getElement()?.querySelector(`#reassign-sched-btn-${props?.id}`);
-                if (btn) {
-                  btn.addEventListener('click', () => {
-                    setEditingOutlet({
-                      id: props?.id,
-                      name: props?.name,
-                      territory: props?.territory || '',
-                      currentRepId: props?.repId || null,
-                      lat: props?.lat,
-                      lng: props?.lng
-                    });
-                    setNewRepId('keep-current'); // Default to keep current rep
-                    popup.remove();
-                  });
-                }
-              }, 100);
-            };
-            
-            const mouseenterHandler = () => {
-              if (map.current) map.current.getCanvas().style.cursor = 'pointer';
-            };
-            
-            const mouseleaveHandler = () => {
-              if (map.current) map.current.getCanvas().style.cursor = '';
-            };
-            
-            // Add event handlers
-            map.current.on('click', circleLayerId, clickHandler);
-            map.current.on('mouseenter', circleLayerId, mouseenterHandler);
-            map.current.on('mouseleave', circleLayerId, mouseleaveHandler);
-            
-            // Store for cleanup
-            geoJSONLayersRef.current.push({
-              circleLayerId,
-              handlers: { click: clickHandler, mouseenter: mouseenterHandler, mouseleave: mouseleaveHandler }
-            });
-          }
-        } else {
-          // Original DOM marker rendering for small datasets
-          dayData.outlets.forEach((outlet, idx) => {
-            const el = document.createElement('div');
-            el.className = 'rep-marker';
-            el.style.width = '30px';
-            el.style.height = '30px';
-            el.style.backgroundColor = colorBy === 'vf' ? vfColor(outlet.visitFrequency) : dayData.color;
-            el.style.borderRadius = '50%';
-            el.style.border = '2px solid white';
-            el.style.boxShadow = '0 2px 4px rgba(0,0,0,0.3)';
-            el.style.display = 'flex';
-            el.style.alignItems = 'center';
-            el.style.justifyContent = 'center';
-            el.style.color = 'white';
-            el.style.fontWeight = 'bold';
-            el.style.fontSize = '12px';
-            el.innerHTML = (idx + 1).toString();
-
-            const popup = new mapboxgl.Popup({ offset: 25 })
-              .setHTML(`
-                <div>
-                  <strong>${outlet.name}</strong><br/>
-                  ${outlet.address}<br/>
-                  <span style="color: ${dayData.color}">${repData.rep.name} - ${daysOfWeek[dayData.dayOfWeek - 1] || `Day ${dayData.dayOfWeek}`} (Week ${dayData.week})</span><br/>
-                  <span style="color: ${vfColor(outlet.visitFrequency)}; font-weight: 600;">${VF_LABELS[outlet.visitFrequency ?? 1] || `VF${outlet.visitFrequency}`}</span><br/>
-                  ${outlet.territory ? `<span>Zone: ${outlet.territory}</span><br/>` : ''}
-                  <button id="reassign-dom-btn-${outlet.id}" style="margin-top: 8px; padding: 4px 12px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">
-                    Reassign
-                  </button>
-                </div>
-              `);
-            
-            popup.on('open', () => {
-              setTimeout(() => {
-                const btn = popup.getElement()?.querySelector(`#reassign-dom-btn-${outlet.id}`);
-                if (btn) {
-                  btn.addEventListener('click', () => {
-                    setEditingOutlet({
-                      id: outlet.id,
-                      name: outlet.name,
-                      territory: outlet.territory || '',
-                      currentRepId: repId,
-                      lat: outlet.latitude,
-                      lng: outlet.longitude
-                    });
-                    setNewRepId('keep-current'); // Default to keep current rep
-                    popup.remove();
-                  });
-                }
-              }, 100);
-            });
-            
-            const marker = new mapboxgl.Marker(el)
-              .setLngLat([outlet.longitude, outlet.latitude])
-              .setPopup(popup)
-              .addTo(map.current!);
-
-            markersRef.current.push(marker);
+              id: outlet.id, name: outlet.name, address: outlet.address || '', territory: zoneName,
+              repId: outlet.repId || '', repName: '', dayName: '', week: 0, color: zoneData.color,
+              vf: outlet.visitFrequency || 1, order: i + 1, orderStr: String(i + 1),
+              lat: outlet.latitude, lng: outlet.longitude, view: 'universe',
+            },
           });
-        }
-
-        // Draw route lines for each day separately
-        if (dayData.outlets.length > 1 && map.current) {
-          // Use route order if available, otherwise use outlet order
-          const orderedOutlets = dayData.schedule.routeOrder 
-            ? (dayData.schedule.routeOrder as string[]).map(id => 
-                dayData.outlets.find(o => o.id === id)!
-              ).filter(Boolean)
-            : dayData.outlets;
-            
-          const routeCoordinates = orderedOutlets.map(o => [o.longitude, o.latitude]);
-          
-          // Add source and layer for this rep's route on this specific day and week
-          const sourceId = `route-${repId}-${dayData.dayOfWeek}-${dayData.week}`;
-          const layerId = `route-layer-${repId}-${dayData.dayOfWeek}-${dayData.week}`;
-
-          if (!map.current.getSource(sourceId)) {
-            map.current.addSource(sourceId, {
-              type: 'geojson',
-              data: {
-                type: 'Feature',
-                properties: {},
-                geometry: {
-                  type: 'LineString',
-                  coordinates: routeCoordinates
-                }
-              }
-            });
-            createdLayersRef.current.add(sourceId);
-
-            map.current.addLayer({
-              id: layerId,
-              type: 'line',
-              source: sourceId,
-              layout: {
-                'line-join': 'round',
-                'line-cap': 'round'
+          bounds.extend([outlet.longitude, outlet.latitude]); any = true;
+        });
+      }
+    } else {
+      for (const [repId, repData] of Object.entries(repDayOutlets)) {
+        for (const dayData of Object.values(repData.daySchedules)) {
+          const dayName = daysOfWeek[dayData.dayOfWeek - 1] || `Day ${dayData.dayOfWeek}`;
+          dayData.outlets.forEach((outlet, idx) => {
+            points.push({
+              type: 'Feature', geometry: { type: 'Point', coordinates: [outlet.longitude, outlet.latitude] },
+              properties: {
+                id: outlet.id, name: outlet.name, address: outlet.address || '', territory: outlet.territory || '',
+                repId, repName: repData.rep.name, dayName, week: dayData.week, color: dayData.color,
+                vf: outlet.visitFrequency ?? 1, order: idx + 1, orderStr: String(idx + 1),
+                lat: outlet.latitude, lng: outlet.longitude, view: 'schedule',
               },
-              paint: {
-                'line-color': dayData.color,
-                'line-width': 3,
-                'line-opacity': 0.6,
-                // Different dash patterns for different weeks
-                'line-dasharray': dayData.week === 1 || dayData.week === 3 ? [1, 0] : [2, 2]
-              }
             });
-            createdLayersRef.current.add(layerId);
+            bounds.extend([outlet.longitude, outlet.latitude]); any = true;
+          });
+          if (dayData.outlets.length > 1) {
+            const ordered = dayData.schedule.routeOrder
+              ? (dayData.schedule.routeOrder as string[]).map(id => dayData.outlets.find(o => o.id === id)!).filter(Boolean)
+              : dayData.outlets;
+            routes.push({
+              type: 'Feature', geometry: { type: 'LineString', coordinates: ordered.map(o => [o.longitude, o.latitude]) },
+              properties: { color: dayData.color, dashed: !(dayData.week === 1 || dayData.week === 3) },
+            });
           }
         }
-      });
-    });
-
-    // Fit bounds to show all outlets
-    if (Object.keys(repDayOutlets).length > 0) {
-      const allOutlets = Object.values(repDayOutlets).flatMap(r => 
-        Object.values(r.daySchedules).flatMap(d => d.outlets)
-      );
-      if (allOutlets.length > 0) {
-        const bounds = new mapboxgl.LngLatBounds();
-        allOutlets.forEach(outlet => {
-          bounds.extend([outlet.longitude, outlet.latitude]);
-        });
-        map.current.fitBounds(bounds, { padding: 50 });
       }
     }
+
+    const pointData: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: points };
+    const routeData: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: routes };
+    const vfPaint = ['match', ['get', 'vf'], 1, VF_COLORS[1], 2, VF_COLORS[2], 3, VF_COLORS[3], 4, VF_COLORS[4], VF_COLORS[1]] as any;
+    const colorPaint = colorBy === 'vf' ? vfPaint : (['get', 'color'] as any);
+
+    if (!m.getSource(POINTS_SRC)) {
+      m.addSource(ROUTES_SRC, { type: 'geojson', data: routeData });
+      m.addLayer({
+        id: 'rep-routes-solid', type: 'line', source: ROUTES_SRC, filter: ['==', ['get', 'dashed'], false],
+        layout: { 'line-join': 'round', 'line-cap': 'round' },
+        paint: { 'line-color': ['get', 'color'], 'line-width': 3, 'line-opacity': 0.6 },
+      });
+      m.addLayer({
+        id: 'rep-routes-dashed', type: 'line', source: ROUTES_SRC, filter: ['==', ['get', 'dashed'], true],
+        layout: { 'line-join': 'round', 'line-cap': 'round' },
+        paint: { 'line-color': ['get', 'color'], 'line-width': 3, 'line-opacity': 0.6, 'line-dasharray': [2, 2] },
+      });
+      m.addSource(POINTS_SRC, { type: 'geojson', data: pointData });
+      m.addLayer({
+        id: 'rep-circles', type: 'circle', source: POINTS_SRC,
+        paint: { 'circle-radius': 11, 'circle-color': colorPaint, 'circle-stroke-width': 2, 'circle-stroke-color': '#ffffff' },
+      });
+      m.addLayer({
+        id: 'rep-labels', type: 'symbol', source: POINTS_SRC,
+        layout: { 'text-field': ['get', 'orderStr'], 'text-size': 11, 'text-font': ['DIN Pro Bold', 'Arial Unicode MS Bold'], 'text-allow-overlap': true },
+        paint: { 'text-color': '#ffffff' },
+      });
+
+      const onClick = (e: mapboxgl.MapMouseEvent & { features?: mapboxgl.MapboxGeoJSONFeature[] }) => {
+        const f = e.features?.[0];
+        if (!f) return;
+        const props = f.properties as PointProps;
+        const coords = (f.geometry as GeoJSON.Point).coordinates;
+        const where = props.view === 'universe'
+          ? `<span style="color: ${props.color}">Zone: ${props.territory}</span><br/>`
+          : `<span style="color: ${props.color}">${props.repName} - ${props.dayName} (Week ${props.week})</span><br/>` +
+            (props.territory ? `<span>Zone: ${props.territory}</span><br/>` : '');
+        const popup = new mapboxgl.Popup({ offset: 15 })
+          .setLngLat([coords[0], coords[1]])
+          .setHTML(`
+            <div>
+              <strong>${props.name}</strong><br/>
+              ${props.address ? `${props.address}<br/>` : ''}
+              ${where}
+              <span style="color: ${vfColor(props.vf)}; font-weight: 600;">${VF_LABELS[props.vf] || `VF${props.vf}`}</span><br/>
+              <button id="reassign-btn-${props.id}" class="reassign-outlet-btn" style="margin-top: 8px; padding: 4px 12px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">
+                Reassign
+              </button>
+            </div>
+          `)
+          .addTo(m);
+        setTimeout(() => {
+          const btn = popup.getElement()?.querySelector(`#reassign-btn-${props.id}`);
+          if (btn) {
+            btn.addEventListener('click', () => {
+              setEditingOutlet({ id: props.id, name: props.name, territory: props.territory || '', currentRepId: props.repId || null, lat: props.lat, lng: props.lng });
+              setNewRepId('keep-current');
+              popup.remove();
+            });
+          }
+        }, 100);
+      };
+      m.on('click', 'rep-circles', onClick);
+      m.on('mouseenter', 'rep-circles', () => { m.getCanvas().style.cursor = 'pointer'; });
+      m.on('mouseleave', 'rep-circles', () => { m.getCanvas().style.cursor = ''; });
+      layersReadyRef.current = true;
+    } else {
+      (m.getSource(POINTS_SRC) as mapboxgl.GeoJSONSource).setData(pointData);
+      (m.getSource(ROUTES_SRC) as mapboxgl.GeoJSONSource).setData(routeData);
+      m.setPaintProperty('rep-circles', 'circle-color', colorPaint);
+    }
+
+    if (any) m.fitBounds(bounds, { padding: 50 });
   }, [repDayOutlets, isMapLoaded, reps, selectedDays, viewMode, universeViewData, colorBy]);
 
   const toggleRep = (repId: string) => {

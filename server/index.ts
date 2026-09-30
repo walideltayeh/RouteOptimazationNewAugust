@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express, { type Request, Response, NextFunction } from "express";
 import cookieParser from "cookie-parser";
+import compression from "compression";
 import { registerRoutes } from "./routes";
 import { storage } from "./storage";
 import { setupVite, serveStatic, log } from "./vite";
@@ -14,7 +15,11 @@ const INSTANCE_ID = randomUUID().slice(0, 8);
 const STARTED_AT = new Date().toISOString();
 
 const app = express();
-app.use(express.json());
+// 9,000 outlets are 3 MB of JSON and every page fetches them after every
+// edit; gzip brings that to a few hundred KB. SSE is left alone so progress
+// events are not buffered.
+app.use(compression({ filter: (req, res) => req.path.startsWith('/api/optimize/progress') ? false : compression.filter(req, res) }));
+app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
 
