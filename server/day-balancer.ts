@@ -1397,3 +1397,42 @@ export function handOverStrays(
   }
   return { groups: working, moved };
 }
+
+/**
+ * Village blocks. Outlets within `radiusKm` of one another (single linkage)
+ * form a block; a block whose load fits comfortably in one group (at most
+ * `maxLoad`) becomes one unit for the partition, so a village or a tight
+ * neighbourhood is never cut across two days or two weeks when it need not
+ * be. Bigger blocks (a dense town centre) stay as outlets. The unit is a
+ * synthetic outlet at the block's centroid carrying its members; `loadOf`
+ * must be wrapped with `unitLoad` so it counts the whole block, and
+ * `expand` turns the grouped units back into outlets.
+ */
+export type BlockUnit = Outlet & { blockMembers?: Outlet[] };
+export function collapseBlocks(
+  outlets: Outlet[],
+  radiusKm: number,
+  loadOf: (o: Outlet) => number,
+  maxLoad: number,
+): { units: BlockUnit[]; expand: (groups: BlockUnit[][]) => Outlet[][]; blocks: number } {
+  const comps = outlets.length > 1 ? reachabilityComponents(outlets, radiusKm) : [outlets];
+  const units: BlockUnit[] = [];
+  let blocks = 0;
+  for (const c of comps) {
+    const load = c.reduce((s, o) => s + loadOf(o), 0);
+    if (c.length < 2 || load > maxLoad || c.some(o => o.geoStatus === 'offset')) { units.push(...c); continue; }
+    const lat = c.reduce((s, o) => s + o.latitude, 0) / c.length;
+    const lng = c.reduce((s, o) => s + o.longitude, 0) / c.length;
+    const unit: BlockUnit = { ...c[0], id: `block:${blocks++}:${c[0].id}`, latitude: lat, longitude: lng, geoStatus: null, blockMembers: c };
+    units.push(unit);
+  }
+  return {
+    units,
+    blocks,
+    expand: (groups) => groups.map(g => g.flatMap(u => (u as BlockUnit).blockMembers ?? [u])),
+  };
+}
+/** Wraps a per-outlet load so a block unit weighs as much as all its members. */
+export function unitLoad(loadOf: (o: Outlet) => number): (o: Outlet) => number {
+  return (o: Outlet) => { const m = (o as BlockUnit).blockMembers; return m ? m.reduce((s, x) => s + loadOf(x), 0) : loadOf(o); };
+}
