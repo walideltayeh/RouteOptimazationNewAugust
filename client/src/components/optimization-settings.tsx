@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useToast } from "@/hooks/use-toast";
 import { Settings, Play, AlertCircle } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
+import { runJob } from "@/lib/jobs";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import OptimizationProgressModal from "./optimization-progress-modal";
 import { cn } from "@/lib/utils";
@@ -332,8 +333,10 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       excludedOutletIds?: string[];
       progressId?: string;
     }) => {
-      const response = await apiRequest("POST", "/api/optimize", settings);
-      return response.json();
+      // Runs as a background job: the request returns at once and the plan
+      // arrives by polling, so a four-minute run on 9,000 outlets survives
+      // any proxy timeout, and the progress modal keeps its live stream.
+      return runJob("/api/optimize", settings);
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['/api/outlets/duplicates'] });

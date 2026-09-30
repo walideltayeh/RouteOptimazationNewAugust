@@ -7,7 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
-import { CalendarDays, ArrowRightLeft, AlertCircle } from "lucide-react";
+import { ArrowRightLeft, AlertCircle } from "lucide-react";
 import type { Rep, Outlet, Schedule } from "@shared/schema";
 
 const DAY_NAMES = ["", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
@@ -109,14 +109,9 @@ export default function SchedulesPage() {
   };
 
   return (
-    <div className="p-6">
+    <div className="p-4 md:p-6">
       <div className="max-w-7xl mx-auto">
-        <header className="mb-6">
-          <h1 className="text-2xl font-bold flex items-center gap-2">
-            <CalendarDays className="h-6 w-6" /> Schedules
-          </h1>
-          <p className="text-gray-500 mt-1">Review each rep's weekly plan and move outlets between reps — schedules rework automatically.</p>
-        </header>
+        <p className="mb-4 text-sm text-[#6e6e73] dark:text-[#98989d]">Review each rep's weekly plan and move outlets between reps. Schedules rework automatically.</p>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
           <Card>

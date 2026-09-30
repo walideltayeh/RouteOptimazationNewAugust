@@ -227,16 +227,16 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="p-6">
+    <div className="p-4 md:p-6">
       <div className="max-w-7xl mx-auto space-y-6">
         {/* Header */}
-        <header className="bg-white dark:bg-[#1c1c1e] shadow-apple border border-[#e5e5e5] dark:border-[#38383a] px-6 py-4 rounded-2xl">
-          <div className="flex justify-between items-center">
+        <header className="bg-white dark:bg-[#1c1c1e] shadow-apple border border-[#e5e5e5] dark:border-[#38383a] px-4 py-3 md:px-6 rounded-2xl">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h2 className="text-2xl font-bold text-[#1d1d1f] dark:text-white">Route Optimization Dashboard</h2>
-              <p className="text-sm text-[#86868b] mt-1">Manage your sales rep territories and optimize routes</p>
+              <h2 className="text-lg font-semibold text-[#1d1d1f] dark:text-white">Route Optimization</h2>
+              <p className="text-sm text-[#86868b]">Upload outlets, set the working week and visit band, then optimize.</p>
             </div>
-            <div className="flex items-center space-x-4">
+            <div className="flex flex-wrap items-center gap-2">
               {authStatus?.isSuperuser && (
                 <Button
                   onClick={handleStartNewOptimization}

@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { MapPin, Users, Navigation, Trash2, RefreshCw, Download } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { apiRequest } from '@/lib/queryClient';
+import { runJob } from '@/lib/jobs';
 import type { Outlet, Rep } from '@shared/schema';
 
 // Set a default token or use environment variable
@@ -185,8 +186,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
         maxZoneRadiusKm: planSettings.maxZoneRadiusKm,
         maxHopKm: planSettings.maxHopKm,
       };
-      const res = await apiRequest("POST", "/api/optimize", body);
-      return res.json();
+      return runJob("/api/optimize", body);
     },
     onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ['/api/outlets'] });
@@ -224,8 +224,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
       // No body: the server rebuilds every rep's routes with the settings
       // the plan was built on. This used to post 15-25 visits over a
       // five-day week, whatever the dashboard said.
-      const response = await apiRequest("POST", "/api/reoptimize", {});
-      return response.json();
+      return runJob("/api/reoptimize", {});
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/outlets'] });
@@ -906,13 +905,13 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
         </div>
       )}
 
-      <div className="flex flex-1 gap-4">
-        {/* Map */}
-        <Card className="flex-1">
+      <div className="flex flex-1 flex-col gap-4 xl:flex-row">
+        {/* Map: as tall as the window allows, never a 500px letterbox */}
+        <Card className="flex-1 min-w-0">
           <CardContent className="p-0 h-full relative">
-            <div 
+            <div
               ref={mapContainer}
-              className="w-full h-[500px] rounded-lg"
+              className="w-full h-[60vh] min-h-[420px] xl:h-[calc(100vh-15rem)] rounded-lg"
             />
             {isRenderingMarkers && (
               <div className="absolute inset-0 bg-white bg-opacity-90 flex items-center justify-center rounded-lg">
@@ -934,13 +933,13 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
         </Card>
 
         {/* Territory Legend and Info */}
-        <div className="w-80 space-y-4">
+        <div className="w-full space-y-4 xl:w-80 xl:shrink-0">
           {/* Territory Legend */}
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-lg">Territories</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-3 max-h-[500px] overflow-y-auto">
+            <CardContent className="space-y-3 max-h-[40vh] xl:max-h-[calc(100vh-22rem)] overflow-y-auto">
               {Object.entries(territoryGroups).map(([territory, territoryOutlets]) => {
                 const rep = getRepForTerritory(territory);
                 const vf2Count = territoryOutlets.filter(o => o.visitFrequency === 2).length;

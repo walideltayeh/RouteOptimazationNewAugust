@@ -42,6 +42,20 @@ interface ProgressUpdate {
 class OptimizationProgressManager {
   private subscribers: Map<string, Response[]> = new Map();
   private progress: Map<string, ProgressUpdate> = new Map();
+  private listeners: Map<string, ((u: ProgressUpdate) => void)[]> = new Map();
+
+  /** In-process listener (the job record mirrors the stream). Returns an unsubscribe. */
+  listen(progressId: string, fn: (u: ProgressUpdate) => void): () => void {
+    if (!this.listeners.has(progressId)) this.listeners.set(progressId, []);
+    this.listeners.get(progressId)!.push(fn);
+    return () => {
+      const arr = this.listeners.get(progressId);
+      if (!arr) return;
+      const i = arr.indexOf(fn);
+      if (i > -1) arr.splice(i, 1);
+      if (arr.length === 0) this.listeners.delete(progressId);
+    };
+  }
   
   subscribe(progressId: string, res: Response) {
     console.log(`[SSE] New subscription for progressId: ${progressId}`);
@@ -73,6 +87,7 @@ class OptimizationProgressManager {
   emit(progressId: string, update: ProgressUpdate) {
     console.log(`[SSE] Emitting for ${progressId}: ${update.percent}% - ${update.stage}`);
     this.progress.set(progressId, update);
+    for (const fn of this.listeners.get(progressId) || []) { try { fn(update); } catch {} }
     const subs = this.subscribers.get(progressId) || [];
     console.log(`[SSE] Found ${subs.length} subscribers for ${progressId}`);
     for (const res of subs) {
@@ -3741,6 +3756,7 @@ function generateWeeklySchedules(rep: Rep, outlets: Outlet[]): InsertSchedule[] 
 }
 
 import { generateScheduleExcel } from './export';
+import { jobs, captureResponse, type JobProgress } from './jobs';
 
 
 declare global {
@@ -5296,8 +5312,50 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
   });
 
+  // ---- Background jobs ----
+  //
+  // The optimization used to run inside its own HTTP request: four minutes
+  // on 9,000 outlets, which most proxies cut off long before. The handler
+  // below is unchanged; asJob runs it detached, records its reply on the job,
+  // and answers 202 at once with the job id. The page polls /api/jobs/:id.
+  // The SSE progress stream still works, and the job mirrors it.
+  const asJob = (kind: string, handler: (req: Request, res: Response) => Promise<unknown>) =>
+    async (req: Request, res: Response) => {
+      const running = jobs.active();
+      if (running) {
+        return res.status(409).json({
+          message: `${running.kind === 'optimize' ? 'An optimization' : 'A rebuild'} is already running (${running.progress.percent}%, ${running.progress.stage}). Wait for it to finish.`,
+          jobId: running.id,
+        });
+      }
+      const progressId: string = (req.body && req.body.progressId) || `job-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const body = { ...(req.body || {}), progressId };
+      const job = jobs.start(kind, async (report) => {
+        const stop = progressManager.listen(progressId, (u) => report(u as JobProgress));
+        const { res: fake, state } = captureResponse();
+        try {
+          await handler({ body, params: {}, query: {}, headers: {}, on() {} } as unknown as Request, fake as Response);
+        } finally {
+          stop();
+        }
+        return { statusCode: state.code, body: state.payload };
+      });
+      res.status(202).json({ jobId: job.id, kind, progressId, statusUrl: `/api/jobs/${job.id}` });
+    };
+
+  app.get("/api/jobs/active", (_req, res) => {
+    const a = jobs.active();
+    res.json(a ?? null);
+  });
+  app.get("/api/jobs", (_req, res) => res.json(jobs.list(20)));
+  app.get("/api/jobs/:id", (req, res) => {
+    const j = jobs.get(req.params.id);
+    if (!j) return res.status(404).json({ message: "No such job" });
+    res.json(j);
+  });
+
   // Route optimization
-  app.post("/api/optimize", async (req, res) => {
+  app.post("/api/optimize", asJob('optimize', async (req: Request, res: Response) => {
     const progressId = req.body.progressId || '';
     
     // Helper to yield to event loop so SSE can flush
@@ -6022,7 +6080,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (progressId) progressManager.error(progressId, 'Optimization failed');
       res.status(500).json({ message: "Failed to run optimization" });
     }
-  });
+  }));
 
   // Optimization runs
   // --- Scenarios: compare plans before committing to one ---
@@ -7195,7 +7253,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Full re-optimization after zone changes
-  app.post("/api/reoptimize", async (req, res) => {
+  app.post("/api/reoptimize", asJob('reoptimize', async (req: Request, res: Response) => {
     try {
       const outlets = await storage.getOutlets();
       const reps = await storage.getReps();
@@ -7318,7 +7376,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.error("Re-optimization error:", error);
       res.status(500).json({ message: "Failed to re-optimize" });
     }
-  });
+  }));
 
   // Generate advanced VF-aware schedule for a single territory
   app.post("/api/territories/:territory/generate-schedule", async (req, res) => {
