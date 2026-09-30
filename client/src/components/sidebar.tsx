@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useState } from "react";
 import { 
@@ -15,10 +15,15 @@ import {
   Users,
   LogIn,
   LogOut,
-  Shield
+  Shield,
+  KeyRound,
+  Pencil,
+  Eye
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import LoginModal from "@/components/login-modal";
+import ChangePasswordDialog from "@/components/change-password-dialog";
+import { useAuth } from "@/hooks/use-auth";
 import pinLogo from "@assets/image_1769535972472.png";
 
 const navigation = [
@@ -29,11 +34,6 @@ const navigation = [
   { name: "Scenarios", href: "/scenarios", icon: FlaskConical },
 ];
 
-interface AuthStatus {
-  isAuthenticated: boolean;
-  isSuperuser: boolean;
-}
-
 interface SidebarProps {
   collapsed?: boolean;
   mobileOpen?: boolean;
@@ -43,11 +43,13 @@ interface SidebarProps {
 export default function Sidebar({ collapsed = false, mobileOpen = false, onMobileClose }: SidebarProps) {
   const [location] = useLocation();
   const [showLoginModal, setShowLoginModal] = useState(false);
-  
-  const { data: authStatus } = useQuery<AuthStatus>({
-    queryKey: ["/api/auth/status"],
-  });
-  
+  const [showPassword, setShowPassword] = useState(false);
+  const { user, isAdmin } = useAuth();
+  // Accounts is an admin's page; nobody else sees the link.
+  const items = isAdmin ? [...navigation, { name: "Accounts", href: "/users", icon: Users }] : navigation;
+  const roleLabel = user?.role === "admin" ? "Admin" : user?.role === "planner" ? "Planner" : "Viewer";
+  const RoleIcon = user?.role === "admin" ? Shield : user?.role === "planner" ? Pencil : Eye;
+
   const logoutMutation = useMutation({
     mutationFn: async () => {
       await apiRequest("POST", "/api/auth/logout");
@@ -78,7 +80,7 @@ export default function Sidebar({ collapsed = false, mobileOpen = false, onMobil
 
       <nav className={`flex-1 ${showLabels ? "px-3" : "px-2"}`}>
         <div className="space-y-1">
-          {navigation.map((item) => {
+          {items.map((item) => {
             const Icon = item.icon;
             const isActive = location === item.href;
             return (
@@ -100,23 +102,28 @@ export default function Sidebar({ collapsed = false, mobileOpen = false, onMobil
       </nav>
 
       <div className={`${showLabels ? "p-4 mx-3" : "p-2 mx-2"} mb-3 rounded-2xl bg-white dark:bg-[#2c2c2e] shadow-apple`}>
-        {authStatus?.isSuperuser ? (
+        {user ? (
           <div className={`flex items-center ${showLabels ? "justify-between" : "justify-center"}`}>
-            <div className="flex items-center">
-              <div className="w-9 h-9 bg-gradient-to-br from-green-500 to-green-600 rounded-full flex items-center justify-center shadow-sm" title="Admin - full access">
-                <Shield className="h-4 w-4 text-white" />
+            <div className="flex min-w-0 items-center">
+              <div className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center shadow-sm ${user.role === "admin" ? "bg-gradient-to-br from-green-500 to-green-600" : user.role === "planner" ? "bg-gradient-to-br from-blue-500 to-blue-600" : "bg-gradient-to-br from-gray-400 to-gray-500"}`} title={`${user.name} - ${roleLabel}`}>
+                <RoleIcon className="h-4 w-4 text-white" />
               </div>
               {showLabels && (
-                <div className="ml-3">
-                  <p className="text-sm font-medium text-[#1d1d1f] dark:text-white">Admin</p>
-                  <p className="text-xs text-green-600 dark:text-green-400">Full Access</p>
+                <div className="ml-3 min-w-0">
+                  <p className="truncate text-sm font-medium text-[#1d1d1f] dark:text-white" data-testid="text-user-name">{user.name}</p>
+                  <p className="text-xs text-[#86868b]" data-testid="text-user-role">{roleLabel}</p>
                 </div>
               )}
             </div>
             {showLabels && (
-              <Button variant="ghost" size="icon" className="h-8 w-8 hover:bg-[#f5f5f7] dark:hover:bg-[#3a3a3c]" onClick={() => logoutMutation.mutate()} disabled={logoutMutation.isPending} title="Sign out">
-                <LogOut className="h-4 w-4 text-[#86868b]" />
-              </Button>
+              <div className="flex shrink-0">
+                <Button variant="ghost" size="icon" className="h-8 w-8 hover:bg-[#f5f5f7] dark:hover:bg-[#3a3a3c]" onClick={() => setShowPassword(true)} title="Change password" data-testid="button-change-password-open">
+                  <KeyRound className="h-4 w-4 text-[#86868b]" />
+                </Button>
+                <Button variant="ghost" size="icon" className="h-8 w-8 hover:bg-[#f5f5f7] dark:hover:bg-[#3a3a3c]" onClick={() => logoutMutation.mutate()} disabled={logoutMutation.isPending} title="Sign out" data-testid="button-logout">
+                  <LogOut className="h-4 w-4 text-[#86868b]" />
+                </Button>
+              </div>
             )}
           </div>
         ) : (
@@ -128,6 +135,7 @@ export default function Sidebar({ collapsed = false, mobileOpen = false, onMobil
       </div>
 
       <LoginModal isOpen={showLoginModal} onClose={() => setShowLoginModal(false)} onLoginSuccess={() => setShowLoginModal(false)} />
+      <ChangePasswordDialog isOpen={showPassword} onClose={() => setShowPassword(false)} />
     </>
   );
 

@@ -11,6 +11,7 @@ const TITLES: Record<string, { title: string; blurb: string }> = {
   "/rep-map": { title: "Rep Map", blurb: "Day routes, one rep at a time" },
   "/schedules": { title: "Schedules", blurb: "Each rep's month, day by day" },
   "/scenarios": { title: "Scenarios", blurb: "Compare plans before you commit" },
+  "/users": { title: "Accounts", blurb: "Who can sign in, and what they may do" },
 };
 
 type PlanSettings = { configured: boolean; minVisitsPerDay?: number; maxVisitsPerDay?: number; workingDayNames?: string[]; planStart?: string | null; planEnd?: string | null; cycleDays?: number };

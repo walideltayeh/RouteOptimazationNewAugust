@@ -27,19 +27,19 @@ interface StoredAdmin {
   updatedAt: string;
 }
 
-function hashPassword(password: string, salt: string): string {
+export function hashPassword(password: string, salt: string): string {
   return scryptSync(password, salt, 64).toString("hex");
 }
 
 /** Constant-time comparison so a wrong password can't be found by timing. */
-function safeEquals(a: string, b: string): boolean {
+export function safeEquals(a: string, b: string): boolean {
   const bufA = Buffer.from(a);
   const bufB = Buffer.from(b);
   if (bufA.length !== bufB.length) return false;
   return timingSafeEqual(bufA, bufB);
 }
 
-function readStoredAdmin(): StoredAdmin | null {
+export function readStoredAdmin(): StoredAdmin | null {
   try {
     const parsed = JSON.parse(fs.readFileSync(ADMIN_FILE, "utf-8"));
     if (parsed?.email && parsed?.salt && parsed?.hash) return parsed as StoredAdmin;
