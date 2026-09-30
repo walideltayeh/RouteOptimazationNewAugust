@@ -166,6 +166,12 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
   const [maxZoneRadiusKm, setMaxZoneRadiusKm] = useState(15);
   // Longest drive allowed between two consecutive stops on a day-route, km.
   const [maxHopKm, setMaxHopKm] = useState(4);
+  // Whether a road server is configured and answering, for the road mode note.
+  const { data: health } = useQuery<{ osrm?: { configured: boolean; reachable: boolean | null; message: string; pairsCached: number } }>({
+    queryKey: ['/api/health'],
+    queryFn: async () => (await fetch('/api/health', { credentials: 'include' })).json(),
+    staleTime: 30_000,
+  });
   // Barriers, one per line: "Name: lat,lng; lat,lng; ..." - parsed on submit.
   const [barriersText, setBarriersText] = useState('');
   const parsedBarriers = useMemo(() => barriersText.split('\n').map(line => {
@@ -715,12 +721,19 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
             <SelectContent>
               <SelectItem value="haversine">Straight-line (recommended)</SelectItem>
               <SelectItem value="grid">Street-grid (for grid-planned cities)</SelectItem>
-              <SelectItem value="road">Road-aware (river/barrier crossings)</SelectItem>
+              <SelectItem value="road">Road distances (OSRM server) or detour estimate</SelectItem>
             </SelectContent>
           </Select>
           <p className="text-xs text-gray-500 mt-1">
-            Straight-line suits most markets. Street-grid charges diagonal moves at the cost of going round the block, which helps in grid-planned cities and tests worse on organic street layouts. Road-aware only changes grouping where a barrier is listed below (a river with few bridges, a railway, a motorway with no crossings), or when an OSRM server supplies true road distances — a flat detour factor alone rescales every pair equally and so leaves the grouping unchanged.
+            Straight-line suits most markets. Street-grid charges diagonal moves at the cost of going round the block, which helps in grid-planned cities and tests worse on organic street layouts. Road distances use a routing server (OSRM_URL) for every pair of outlets a rep holds: the day cuts, the hop limit, the stop order and the kilometres are then by road. Without a server it falls back to a detour estimate plus any barrier listed below (a river with few bridges, a railway, a motorway with no crossings) — a flat detour factor alone rescales every pair equally and so leaves the grouping unchanged.
           </p>
+          {distanceMode === 'road' && (
+            <p className={`mt-1 text-xs ${health?.osrm?.configured ? (health.osrm.reachable === false ? 'text-red-700' : 'text-green-700') : 'text-amber-700'}`} data-testid="text-osrm-status">
+              {health?.osrm?.configured
+                ? (health.osrm.reachable === false ? `Road server configured but not answering: ${health.osrm.message}` : `Road server configured (${health.osrm.pairsCached.toLocaleString()} road pairs cached).`)
+                : 'No road server set (OSRM_URL): road mode will use the detour estimate.'}
+            </p>
+          )}
           {distanceMode === 'road' && (
             <div className="mt-2">
               <Label htmlFor="barriers" className="text-xs">Barriers (optional)</Label>

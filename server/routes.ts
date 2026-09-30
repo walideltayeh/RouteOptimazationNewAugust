@@ -7,7 +7,7 @@ import { storage } from "./storage";
 import { loadBlob, saveBlob, deleteBlob } from "./persist";
 import { isAdminConfigured, verifyAdmin, adminCredentialSource } from "./admin-credentials";
 import { solveBalancedGroups } from "./balanced-solver";
-import { totalWeeklyLoad, growBalancedRegions, partitionByHilbert, repairLoads, swapForCompactness, polishByCohesion, polishByTourLength, recutPairs, routeCost, longestHop, swapStranded, reachabilityComponents, gapBetween, weeklyLoadOf, type Band } from "./day-balancer";
+import { totalWeeklyLoad, growBalancedRegions, partitionByHilbert, repairLoads, swapForCompactness, polishByCohesion, polishByTourLength, recutPairs, routeCost, longestHop, swapStranded, reachabilityComponents, gapBetween, weeklyLoadOf, type Band, improveByRouteCost, exchangePockets } from "./day-balancer";
 import { 
   insertOptimizationRunSchema, 
   insertOutletSchema, 
@@ -27,7 +27,7 @@ import Papa from "papaparse";
 import { exec } from "child_process";
 import { promisify } from "util";
 import { performAdvancedClustering as performAdvancedClusteringJS } from "./clustering-algorithms";
-import { geoDist, setDistanceMode, prefetchRoadMatrix, clearRoadMatrix, haversineKm, setBarriers, type Barrier, type DistanceMode } from "./road-distance";
+import { geoDist, setDistanceMode, getDistanceMode, prefetchRoadMatrix, prefetchOutletMatrix, clearRoadMatrix, haversineKm, setBarriers, osrmConfigured, osrmRoute, roadMatrixSize, type Barrier, type DistanceMode } from "./road-distance";
 import { generateAdvancedSchedule, reoptimizeSchedules, validateSchedule } from "./advanced-scheduling";
 
 const execAsync = promisify(exec);
@@ -227,7 +227,7 @@ function optimizeRoute(outlets: Outlet[]): Outlet[] {
   let startIdx = 0;
   let maxDist = 0;
   outlets.forEach((outlet, idx) => {
-    const dist = calculateDistance(avgLat, avgLng, outlet.latitude, outlet.longitude);
+    const dist = geoDist(avgLat, avgLng, outlet.latitude, outlet.longitude);
     if (dist > maxDist) {
       maxDist = dist;
       startIdx = idx;
@@ -247,7 +247,7 @@ function optimizeRoute(outlets: Outlet[]): Outlet[] {
     let nearestDist = Infinity;
 
     for (let i = 0; i < unvisited.length; i++) {
-      const dist = calculateDistance(
+      const dist = geoDist(
         current.latitude, current.longitude,
         unvisited[i].latitude, unvisited[i].longitude
       );
@@ -275,18 +275,18 @@ function optimizeRoute(outlets: Outlet[]): Outlet[] {
       for (let j = i + 1; j < route.length; j++) {
         if (j - i === 1) continue;
 
-        const currentDist = calculateDistance(
+        const currentDist = geoDist(
           route[i - 1].latitude, route[i - 1].longitude,
           route[i].latitude, route[i].longitude
-        ) + calculateDistance(
+        ) + geoDist(
           route[j - 1].latitude, route[j - 1].longitude,
           route[j].latitude, route[j].longitude
         );
 
-        const newDist = calculateDistance(
+        const newDist = geoDist(
           route[i - 1].latitude, route[i - 1].longitude,
           route[j - 1].latitude, route[j - 1].longitude
-        ) + calculateDistance(
+        ) + geoDist(
           route[i].latitude, route[i].longitude,
           route[j].latitude, route[j].longitude
         );
@@ -316,13 +316,13 @@ function optimizeRoute(outlets: Outlet[]): Outlet[] {
         const nextIdx = segEnd + 1;
 
         const removeCostBefore = (prevIdx >= 0
-          ? calculateDistance(route[prevIdx].latitude, route[prevIdx].longitude, route[segStart].latitude, route[segStart].longitude)
+          ? geoDist(route[prevIdx].latitude, route[prevIdx].longitude, route[segStart].latitude, route[segStart].longitude)
           : 0);
         const removeCostAfter = (nextIdx < route.length
-          ? calculateDistance(route[segEnd].latitude, route[segEnd].longitude, route[nextIdx].latitude, route[nextIdx].longitude)
+          ? geoDist(route[segEnd].latitude, route[segEnd].longitude, route[nextIdx].latitude, route[nextIdx].longitude)
           : 0);
         const removeCostBridge = (prevIdx >= 0 && nextIdx < route.length
-          ? calculateDistance(route[prevIdx].latitude, route[prevIdx].longitude, route[nextIdx].latitude, route[nextIdx].longitude)
+          ? geoDist(route[prevIdx].latitude, route[prevIdx].longitude, route[nextIdx].latitude, route[nextIdx].longitude)
           : 0);
 
         const removalSaving = removeCostBefore + removeCostAfter - removeCostBridge;
@@ -333,13 +333,13 @@ function optimizeRoute(outlets: Outlet[]): Outlet[] {
         for (let j = 0; j < route.length - 1; j++) {
           if (j >= segStart - 1 && j <= segEnd) continue;
 
-          const currentEdge = calculateDistance(
+          const currentEdge = geoDist(
             route[j].latitude, route[j].longitude,
             route[j + 1].latitude, route[j + 1].longitude
           );
           const insertCost =
-            calculateDistance(route[j].latitude, route[j].longitude, route[segStart].latitude, route[segStart].longitude) +
-            calculateDistance(route[segEnd].latitude, route[segEnd].longitude, route[j + 1].latitude, route[j + 1].longitude) -
+            geoDist(route[j].latitude, route[j].longitude, route[segStart].latitude, route[segStart].longitude) +
+            geoDist(route[segEnd].latitude, route[segEnd].longitude, route[j + 1].latitude, route[j + 1].longitude) -
             currentEdge;
 
           if (insertCost < bestInsertCost) {
@@ -364,7 +364,7 @@ function optimizeRoute(outlets: Outlet[]): Outlet[] {
     const n = route.length;
 
     const segDist = (a: number, b: number): number => {
-      return calculateDistance(route[a].latitude, route[a].longitude, route[b].latitude, route[b].longitude);
+      return geoDist(route[a].latitude, route[a].longitude, route[b].latitude, route[b].longitude);
     };
 
     let threeOptImproved = true;
@@ -436,7 +436,7 @@ function optimizeRoute(outlets: Outlet[]): Outlet[] {
 function calculateTotalDistance(outlets: Outlet[]): number {
   let total = 0;
   for (let i = 1; i < outlets.length; i++) {
-    total += calculateDistance(
+    total += geoDist(
       outlets[i-1].latitude, outlets[i-1].longitude,
       outlets[i].latitude, outlets[i].longitude
     );
@@ -3077,6 +3077,16 @@ async function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[]
   const repOutlets = zoneGroups.flat();
   if (repOutlets.length === 0) return [];
 
+  // Real road distances between every pair of this rep's outlets, when a
+  // road server is configured: from here on the hop checks, the day cut, the
+  // route-cost polish, the stop order and the kilometres saved are all by
+  // road. Without a server (or if it fails) the detour estimate stands in.
+  if (getDistanceMode() === 'road' && osrmConfigured()) {
+    const t0 = Date.now();
+    const r = await prefetchOutletMatrix(repOutlets.map(o => ({ lat: o.latitude, lng: o.longitude })));
+    console.log(`[road] ${rep.name}: ${r.filled} road pairs from OSRM in ${r.requests} request(s), ${Date.now() - t0}ms${r.failed ? ' (incomplete: estimate used for the rest)' : ''}`);
+  }
+
   // Split the rep's territory into working days by recursive bisection, so a
   // day is a contiguous piece of the map rather than a set of outlets that
   // merely add up to the right workload. Capacity-driven clustering balanced
@@ -3161,6 +3171,16 @@ async function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[]
       if (cost >= best - 0.01) break;
       groups = next;
       best = cost;
+    }
+    // Then the periodic-VRP step: relocate and exchange outlets between days
+    // by what the tours actually cost to drive. This is what pulls a pocket
+    // out of a day whose core is elsewhere and hands it to the day that
+    // drives past it, when only a swap can do so within the band.
+    const improved = improveByRouteCost(groups, runLoadOf, band, maxHopKm);
+    const after = totalCost(improved);
+    if (after < best - 0.01) {
+      console.log(`[vrp] ${rep.name}: route-cost polish ${best.toFixed(1)}km -> ${after.toFixed(1)}km over ${k} day-groups`);
+      groups = improved;
     }
     return groups;
   };
@@ -5273,6 +5293,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(202).json({ jobId: job.id, kind, progressId, statusUrl: `/api/jobs/${job.id}` });
     };
 
+  // The driven line of one day route from the road server, for playback and
+  // for the real kilometres. 404 when no road server is configured, so the
+  // client falls back to straight lines.
+  const roadRouteCache = new Map<string, { at: number; value: any }>();
+  app.get("/api/schedules/:id/road-route", async (req, res) => {
+    try {
+      if (!osrmConfigured()) return res.status(404).json({ message: "No road server configured (OSRM_URL)" });
+      const schedule = (await storage.getSchedules()).find(s => s.id === req.params.id);
+      if (!schedule) return res.status(404).json({ message: "No such route" });
+      const order = ((schedule.routeOrder as string[]) || []).length > 0 ? (schedule.routeOrder as string[]) : (schedule.outletIds as string[]);
+      const byId = new Map((await storage.getOutlets()).map(o => [o.id, o]));
+      const stops = order.map(id => byId.get(id)).filter((o): o is Outlet => !!o);
+      if (stops.length < 2) return res.status(404).json({ message: "Route has fewer than two stops" });
+      const key = `${schedule.id}:${order.join(',')}`;
+      const hit = roadRouteCache.get(key);
+      if (hit && Date.now() - hit.at < 6 * 3600 * 1000) return res.json(hit.value);
+      const r = await osrmRoute(stops.map(o => ({ lat: o.latitude, lng: o.longitude })));
+      if (!r) return res.status(502).json({ message: "The road server did not return a route" });
+      const value = { ...r, stopIds: stops.map(o => o.id), source: 'osrm' };
+      roadRouteCache.set(key, { at: Date.now(), value });
+      if (roadRouteCache.size > 2000) roadRouteCache.delete(roadRouteCache.keys().next().value!);
+      res.json(value);
+    } catch (error) {
+      console.error("road-route error:", error);
+      res.status(500).json({ message: "Failed to fetch the road route" });
+    }
+  });
+
   app.get("/api/jobs/active", (_req, res) => {
     const a = jobs.active();
     res.json(a ?? null);
@@ -5684,6 +5732,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
         monthlyVisitsOf,
         territoryBand,
       );
+      // Pockets inside a neighbour's area go to that neighbour, paid for with
+      // adjoining outlets, before any day is cut. See exchangePockets. This is
+      // a question of geography, so it is judged on straight-line distances
+      // whatever the distance mode: the outlet-level road matrix is fetched
+      // per rep later, and the detour estimate that would stand in for it
+      // here shrinks "within a kilometre" and "within the hop limit" by the
+      // detour factor and so misses pockets the straight-line run hands over.
+      if (maxHopKm > 0) {
+        const modeBefore = getDistanceMode();
+        setDistanceMode('haversine');
+        let ex: ReturnType<typeof exchangePockets>;
+        try { ex = exchangePockets(repOutletGroups, monthlyVisitsOf, territoryBand, maxHopKm); }
+        finally { setDistanceMode(modeBefore); }
+        for (const mv of ex.moves) {
+          console.log(`[territory] pocket of ${mv.pocket} outlet(s) moved from ${allReps[mv.from]?.name ?? mv.from} to ${allReps[mv.to]?.name ?? mv.to}, ${mv.returned} adjoining outlet(s) returned`);
+        }
+        for (let i = 0; i < repOutletGroups.length; i++) repOutletGroups[i] = ex.groups[i];
+      }
       const zoneAssignments = assignZonesToRepsBalanced(clusters, allReps, balanceTolerance);
       {
         const visitsOf = (g: Outlet[]) => g.reduce((sum, o) => sum + (o.visitFrequency ?? 1), 0);
@@ -6001,6 +6067,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         geoOutliers: detectedOutliers,
         geoOutlierRadiusKm,
         distanceMode,
+        roadDistances: distanceMode === 'road' ? (osrmConfigured() ? (roadMatrixSize() > 0 ? 'osrm' : 'estimate (OSRM gave nothing)') : 'estimate (no OSRM_URL)') : 'straight-line',
+        roadPairs: roadMatrixSize(),
         calculation: {
           totalOutlets: outlets.length,
           totalWeeklyVisits,
