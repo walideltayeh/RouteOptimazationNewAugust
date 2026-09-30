@@ -166,6 +166,13 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
   const [maxZoneRadiusKm, setMaxZoneRadiusKm] = useState(15);
   // Longest drive allowed between two consecutive stops on a day-route, km.
   const [maxHopKm, setMaxHopKm] = useState(4);
+  // Barriers, one per line: "Name: lat,lng; lat,lng; ..." - parsed on submit.
+  const [barriersText, setBarriersText] = useState('');
+  const parsedBarriers = useMemo(() => barriersText.split('\n').map(line => {
+    const [name, rest] = line.includes(':') ? [line.slice(0, line.indexOf(':')), line.slice(line.indexOf(':') + 1)] : ['Barrier', line];
+    const points = rest.split(';').map(p => p.trim().split(',').map(Number)).filter(p => p.length === 2 && p.every(Number.isFinite)) as [number, number][];
+    return { name: name.trim() || 'Barrier', points };
+  }).filter(b => b.points.length >= 2), [barriersText]);
   const [coverageSuggestions, setCoverageSuggestions] = useState<CoverageSuggestion[]>([]);
   const [territoryBalance, setTerritoryBalance] = useState<TerritoryBalance | null>(null);
   const [weightModeUsed, setWeightModeUsed] = useState<string>('');
@@ -278,6 +285,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
     maxHopKm: number;
     excludedOutletIds?: string[];
     progressId: string;
+      barriers?: { name: string; points: [number, number][] }[];
   } | null>(null);
 
   const { toast } = useToast();
@@ -330,6 +338,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       distanceMode?: DistanceModel;
       maxZoneRadiusKm?: number;
       maxHopKm?: number;
+      barriers?: { name: string; points: [number, number][] }[];
       excludedOutletIds?: string[];
       progressId?: string;
     }) => {
@@ -427,6 +436,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
       distanceMode,
       maxZoneRadiusKm,
       maxHopKm,
+      barriers: parsedBarriers.length > 0 ? parsedBarriers : undefined,
       excludedOutletIds: excludedOutletIds.length > 0 ? excludedOutletIds : undefined,
       progressId: newProgressId,
     };
@@ -578,13 +588,15 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
           <div className="flex flex-wrap gap-2 text-xs text-gray-500">
             <span>Quick fill:</span>
             <button type="button" className="underline hover:text-gray-700" disabled={disabled}
-              onClick={() => { setWeekStartDay(6); setDaysOffCount(1); setDaysOff([5]); }}>Syria — Sat start, Fri off</button>
+              onClick={() => { setWeekStartDay(6); setDaysOffCount(1); setDaysOff([5]); }}>Sat–Thu, Fri off</button>
             <button type="button" className="underline hover:text-gray-700" disabled={disabled}
-              onClick={() => { setWeekStartDay(7); setDaysOffCount(2); setDaysOff([5, 6]); }}>Gulf — Sun start, Fri + Sat off</button>
+              onClick={() => { setWeekStartDay(7); setDaysOffCount(2); setDaysOff([5, 6]); }}>Sun–Thu, Fri + Sat off</button>
             <button type="button" className="underline hover:text-gray-700" disabled={disabled}
-              onClick={() => { setWeekStartDay(1); setDaysOffCount(2); setDaysOff([6, 7]); }}>Mon start, Sat + Sun off</button>
+              onClick={() => { setWeekStartDay(7); setDaysOffCount(1); setDaysOff([5]); }}>Sun–Thu + Sat, Fri off</button>
             <button type="button" className="underline hover:text-gray-700" disabled={disabled}
-              onClick={() => { setWeekStartDay(1); setDaysOffCount(1); setDaysOff([7]); }}>Mon start, Sun off</button>
+              onClick={() => { setWeekStartDay(1); setDaysOffCount(2); setDaysOff([6, 7]); }}>Mon–Fri, Sat + Sun off</button>
+            <button type="button" className="underline hover:text-gray-700" disabled={disabled}
+              onClick={() => { setWeekStartDay(1); setDaysOffCount(1); setDaysOff([7]); }}>Mon–Sat, Sun off</button>
           </div>
         </div>
 
@@ -707,8 +719,24 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
             </SelectContent>
           </Select>
           <p className="text-xs text-gray-500 mt-1">
-            Straight-line suits most markets. Street-grid charges diagonal moves at the cost of going round the block, which helps in grid-planned cities but tested worse on Damascus's organic street layout. Road-aware only changes grouping where a barrier (e.g. the Tigris) is configured, or when an OSRM server supplies true road distances — a flat detour factor alone rescales every pair equally and so leaves the grouping unchanged.
+            Straight-line suits most markets. Street-grid charges diagonal moves at the cost of going round the block, which helps in grid-planned cities and tests worse on organic street layouts. Road-aware only changes grouping where a barrier is listed below (a river with few bridges, a railway, a motorway with no crossings), or when an OSRM server supplies true road distances — a flat detour factor alone rescales every pair equally and so leaves the grouping unchanged.
           </p>
+          {distanceMode === 'road' && (
+            <div className="mt-2">
+              <Label htmlFor="barriers" className="text-xs">Barriers (optional)</Label>
+              <textarea
+                id="barriers"
+                className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono"
+                rows={3}
+                placeholder={"One per line, points along the barrier as lat,lng:\nRiver: 33.488,44.375; 33.455,44.392; 33.440,44.400"}
+                value={barriersText}
+                onChange={e => setBarriersText(e.target.value)}
+                disabled={disabled}
+                data-testid="textarea-barriers"
+              />
+              <p className="mt-1 text-xs text-gray-500">{parsedBarriers.length} barrier{parsedBarriers.length === 1 ? '' : 's'} read. Crossing one adds a detour penalty between outlets on either side.</p>
+            </div>
+          )}
         </div>
 
         <div>

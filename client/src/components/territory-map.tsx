@@ -395,14 +395,14 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
       }
       mapboxgl.accessToken = resolvedMapboxToken;
 
-      // Set Lebanon as default center since that's the data we're working with
-      const lebanonCenter: [number, number] = [35.8623, 33.8938]; // Beirut coordinates
-      
+      // No home city: the outlets decide where the map goes (fitBounds on
+      // render). Until they load, show the world rather than someone else's
+      // country.
       map.current = new mapboxgl.Map({
         container: mapContainer.current,
         style: 'mapbox://styles/mapbox/light-v11',
-        center: lebanonCenter,
-        zoom: 8
+        center: [20, 20],
+        zoom: 1.5
       });
 
       map.current.on('load', () => {
