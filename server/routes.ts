@@ -2983,113 +2983,33 @@ function applyPlanSettings(): PlanSettings | null {
 // are the start and end of their week.
 let workingWeek: number[] = [1, 2, 3, 4, 5];
 
-const WEEKDAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-
-/** Reads a working week off a request body, falling back to the first N weekdays. */
-function parseWorkingWeek(body: any): number[] {
-  const raw = body?.workingDays;
-  if (Array.isArray(raw)) {
-    const days = Array.from(new Set(
-      raw.map((d: any) => parseInt(String(d), 10)).filter((d: number) => d >= 1 && d <= 7),
-    ));
-    if (days.length > 0) return days;
-  }
-  const count = Math.max(1, Math.min(7, parseInt(String(body?.workingDaysPerWeek ?? 5), 10) || 5));
-  return Array.from({ length: count }, (_, i) => i + 1);
-}
-
 // How the cycle is sized. 'fixed' uses cycleWorkingDays as given; 'calendarMonth'
 // takes one real calendar month - the one in planMonth - and counts its working
 // days, so October on a Saturday-to-Thursday week is 24 whole-week days (or 26
 // if the partial weeks at the edges are included), and the plan's dates are
 // October's dates rather than "tomorrow onwards".
 type CycleMode = 'fixed' | 'calendarMonth';
-type MonthEdges = 'wholeWeeks' | 'allDays';
 let cycleMode: CycleMode = 'fixed';
 let planMonth = '';                       // 'YYYY-MM'
 let monthEdges: MonthEdges = 'allDays';
 let planStartDate = '';                   // 'YYYY-MM-DD'; '' = next working day
 let cycleStartSlot = 0;                   // where in the working week the plan starts
 
-const isoWeekday = (d: Date) => (d.getDay() === 0 ? 7 : d.getDay());
-const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-const nextMonthKey = () => {
-  const t = new Date();
-  const y = t.getMonth() === 11 ? t.getFullYear() + 1 : t.getFullYear();
-  const m = t.getMonth() === 11 ? 1 : t.getMonth() + 2;
-  return `${y}-${String(m).padStart(2, '0')}`;
-};
-
-/**
- * The working dates of one calendar month.
- *
- * 'wholeWeeks' runs from the first day of the month that starts the working
- * week to the last day that ends it - first Saturday to last Thursday on a
- * Saturday-to-Thursday week - which is how the business describes its month.
- * It leaves the partial weeks at either edge to no plan at all: two days in
- * October 2026, eight in November. 'allDays' covers every working day of the
- * month and starts mid-week when the 1st falls mid-week.
- */
-function monthPlanDates(year: number, month: number, week: number[], edges: MonthEdges): { start: Date; end: Date; dates: Date[] } | null {
-  const days = week.length > 0 ? week : [1, 2, 3, 4, 5];
-  const inWeek = new Set(days);
-  const all: Date[] = [];
-  for (let d = new Date(year, month - 1, 1); d.getMonth() === month - 1; d.setDate(d.getDate() + 1)) all.push(new Date(d));
-  const working = all.filter(d => inWeek.has(isoWeekday(d)));
-  if (working.length === 0) return null;
-  let start = working[0];
-  let end = working[working.length - 1];
-  if (edges === 'wholeWeeks') {
-    const s = all.find(d => isoWeekday(d) === days[0]);
-    const e = [...all].reverse().find(d => isoWeekday(d) === days[days.length - 1]);
-    if (s && e && s.getTime() <= e.getTime()) { start = s; end = e; }
-  }
-  const dates = working.filter(d => d.getTime() >= start.getTime() && d.getTime() <= end.getTime());
-  return dates.length > 0 ? { start, end, dates } : null;
-}
-
 // Length of one journey-plan cycle, in working days. 0 = derive it as four
-// weeks, which is what the app always assumed.
-//
-// Four weeks was hardcoded, and that quietly made the app unable to express how
-// a real operation runs. The Damascus plan works a 26 working-day cycle: 13
-// day-routes, each visited twice, visit 2 falling exactly 13 working days after
-// visit 1. 26 is not 4 x anything, so the app modelled it as 6 x 4 = 24 and
-// packed 8% more calls into every day than the business actually does - 24.1
-// visits a day where the plan says 22.3.
+// weeks, which is what the app always assumed. See cycleShape in cycle.ts for
+// how a length becomes day-groups x repeats (26 = 13 x 2, 23 = 11 x 2 + 1).
 let cycleWorkingDays = 0;
 
-// A cycle is dayGroups distinct day-routes, each driven `repeats` times, and
-// dayGroups x repeats is the PATTERN length. The plan itself may be one day
-// longer: a month of 23 working days is planned as an 11 x 2 pattern plus day
-// 23, which is pattern day 1 again - the next cycle's first day. That is how a
-// permanent journey plan actually works. Nothing is ever dropped: the earlier
-// version planned 22 days and left the rep with no route on the 23rd, which in
-// route-to-market terms is a day of lost calls, not a rounding error.
-//
-// Run count prefers even spacing for fortnightly calls. Four runs gives a
-// weekly/fortnightly/monthly plan (the classic four-week PJP); two runs gives
-// fortnightly calls exactly half a cycle apart. Three or five runs put the two
-// visits of a fortnightly outlet 9 and 18 days apart, so they are used only
-// when nothing else fits - and a 27-day month is planned as 13 x 2 with one
-// bonus day rather than 9 x 3, because 13/13 beats 9/18.
-//
-// 5-day week, default cycle -> 20 days = 5 groups x 4. The old behaviour.
-// 6-day week, default cycle -> 24 days = 6 groups x 4. The old behaviour.
-// 26 working days          -> 13 groups x 2.
-// 23 working days (prime)  -> 11 groups x 2, plus one bonus day.
-function cycleShape(workingDaysPerWeek: number, requested?: number): { cycleDays: number; repeats: number; dayGroups: number; planDays: number } {
-  const wd = Math.max(1, workingDaysPerWeek || 5);
-  const asked = requested ?? cycleWorkingDays;
-  const planDays = asked > 0 ? asked : wd * 4;
-  const divisor = (n: number, prefs: number[]) => prefs.find(r => n % r === 0);
-  let cycleDays = planDays;
-  let repeats = divisor(planDays, [4, 2]);
-  if (!repeats && planDays > 2 && divisor(planDays - 1, [4, 2])) { cycleDays = planDays - 1; repeats = divisor(cycleDays, [4, 2]); }
-  if (!repeats) repeats = divisor(planDays, [3, 5]);
-  if (!repeats && planDays > 2 && divisor(planDays - 1, [3, 5])) { cycleDays = planDays - 1; repeats = divisor(cycleDays, [3, 5]); }
-  if (!repeats) { cycleDays = Math.max(2, planDays - (planDays % 2)); repeats = 2; }
-  return { cycleDays, repeats, dayGroups: Math.max(1, Math.round(cycleDays / repeats)), planDays: Math.max(cycleDays, planDays) };
+// The cycle math lives in cycle.ts so it can be tested on its own; these
+// wrappers feed it the module state the rest of this file keeps.
+function cycleShape(workingDaysPerWeek: number, requested?: number) {
+  return cycleShapeFor(workingDaysPerWeek, requested ?? cycleWorkingDays);
+}
+function calendarCell(repeat: number, group: number, dayGroups: number, week: number[]) {
+  return calendarCellAt(repeat, group, dayGroups, week, cycleStartSlot);
+}
+function upcomingWorkingDates(count: number, week: number[]): Date[] {
+  return upcomingWorkingDatesFrom(count, week, planStartDate);
 }
 
 // The cycle a plan on disk was built with, read back off it: the number of
@@ -3128,87 +3048,6 @@ async function storedWorkingWeek(): Promise<number[]> {
     if (gap > widest) { widest = gap; startAt = i; }
   }
   return [...days.slice(startAt), ...days.slice(0, startAt)];
-}
-
-// Where a (repeat, day-group) cell falls on the calendar. Cycle working day
-// (r-1) * dayGroups + g, laid onto weeks of workingDaysPerWeek. With 13 groups
-// x 2 repeats and a 6-day week, group 1 is driven on cycle day 1 (week 1,
-// Monday) and cycle day 14 (week 3, Tuesday): 13 working days apart, exactly as
-// the plan specifies. The old 6 x 4 shape still lands every group on the same
-// weekday every week, so nothing changes for a four-week cycle.
-function calendarCell(repeat: number, group: number, dayGroups: number, week: number[]) {
-  const days = week.length > 0 ? week : [1, 2, 3, 4, 5];
-  const wd = days.length;
-  const cycleDay = (repeat - 1) * dayGroups + group; // 1-based
-  // A plan that starts mid-week (the 1st of the month on a Thursday) begins
-  // part-way through week 1, so the cell is offset by where the start falls.
-  const pos = cycleStartSlot + cycleDay - 1;
-  return {
-    cycleDay,
-    week: Math.floor(pos / wd) + 1,
-    // The weekday the business actually works, not an index into an assumed
-    // Monday-first week.
-    dayOfWeek: days[pos % wd],
-  };
-}
-
-/**
- * The real calendar dates of the first `count` working days of the plan: from
- * its start date when it has one (a calendar-month plan), else from tomorrow.
- */
-function upcomingWorkingDates(count: number, week: number[]): Date[] {
-  const days = new Set(week.length > 0 ? week : [1, 2, 3, 4, 5]);
-  const dates: Date[] = [];
-  const cursor = planStartDate ? new Date(planStartDate + 'T00:00:00') : new Date();
-  cursor.setHours(0, 0, 0, 0);
-  if (!planStartDate) cursor.setDate(cursor.getDate() + 1); // start tomorrow, never today
-  // 7 days of slack per working day is enough even for a one-day week.
-  for (let guard = 0; guard < count * 7 + 14 && dates.length < count; guard++) {
-    const iso = cursor.getDay() === 0 ? 7 : cursor.getDay(); // JS Sunday=0 -> ISO 7
-    if (days.has(iso)) dates.push(new Date(cursor));
-    cursor.setDate(cursor.getDate() + 1);
-  }
-  return dates;
-}
-
-// A day-group is driven `repeats` times per cycle, so one membership can carry
-// at most `repeats` visits. An outlet needing more (weekly calls on a 2-repeat
-// cycle) is given a second day-group; each membership carries its share.
-function membershipsFor(vf: number, repeats: number): number[] {
-  const need = Math.max(1, Math.min(vf || 1, repeats * 2));
-  const out: number[] = [];
-  let left = need;
-  while (left > 0) { const take = Math.min(repeats, left); out.push(take); left -= take; }
-  return out;
-}
-
-/**
- * How many offset buckets a frequency band needs, so its visits spread evenly.
- *
- * When the runs divide by the visits (4 runs, 2 visits) the buckets are the
- * stride: two buckets, seen in runs {1,3} and {2,4}. When they do not (3 runs,
- * 2 visits; 4 runs, 3 visits) there is no stride, so every bucket is its own
- * offset: one bucket per run, each seen in `times` runs. Rounding 3/2 to two
- * buckets, as this used to, put both buckets in run 1 and one each in runs 2
- * and 3 - days of 37 next to days of 15 - and rounding 4/3 to one bucket left
- * run 4 without any three-a-cycle outlet at all.
- */
-function bucketsForFrequency(vf: number, repeats: number): number {
-  const times = Math.min(Math.max(1, vf), repeats);
-  return repeats % times === 0 ? repeats / times : repeats;
-}
-
-/**
- * Which repeats (1-based) a bucket of this frequency band is visited in: the
- * bucket's own offset, then every repeats/times runs after it, rounded down.
- * Each run then lands in exactly `times` buckets, so the runs stay even, and
- * the visits are as evenly spaced as the arithmetic allows.
- */
-function repeatsForBucket(vf: number, repeats: number, bucketIndex: number): number[] {
-  const times = Math.min(Math.max(1, vf), repeats);
-  const out = new Set<number>();
-  for (let j = 0; j < times; j++) out.add(((bucketIndex + Math.floor((j * repeats) / times)) % repeats) + 1);
-  return Array.from(out).sort((a, b) => a - b);
 }
 
 // How far a single day's visit count may sit from the average, as a fraction.
@@ -3757,6 +3596,7 @@ function generateWeeklySchedules(rep: Rep, outlets: Outlet[]): InsertSchedule[] 
 
 import { generateScheduleExcel } from './export';
 import { jobs, captureResponse, type JobProgress } from './jobs';
+import { WEEKDAY_NAMES, parseWorkingWeek, type MonthEdges, isoWeekday, ymd, nextMonthKey, monthPlanDates, cycleShape as cycleShapeFor, calendarCell as calendarCellAt, upcomingWorkingDates as upcomingWorkingDatesFrom, membershipsFor, bucketsForFrequency, repeatsForBucket } from './cycle';
 import { authStore, AuthError, canEdit, toPublic, ROLES, type Role, type User } from './auth';
 
 

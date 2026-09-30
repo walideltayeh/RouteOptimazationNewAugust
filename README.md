@@ -16,7 +16,8 @@ npm run dev            # serves app + API on http://localhost:5000
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `SUPERUSER_EMAIL` / `SUPERUSER_PASSWORD` | optional | Admin login. Alternative to `npm run set-admin` - see [Admin login](#admin-login). |
+| `DATABASE_URL` | production | Postgres connection for all app state (outlets, plans, accounts, sessions). Without it the state lives in `data/` on disk, which an Autoscale deployment wipes on restart. |
+| `SUPERUSER_EMAIL` / `SUPERUSER_PASSWORD` | optional | Seeds the first admin account on a fresh install - see [Accounts](#accounts). |
 | `VITE_MAPBOX_TOKEN` | for map pages | Territory Map / Rep Map rendering ([free token](https://account.mapbox.com/access-tokens/)). |
 | `OSRM_URL` | optional | Self-hosted OSRM server for true road distances in road-aware mode. |
 
@@ -46,35 +47,43 @@ npm run dev            # serves app + API on http://localhost:5000
 | Endpoint | Purpose |
 |---|---|
 | `POST /api/upload` | Import outlets (multipart `file`) |
-| `POST /api/optimize` | Full optimization. Body: `workingDaysPerWeek`, `minVisitsPerDay`, `maxVisitsPerDay`, `weightMode`, `distanceMode`, `excludedOutletIds`, `balanceTolerancePct`, `maxZoneRadiusKm`, `geoOutlierRadiusKm` |
+| `POST /api/optimize` | Full optimization, run as a background job: answers `202 {jobId}`; poll `GET /api/jobs/:id`. Body: `workingDays`, `minVisitsPerDay`, `maxVisitsPerDay`, `cycleMode`, `planMonth`, `monthEdges`, `maxHopKm`, `weightMode`, `distanceMode`, `excludedOutletIds`, `maxZoneRadiusKm` |
+| `POST /api/reoptimize` | Rebuild every rep's routes with the saved settings (background job) |
+| `GET /api/jobs/active` | The running job, if any; `GET /api/jobs/:id` for one job |
 | `POST /api/reps/reassign-outlets` | Move outlets to another rep + auto-rework affected schedules |
-| `POST /api/reoptimize` | Rebuild all schedules from current ownership |
-| `GET /api/schedules`, `/api/reps`, `/api/outlets` | Current plan data |
-| `GET /api/export/schedules` | Excel export |
+| `POST /api/outlets/:id/move-to-route` | Put one outlet on a chosen day route and pin it there |
+| `GET /api/schedules`, `/api/reps`, `/api/outlets`, `/api/plan-settings` | Current plan data |
+| `GET /api/export/territories`, `/api/export/schedules` | Excel exports |
+| `GET /api/users`, `POST /api/users`, `PATCH /api/users/:id` | Accounts (admin only) |
 
-## Admin login
+Every `/api` route needs a signed-in user except sign-in, `/api/health` and the
+map token. Planners and admins may change data; viewers may only read.
 
-Admin credentials are never stored in this repository. Set them once, on the
-machine running the app, in either of two ways.
+## Accounts
 
-**Option A - one command (recommended):**
+Three roles: **admin** (everything, including accounts), **planner** (upload,
+optimize, edit plans, export) and **viewer** (read-only). Accounts and sessions
+live in the app's state store, so they survive restarts and work on every
+instance once `DATABASE_URL` is set.
+
+On a fresh install the first visitor is asked to create the admin account in
+the app. If `SUPERUSER_EMAIL` / `SUPERUSER_PASSWORD` are set (Replit Secrets or
+`.env`), or `data/admin.json` exists from `npm run set-admin`, that admin is
+imported as the first account instead; afterwards those values are not
+consulted. Admins add further accounts on the Accounts page with a temporary
+password the person must replace at first sign-in. No credential is ever
+stored in this repository.
+
+## Development
 
 ```bash
-npm run set-admin -- you@example.com "choose-a-strong-password"
+npm run check   # typecheck (client, server, shared, tests)
+npm test        # vitest: unit tests plus an end-to-end API test on a temp data dir
+npm run build   # client bundle + server bundle into dist/
 ```
 
-Then restart the app. The password is salted and hashed with scrypt into
-`data/admin.json`, which is gitignored, so the plain password is never written
-to disk or committed.
-
-**Option B - environment variables** (Replit Secrets, or a local `.env`):
-
-```
-SUPERUSER_EMAIL=you@example.com
-SUPERUSER_PASSWORD=choose-a-strong-password
-```
-
-Environment variables take precedence over `data/admin.json` when both exist.
-
-If neither is configured, admin sign-in is disabled and the login dialog tells
-you how to fix it rather than rejecting every attempt as a bad password.
+The tests cover the cycle math (`server/cycle.ts`), the day balancer, the
+accounts store, background jobs, the blob store, and the app end to end:
+first-run setup, roles, upload, a background optimization, exports, and a
+pinned route move. GitHub Actions runs typecheck, tests and build on every
+push to `main` and every pull request (`.github/workflows/ci.yml`).
