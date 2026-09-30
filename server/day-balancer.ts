@@ -1035,3 +1035,288 @@ export function gapBetween(a: Outlet[], b: Outlet[]): number {
   }
   return best;
 }
+
+/* ------------------------------------------------------------------ *
+ * Route-cost local search (the periodic-VRP improvement step)
+ * ------------------------------------------------------------------ */
+
+/**
+ * Improve a rep's day-groups by the cost of driving them, with the segment
+ * moves a vehicle-routing local search lives on: relocate a run of
+ * consecutive stops into another day's tour where it splices in cheaply,
+ * and exchange a run of one day's stops for a run of another's (the
+ * CROSS-exchange neighbourhood). Runs are 1 to 6 stops, tried both ways
+ * round.
+ *
+ * Why segments: a pocket of five outlets stitched onto a day whose core is
+ * across town looks cheap outlet by outlet - taking one out saves only its
+ * small detour inside the pocket - so single-outlet moves never lift it.
+ * The pocket has to move as a unit, and when every day is at its load
+ * limit it has to be EXCHANGED for a run the other day holds near this
+ * day's core. Moves are priced on the tours themselves (road distances
+ * when the road matrix is loaded), never on centroids.
+ *
+ * Every accepted move shortens the total tour length, so the result is
+ * never worse than the input. Loads stay inside the band; legs are priced
+ * with the hop penalty so a move never introduces a long jump to save a
+ * short one.
+ */
+export function improveByRouteCost(
+  groups: Outlet[][],
+  weightFn: (o: Outlet) => number,
+  tolerance: Band = 0.08,
+  maxHopKm: number = 0,
+  maxPasses: number = 12,
+  timeBudgetMs: number = 4000,
+  maxSegment: number = 6,
+): Outlet[][] {
+  const working = groups.map(g => [...g]);
+  if (working.length < 2) return working;
+  const started = Date.now();
+  const outOfTime = () => Date.now() - started > timeBudgetMs;
+  const loadOf = (g: Outlet[]) => g.reduce((s, o) => s + weightFn(o), 0);
+  const total = working.reduce((s, g) => s + loadOf(g), 0);
+  const { lo, hi } = bandOf(total / working.length, tolerance);
+  const d = (a: Outlet, b: Outlet) => legCost(geoDist(a.latitude, a.longitude, b.latitude, b.longitude), maxHopKm);
+  const tourLen = (t: Outlet[]) => { let s = 0; for (let i = 0; i < t.length - 1; i++) s += d(t[i], t[i + 1]); return s; };
+  const segWeight = (t: Outlet[], a: number, l: number) => { let w = 0; for (let i = a; i < a + l; i++) w += weightFn(t[i]); return w; };
+  const movable = (t: Outlet[], a: number, l: number) => { for (let i = a; i < a + l; i++) if (t[i].geoStatus === 'offset') return false; return true; };
+
+  // Removing t[a..a+l): how much shorter the tour gets.
+  const removalGain = (t: Outlet[], a: number, l: number) => {
+    const prev = a > 0 ? t[a - 1] : null, next = a + l < t.length ? t[a + l] : null;
+    let inner = 0; for (let i = a; i < a + l - 1; i++) inner += d(t[i], t[i + 1]);
+    if (prev && next) return d(prev, t[a]) + inner + d(t[a + l - 1], next) - d(prev, next);
+    if (prev) return d(prev, t[a]) + inner;
+    if (next) return inner + d(t[a + l - 1], next);
+    return inner;
+  };
+  // Cost of putting segment `seg` between prev and next (either may be null), best orientation.
+  const gapCost = (prev: Outlet | null, seg: Outlet[], next: Outlet | null): { cost: number; reversed: boolean } => {
+    let inner = 0; for (let i = 0; i < seg.length - 1; i++) inner += d(seg[i], seg[i + 1]);
+    const first = seg[0], last = seg[seg.length - 1];
+    const base = prev && next ? d(prev, next) : 0;
+    const fwd = (prev ? d(prev, first) : 0) + inner + (next ? d(last, next) : 0) - base;
+    const rev = (prev ? d(prev, last) : 0) + inner + (next ? d(first, next) : 0) - base;
+    return rev < fwd ? { cost: rev, reversed: true } : { cost: fwd, reversed: false };
+  };
+  // Cheapest gap in tour t for a segment, over every edge and both ends.
+  const cheapestGap = (t: Outlet[], seg: Outlet[]): { cost: number; at: number; reversed: boolean } => {
+    if (t.length === 0) return { cost: 0, at: 0, reversed: false };
+    let best = gapCost(null, seg, t[0]); let at = 0;
+    for (let e = 0; e < t.length - 1; e++) {
+      const g = gapCost(t[e], seg, t[e + 1]);
+      if (g.cost < best.cost) { best = g; at = e + 1; }
+    }
+    const end = gapCost(t[t.length - 1], seg, null);
+    if (end.cost < best.cost) { best = end; at = t.length; }
+    return { cost: best.cost, at, reversed: best.reversed };
+  };
+  const nearestStopKm = (o: Outlet, t: Outlet[]) => { let m = Infinity; for (const x of t) { const v = geoDist(o.latitude, o.longitude, x.latitude, x.longitude); if (v < m) m = v; } return m; };
+  const nearGroups = (o: Outlet, tours: Outlet[][], self: number, k = 3) =>
+    tours.map((t, g) => ({ g, dist: g === self || t.length === 0 ? Infinity : nearestStopKm(o, t) }))
+      .filter(x => x.dist < Infinity).sort((a, b) => a.dist - b.dist).slice(0, k).map(x => x.g);
+  const orient = (seg: Outlet[], reversed: boolean) => reversed ? [...seg].reverse() : seg;
+
+  let tours = working.map(buildTour);
+  let best = tours.reduce((s, t) => s + tourLen(t), 0);
+  for (let pass = 0; pass < maxPasses && !outOfTime(); pass++) {
+    const loads = tours.map(loadOf);
+    let moved = 0;
+
+    // Segment relocate.
+    for (let gi = 0; gi < tours.length && !outOfTime(); gi++) {
+      for (let a = 0; a < tours[gi].length; a++) {
+        let done = false;
+        for (let l = Math.min(maxSegment, tours[gi].length - a); l >= 1 && !done; l--) {
+          if (!movable(tours[gi], a, l)) continue;
+          const w = segWeight(tours[gi], a, l);
+          if (loads[gi] - w < lo) continue;
+          const gain = removalGain(tours[gi], a, l);
+          if (gain <= 0.01) continue;
+          const seg = tours[gi].slice(a, a + l);
+          let bestG = -1, bestAt = 0, bestRev = false, bestCost = Infinity;
+          const cands = new Set([...nearGroups(seg[0], tours, gi), ...nearGroups(seg[seg.length - 1], tours, gi)]);
+          for (const gj of Array.from(cands)) {
+            if (loads[gj] + w > hi) continue;
+            const ins = cheapestGap(tours[gj], seg);
+            if (ins.cost < bestCost) { bestCost = ins.cost; bestG = gj; bestAt = ins.at; bestRev = ins.reversed; }
+          }
+          if (bestG < 0 || bestCost >= gain - 0.01) continue;
+          tours[gi].splice(a, l);
+          tours[bestG].splice(bestAt, 0, ...orient(seg, bestRev));
+          loads[gi] -= w; loads[bestG] += w;
+          moved++; done = true; a--;
+        }
+      }
+    }
+
+    // Segment exchange between two days.
+    for (let gi = 0; gi < tours.length && !outOfTime(); gi++) {
+      for (let gj = gi + 1; gj < tours.length && !outOfTime(); gj++) {
+        let improvedPair = true;
+        while (improvedPair && !outOfTime()) {
+          improvedPair = false;
+          const A = tours[gi], B = tours[gj];
+          let bestDelta = -0.01, bestMove: { a: number; la: number; b: number; lb: number; revA: boolean; revB: boolean } | null = null;
+          for (let a = 0; a < A.length; a++) {
+            for (let la = 1; la <= Math.min(maxSegment, A.length - a); la++) {
+              if (!movable(A, a, la)) break;
+              const wa = segWeight(A, a, la);
+              const gainA = removalGain(A, a, la);
+              const prevA = a > 0 ? A[a - 1] : null, nextA = a + la < A.length ? A[a + la] : null;
+              const segA = A.slice(a, a + la);
+              for (let b = 0; b < B.length; b++) {
+                // Only where the other day's run sits near this gap: prune by the gap's neighbours.
+                const anchor = prevA ?? nextA;
+                if (anchor && geoDist(anchor.latitude, anchor.longitude, B[b].latitude, B[b].longitude) > 6) continue;
+                for (let lb = 1; lb <= Math.min(maxSegment, B.length - b); lb++) {
+                  if (!movable(B, b, lb)) break;
+                  const wb = segWeight(B, b, lb);
+                  const la_ = loads[gi] - wa + wb, lb_ = loads[gj] - wb + wa;
+                  if (la_ < lo || la_ > hi || lb_ < lo || lb_ > hi) continue;
+                  const gainB = removalGain(B, b, lb);
+                  const prevB = b > 0 ? B[b - 1] : null, nextB = b + lb < B.length ? B[b + lb] : null;
+                  const segB = B.slice(b, b + lb);
+                  const inA = gapCost(prevA, segB, nextA);
+                  const inB = gapCost(prevB, segA, nextB);
+                  const delta = inA.cost + inB.cost - gainA - gainB;
+                  if (delta < bestDelta) { bestDelta = delta; bestMove = { a, la, b, lb, revA: inB.reversed, revB: inA.reversed }; }
+                }
+              }
+            }
+          }
+          if (bestMove) {
+            const { a, la, b, lb, revA, revB } = bestMove;
+            const segA = A.slice(a, a + la), segB = B.slice(b, b + lb);
+            const newA = [...A.slice(0, a), ...orient(segB, revB), ...A.slice(a + la)];
+            const newB = [...B.slice(0, b), ...orient(segA, revA), ...B.slice(b + lb)];
+            tours[gi] = newA; tours[gj] = newB;
+            loads[gi] += segWeight(segB, 0, segB.length) - segWeight(segA, 0, segA.length);
+            loads[gj] += segWeight(segA, 0, segA.length) - segWeight(segB, 0, segB.length);
+            moved++; improvedPair = true;
+          }
+        }
+      }
+    }
+
+    if (moved === 0) break;
+    // Re-tour and keep the result only if the month really got shorter.
+    const retoured = tours.map(t => buildTour(t));
+    const cost = retoured.reduce((s, t) => s + tourLen(t), 0);
+    if (cost >= best - 0.01) break;
+    best = cost;
+    tours = retoured;
+    for (let g = 0; g < working.length; g++) working[g] = [...tours[g]];
+  }
+  return working;
+}
+
+/* ------------------------------------------------------------------ *
+ * Territory pocket exchange
+ * ------------------------------------------------------------------ */
+
+/**
+ * Hand a rep's stranded pockets to the rep whose area they sit in, and take
+ * adjoining outlets back so both loads stay in band.
+ *
+ * A territory is cut into pieces that can be driven within the hop limit.
+ * A small piece that is nowhere near the rest of its own territory but
+ * sits among another rep's outlets is a pocket the balance passes left
+ * behind: whoever holds it must give it a whole day or stitch it onto a
+ * day across town, while the neighbour drives past it every week. Measured
+ * on the Damascus plan, one rep held pockets of 7 and 8 outlets with 17 and
+ * 27 of a neighbour's outlets within a kilometre, and another a pocket of
+ * 17 inside a neighbour's patch. No single-outlet border move fixes that,
+ * because every day of both reps is at its limit: the pocket has to move
+ * as a unit and be paid for with a run of the receiver's outlets that
+ * adjoin the giver's core.
+ *
+ * Pockets nobody else is near (a village 10 km out) stay where they are:
+ * someone has to drive there, and that is a day-cut matter.
+ */
+export function exchangePockets(
+  groups: Outlet[][],
+  weightFn: (o: Outlet) => number,
+  tolerance: Band,
+  maxHopKm: number,
+  maxRounds: number = 4,
+): { groups: Outlet[][]; moves: { pocket: number; from: number; to: number; returned: number }[] } {
+  const working = groups.map(g => [...g]);
+  const moves: { pocket: number; from: number; to: number; returned: number }[] = [];
+  if (working.length < 2 || maxHopKm <= 0) return { groups: working, moves };
+  const loadOf = (g: Outlet[]) => g.reduce((s, o) => s + weightFn(o), 0);
+  const total = working.reduce((s, g) => s + loadOf(g), 0);
+  const { lo, hi } = bandOf(total / working.length, tolerance);
+  const near = (o: Outlet, g: Outlet[]) => { let m = Infinity; for (const x of g) { const v = geoDist(o.latitude, o.longitude, x.latitude, x.longitude); if (v < m) m = v; } return m; };
+
+  for (let round = 0; round < maxRounds; round++) {
+    let movedThisRound = 0;
+    for (let gi = 0; gi < working.length; gi++) {
+      const g = working[gi];
+      if (g.length < 2) continue;
+      const comps = reachabilityComponents(g, maxHopKm).sort((a, b) => b.length - a.length);
+      if (comps.length < 2) continue;
+      const core = comps[0];
+      for (const pocket of comps.slice(1)) {
+        if (pocket.length > Math.max(3, Math.floor(g.length * 0.4))) continue;
+        if (pocket.some(o => o.geoStatus === 'offset')) continue;
+        // Whose area is it in: the rep with the most outlets within a kilometre of the pocket.
+        let bestG = -1, bestInside = 0, bestGap = Infinity;
+        for (let gj = 0; gj < working.length; gj++) {
+          if (gj === gi || working[gj].length === 0) continue;
+          let inside = 0, gap = Infinity;
+          for (const x of working[gj]) {
+            const v = near(x, pocket);
+            if (v <= 1.0) inside++;
+            if (v < gap) gap = v;
+          }
+          if (inside > bestInside || (inside === bestInside && gap < bestGap)) { bestG = gj; bestInside = inside; bestGap = gap; }
+        }
+        // It must really sit among the other rep's outlets, closer to them than to its own core.
+        const ownGap = pocket.reduce((m, o) => Math.min(m, near(o, core)), Infinity);
+        if (bestG < 0 || bestInside < Math.min(5, pocket.length) || bestGap > maxHopKm || bestGap >= ownGap) continue;
+
+        const w = loadOf(pocket);
+        const pocketIds = new Set(pocket.map(o => o.id));
+        // Pay for it: the receiver's outlets that adjoin the giver's core, nearest first.
+        const receiver = working[bestG];
+        const candidates = receiver
+          .filter(o => o.geoStatus !== 'offset')
+          .map(o => ({ o, d: near(o, core) }))
+          .filter(c => c.d <= maxHopKm)
+          .sort((a, b) => a.d - b.d);
+        const back: Outlet[] = [];
+        let backW = 0;
+        for (const c of candidates) {
+          if (backW >= w) break;
+          back.push(c.o); backW += weightFn(c.o);
+        }
+        // The return is trimmed, nearest-first kept, until both loads sit in
+        // the band and the receiver stays as connected as it was: a border
+        // outlet whose departure would strand other outlets of the receiver
+        // (or the pocket itself) is not returned.
+        const receiverComps = reachabilityComponents(receiver, maxHopKm).length;
+        const fits = (n: number): boolean => {
+          const bw = back.slice(0, n).reduce((s, o) => s + weightFn(o), 0);
+          const ga = loadOf(g) - w + bw, ra = loadOf(receiver) + w - bw;
+          if (ga < lo || ga > hi || ra < lo || ra > hi) return false;
+          const ids = new Set(back.slice(0, n).map(o => o.id));
+          return reachabilityComponents(receiver.filter(o => !ids.has(o.id)).concat(pocket), maxHopKm).length <= receiverComps;
+        };
+        let keep = back.length;
+        while (keep >= 0 && !fits(keep)) keep--;
+        if (keep < 0) continue;
+        back.length = keep;
+        const backIds = new Set(back.map(o => o.id));
+        working[gi] = g.filter(o => !pocketIds.has(o.id)).concat(back);
+        working[bestG] = receiver.filter(o => !backIds.has(o.id)).concat(pocket);
+        moves.push({ pocket: pocket.length, from: gi, to: bestG, returned: back.length });
+        movedThisRound++;
+        break; // this group's pieces changed; recompute on the next round
+      }
+    }
+    if (movedThisRound === 0) break;
+  }
+  return { groups: working, moves };
+}

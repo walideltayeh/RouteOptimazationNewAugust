@@ -7,6 +7,7 @@ import { storage } from "./storage";
 import { setupVite, serveStatic, log } from "./vite";
 import { randomUUID } from "crypto";
 import { persistenceMode } from "./persist";
+import { osrmStatus } from "./road-distance";
 
 // One id per server process. The client compares it across responses: if two
 // ids answer the same page, two instances are running without a shared
@@ -71,6 +72,7 @@ app.use((req, res, next) => {
       persistence: persistenceMode(),
       outlets: (await storage.getOutlets()).length,
       env: process.env.NODE_ENV || "development",
+      osrm: await osrmStatus(),
     });
   });
 

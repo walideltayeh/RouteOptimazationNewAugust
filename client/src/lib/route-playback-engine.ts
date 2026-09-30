@@ -5,6 +5,10 @@ import { cumulativeKm, positionAt, type Stop } from "./route-playback-math";
  * be driven in a test: give it anything that looks like a map (the subset of
  * the Mapbox GL API below), a clock and an animation-frame scheduler, and it
  * animates a route by feeding GeoJSON to four sources.
+ *
+ * The marker moves along a PATH. By default the path is the straight lines
+ * between stops; with a road route from the server the path is the driven
+ * line and `stopKm` says at which kilometre each stop is reached.
  */
 export interface GeoJSONSourceLike { setData(data: any): void }
 export interface MapLike {
@@ -22,10 +26,20 @@ export interface MapLike {
 
 export interface PlaybackRoute {
   key: string;
+  scheduleId?: string;
   repName: string;
   dayLabel: string;
   color: string;
   stops: Stop[];
+}
+
+export interface RoadPath {
+  /** [lng, lat] vertices of the driven line. */
+  coordinates: [number, number][];
+  /** Road km at which each stop is reached, stop 1 at 0. */
+  stopKm: number[];
+  distanceKm: number;
+  durationMin: number;
 }
 
 export interface PlaybackSnapshot {
@@ -36,6 +50,10 @@ export interface PlaybackSnapshot {
   totalKm: number;
   reached: number; // stops reached so far, as a count
   done: boolean;
+  /** 'road' when following the road server's line, else 'straight'. */
+  source: "road" | "straight";
+  /** Road minutes for the whole day, when known. */
+  durationMin?: number;
 }
 
 export const SRC = { trail: "playback-trail", ahead: "playback-ahead", head: "playback-head", stops: "playback-stops" } as const;
@@ -44,7 +62,12 @@ export const SECONDS_PER_ROUTE = 30; // a whole day plays in half a minute at 1x
 
 export class PlaybackEngine {
   private route: PlaybackRoute | null = null;
+  /** The path vertices as pseudo-stops, so the same maths walks either a straight or a road line. */
+  private path: Stop[] = [];
   private cum: number[] = [];
+  private stopKm: number[] = [];
+  private source: "road" | "straight" = "straight";
+  private durationMin: number | undefined;
   private km = 0;
   private playing = false;
   private speed = 1;
@@ -65,10 +88,18 @@ export class PlaybackEngine {
   get total(): number { return this.cum[this.cum.length - 1] ?? 0; }
   get current(): PlaybackRoute | null { return this.route; }
 
+  private reachedCount(): number {
+    let n = 0;
+    for (const k of this.stopKm) { if (k <= this.km + 1e-9) n++; else break; }
+    return Math.max(1, n);
+  }
+
   private snapshot(): PlaybackSnapshot | null {
     if (!this.route) return null;
-    const pos = positionAt(this.route.stops, this.cum, this.km);
-    return { route: this.route, playing: this.playing, speed: this.speed, km: Math.min(this.km, this.total), totalKm: this.total, reached: pos.reached + 1, done: this.km >= this.total && this.route.stops.length > 0 };
+    return {
+      route: this.route, playing: this.playing, speed: this.speed, km: Math.min(this.km, this.total), totalKm: this.total,
+      reached: this.reachedCount(), done: this.km >= this.total && this.route.stops.length > 0, source: this.source, durationMin: this.durationMin,
+    };
   }
   private emit(force = false) {
     const t = this.now();
@@ -93,7 +124,6 @@ export class PlaybackEngine {
     m.addSource(SRC.head, { type: "geojson", data: empty });
     m.addLayer({ id: "playback-head-glow", type: "circle", source: SRC.head, paint: { "circle-radius": 18, "circle-color": color, "circle-opacity": 0.25, "circle-blur": 0.6 } });
     m.addLayer({ id: "playback-head", type: "circle", source: SRC.head, paint: { "circle-radius": 8, "circle-color": "#111111", "circle-stroke-width": 3, "circle-stroke-color": "#ffffff" } });
-    // The regular route lines fade so the journey stands out.
     this.dimOthers(true);
   }
 
@@ -118,10 +148,11 @@ export class PlaybackEngine {
     const m = this.map();
     const route = this.route;
     if (!m || !route) return;
-    const pos = positionAt(route.stops, this.cum, this.km);
+    const pos = positionAt(this.path, this.cum, this.km);
+    const reached = this.reachedCount();
     this.src(SRC.trail)?.setData({ type: "FeatureCollection", features: pos.trail.length > 1 ? [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: pos.trail } }] : [] });
     this.src(SRC.head)?.setData({ type: "FeatureCollection", features: [{ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [pos.lng, pos.lat] } }] });
-    this.src(SRC.stops)?.setData({ type: "FeatureCollection", features: route.stops.map((s, i) => ({ type: "Feature", properties: { order: i + 1, visited: i <= pos.reached, name: s.name }, geometry: { type: "Point", coordinates: [s.lng, s.lat] } })) });
+    this.src(SRC.stops)?.setData({ type: "FeatureCollection", features: route.stops.map((s, i) => ({ type: "Feature", properties: { order: i + 1, visited: i < reached, name: s.name }, geometry: { type: "Point", coordinates: [s.lng, s.lat] } })) });
     if (this.playing) {
       const b = m.getBounds();
       if (b && !b.contains([pos.lng, pos.lat])) m.easeTo({ center: [pos.lng, pos.lat], duration: 600 });
@@ -145,21 +176,55 @@ export class PlaybackEngine {
     this.frame = this.raf(this.tick);
   };
 
-  start(route: PlaybackRoute, autoplayDelayMs = 850) {
+  /** Load a route. With a road path the marker follows the road; otherwise straight lines. */
+  start(route: PlaybackRoute, autoplayDelayMs = 850, road?: RoadPath | null) {
     const m = this.map();
     if (!m || route.stops.length === 0) return false;
     this.pause();
     this.removeLayers();
     this.route = route;
-    this.cum = cumulativeKm(route.stops);
+    if (road && road.coordinates.length >= 2 && road.stopKm.length === route.stops.length) {
+      this.path = road.coordinates.map(([lng, lat], i) => ({ id: `v${i}`, name: "", lat, lng }));
+      this.cum = cumulativeKm(this.path);
+      // The road server's leg lengths and its geometry's summed length differ by a few metres; scale so they agree.
+      const geomTotal = this.cum[this.cum.length - 1] || 1;
+      const legTotal = road.stopKm[road.stopKm.length - 1] || geomTotal;
+      const scale = geomTotal / legTotal;
+      this.stopKm = road.stopKm.map(k => k * scale);
+      this.source = "road";
+      this.durationMin = road.durationMin;
+    } else {
+      this.path = route.stops;
+      this.cum = cumulativeKm(route.stops);
+      this.stopKm = [...this.cum];
+      this.source = "straight";
+      this.durationMin = undefined;
+    }
     this.km = 0;
     this.ensureLayers(route.color);
-    this.src(SRC.ahead)?.setData({ type: "FeatureCollection", features: route.stops.length > 1 ? [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: route.stops.map(s => [s.lng, s.lat]) } }] : [] });
+    this.src(SRC.ahead)?.setData({ type: "FeatureCollection", features: this.path.length > 1 ? [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: this.path.map(s => [s.lng, s.lat]) } }] : [] });
     try { m.fitBounds(this.makeBounds(route.stops), { padding: 80, duration: 800, maxZoom: 15 }); } catch { /* bounds are best-effort */ }
     this.draw(true);
     if (this.startTimer) clearTimeout(this.startTimer);
     this.startTimer = setTimeout(() => { this.startTimer = null; if (this.route?.key === route.key) this.play(); }, autoplayDelayMs);
     return true;
+  }
+
+  /** Swap the straight path for a road path that arrived after start, keeping the position. */
+  upgradeToRoad(routeKey: string, road: RoadPath) {
+    if (!this.route || this.route.key !== routeKey || this.source === "road") return;
+    if (road.coordinates.length < 2 || road.stopKm.length !== this.route.stops.length) return;
+    const fraction = this.total > 0 ? this.km / this.total : 0;
+    this.path = road.coordinates.map(([lng, lat], i) => ({ id: `v${i}`, name: "", lat, lng }));
+    this.cum = cumulativeKm(this.path);
+    const geomTotal = this.cum[this.cum.length - 1] || 1;
+    const legTotal = road.stopKm[road.stopKm.length - 1] || geomTotal;
+    this.stopKm = road.stopKm.map(k => k * (geomTotal / legTotal));
+    this.source = "road";
+    this.durationMin = road.durationMin;
+    this.km = this.total * fraction;
+    this.src(SRC.ahead)?.setData({ type: "FeatureCollection", features: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: this.path.map(s => [s.lng, s.lat]) } }] });
+    this.draw(true);
   }
 
   play() {

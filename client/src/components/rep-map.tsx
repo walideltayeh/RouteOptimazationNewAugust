@@ -483,6 +483,7 @@ export function RepMap() {
   const playableRoutes = useMemo(() => Object.entries(repDayOutlets).flatMap(([repId, repData]) =>
     Object.entries(repData.daySchedules).map(([scheduleKey, dayData]) => ({
       key: `${repId}-${scheduleKey}`,
+      scheduleId: dayData.schedule.id,
       repId, scheduleKey, repName: repData.rep.name, color: dayData.color,
       dayLabel: `${daysOfWeek[dayData.dayOfWeek - 1] || `Day ${dayData.dayOfWeek}`} W${dayData.week}`,
       stops: (((dayData.schedule.routeOrder as string[]) || []).length > 0 ? (dayData.schedule.routeOrder as string[]) : dayData.outlets.map(o => o.id))
@@ -492,7 +493,7 @@ export function RepMap() {
   ), [repDayOutlets]);
   const playRoute = (key: string) => {
     const r = playableRoutes.find(x => x.key === key);
-    if (r) playback.start({ key: r.key, repName: r.repName, dayLabel: r.dayLabel, color: r.color, stops: r.stops });
+    if (r) playback.start({ key: r.key, scheduleId: r.scheduleId, repName: r.repName, dayLabel: r.dayLabel, color: r.color, stops: r.stops });
   };
 
   const universeViewData = useMemo(() => {

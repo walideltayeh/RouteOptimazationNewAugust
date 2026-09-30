@@ -19,7 +19,8 @@ npm run dev            # serves app + API on http://localhost:5000
 | `DATABASE_URL` | production | Postgres connection for all app state (outlets, plans, accounts, sessions). Without it the state lives in `data/` on disk, which an Autoscale deployment wipes on restart. |
 | `SUPERUSER_EMAIL` / `SUPERUSER_PASSWORD` | optional | Seeds the first admin account on a fresh install - see [Accounts](#accounts). |
 | `VITE_MAPBOX_TOKEN` | for map pages | Territory Map / Rep Map rendering ([free token](https://account.mapbox.com/access-tokens/)). |
-| `OSRM_URL` | optional | Self-hosted OSRM server for true road distances in road-aware mode. |
+| `OSRM_URL` | for road distances | An OSRM routing server, e.g. `https://router.project-osrm.org` (public demo: fine for trials, not for production) or a self-hosted one with the country's map extract. With it, the "Road distances" mode prices every pair of a rep's outlets by road: day cuts, hop limit, stop order, kilometres, and the playback follows real streets. |
+| `OSRM_MAX_TABLE` | optional | Coordinates per table request (default 100, the demo server's cap). Raise it on a self-hosted server started with `--max-table-size` to fetch a rep's matrix in one request. |
 
 ## Workflow
 
@@ -32,9 +33,15 @@ npm run dev            # serves app + API on http://localhost:5000
    share each week hits your target), coverage weighting, and the distance
    model (straight-line, or road-aware with barrier penalties, e.g. the
    Tigris in Baghdad).
-3. **Run optimization**: geographic zones (15 km tightness cap) → balanced
-   rep territories (±10% monthly-visit workload) → per-day routes with
-   VF1/VF2/VF4 weekly rotation and TSP ordering.
+3. **Run optimization**: geographic zones → balanced rep territories → per-rep
+   day routes. A territory pocket that sits inside a neighbour's area is handed
+   to that neighbour, paid for with adjoining outlets, so no rep drives through
+   another rep's streets. Each rep's territory is then cut into day-groups and
+   improved as a periodic vehicle-routing problem: outlets and runs of outlets
+   are relocated and exchanged between days by what the day tours cost to
+   drive (road distances when `OSRM_URL` is set), within the visits-per-day
+   band and the hop limit, then each day is ordered as a tour. Visit
+   frequencies rotate across the cycle's repeats.
 4. **Review**: territory balance report, suggested low-worth pockets for
    indirect coverage, and flagged geographic outliers — tick what to exclude
    and re-run; nothing is removed without your choice.

@@ -112,21 +112,60 @@ function countBarrierCrossings(lat1: number, lng1: number, lat2: number, lng2: n
   return crossings;
 }
 
-// --- Optional OSRM true-road-distance cache (zone-centroid level) ---
+// --- OSRM road-distance cache ---
+//
+// Known road distances between pairs of points. geoDist is called hundreds
+// of millions of times in a run, so the lookup must not build strings: a
+// coordinate rounded to 1e-4 degrees (~11 m) maps to a small integer id via
+// two small-integer map lookups, and a pair of ids maps to kilometres via a
+// per-id row. Everything stays a 31-bit integer key, which V8 hashes without
+// allocating.
+const latRows = new Map<number, Map<number, number>>(); // latI -> (lngI -> point id)
+let pointCount = 0;
+const pairRows: Map<number, number>[] = [];               // lower id -> (higher id -> km)
+let pairCount = 0;
 
-const osrmCache = new Map<string, number>();
-
-function cacheKey(lat1: number, lng1: number, lat2: number, lng2: number): string {
-  // Round to ~11m so centroid recomputations still hit the cache.
-  const k = (v: number) => v.toFixed(4);
-  const a = `${k(lat1)},${k(lng1)}`;
-  const b = `${k(lat2)},${k(lng2)}`;
-  return a < b ? `${a}|${b}` : `${b}|${a}`;
+function pointIdOf(lat: number, lng: number, create: boolean): number {
+  const latI = Math.round(lat * 1e4), lngI = Math.round(lng * 1e4);
+  let row = latRows.get(latI);
+  if (row === undefined) {
+    if (!create) return -1;
+    row = new Map<number, number>();
+    latRows.set(latI, row);
+  }
+  let id = row.get(lngI);
+  if (id === undefined) {
+    if (!create) return -1;
+    id = pointCount++;
+    row.set(lngI, id);
+    pairRows.push(new Map<number, number>());
+  }
+  return id;
 }
 
-// Prefetch the pairwise road-distance matrix for a set of points from a
-// self-hosted OSRM instance (OSRM_URL env var). Batched to respect OSRM's
-// default table-size limits. Failures leave the cache unfilled - geoDist
+/** Stores a pair's road distance; true when the pair was not known before. */
+function setPairKm(lat1: number, lng1: number, lat2: number, lng2: number, km: number): boolean {
+  const a = pointIdOf(lat1, lng1, true), b = pointIdOf(lat2, lng2, true);
+  if (a === b) return false;
+  const lo = a < b ? a : b, hi = a < b ? b : a;
+  const row = pairRows[lo];
+  const isNew = !row.has(hi);
+  if (isNew) pairCount++;
+  row.set(hi, km);
+  return isNew;
+}
+
+function getPairKm(lat1: number, lng1: number, lat2: number, lng2: number): number | undefined {
+  const a = pointIdOf(lat1, lng1, false);
+  if (a < 0) return undefined;
+  const b = pointIdOf(lat2, lng2, false);
+  if (b < 0) return undefined;
+  return a < b ? pairRows[a].get(b) : pairRows[b].get(a);
+}
+
+// Prefetch the pairwise road-distance matrix for a set of points (used for
+// zone centroids) from the OSRM server named by OSRM_URL. Batched to respect
+// OSRM's default table-size limit. Failures leave the cache unfilled - geoDist
 // then falls back to the detour estimate, so this can never break a run.
 export async function prefetchRoadMatrix(points: { lat: number; lng: number }[]): Promise<number> {
   const osrmUrl = process.env.OSRM_URL;
@@ -137,21 +176,13 @@ export async function prefetchRoadMatrix(points: { lat: number; lng: number }[])
   try {
     for (let i = 0; i < points.length; i += BATCH) {
       const batch = points.slice(i, i + BATCH);
-      const coords = batch.map(p => `${p.lng},${p.lat}`).join(';');
-      const url = `${osrmUrl.replace(/\/$/, '')}/table/v1/driving/${coords}?annotations=distance`;
-      const resp = await fetch(url);
-      if (!resp.ok) throw new Error(`OSRM ${resp.status}`);
-      const data = await resp.json() as { distances?: number[][] };
-      if (!data.distances) continue;
+      const m = await fetchTable(batch);
+      if (!m) continue;
       for (let a = 0; a < batch.length; a++) {
         for (let b = a + 1; b < batch.length; b++) {
-          const meters = data.distances[a]?.[b];
+          const meters = m[a]?.[b];
           if (typeof meters === 'number' && isFinite(meters)) {
-            osrmCache.set(
-              cacheKey(batch[a].lat, batch[a].lng, batch[b].lat, batch[b].lng),
-              meters / 1000
-            );
-            filled++;
+            if (setPairKm(batch[a].lat, batch[a].lng, batch[b].lat, batch[b].lng, meters / 1000)) filled++;
           }
         }
       }
@@ -163,7 +194,128 @@ export async function prefetchRoadMatrix(points: { lat: number; lng: number }[])
 }
 
 export function clearRoadMatrix(): void {
-  osrmCache.clear();
+  latRows.clear();
+  pairRows.length = 0;
+  pointCount = 0;
+  pairCount = 0;
+}
+
+// --- Outlet-level road matrix ---
+//
+// Real road distances for every pair of outlets a rep holds, so day cuts,
+// hop checks, stop order and the kilometres shown are all by road. OSRM's
+// table service answers a block of coordinates at once; the demo server
+// and a default self-hosted build cap a table at 100 coordinates, so the
+// points are split into chunks of half that and every pair of chunks is
+// asked together, which covers every pair of points. A 300-outlet rep is
+// 15 requests at the default cap and one request when OSRM_MAX_TABLE is
+// raised on a self-hosted server. Pairs already known are not re-asked.
+const MAX_TABLE = Math.max(20, parseInt(process.env.OSRM_MAX_TABLE || '100', 10) || 100);
+let lastOsrmError = '';
+
+export function osrmConfigured(): boolean { return !!process.env.OSRM_URL; }
+export function roadMatrixSize(): number { return pairCount; }
+export function roadPairKnown(lat1: number, lng1: number, lat2: number, lng2: number): boolean {
+  return getPairKm(lat1, lng1, lat2, lng2) !== undefined;
+}
+
+async function fetchTable(points: { lat: number; lng: number }[]): Promise<number[][] | null> {
+  const osrmUrl = process.env.OSRM_URL;
+  if (!osrmUrl) return null;
+  const coords = points.map(p => `${p.lng.toFixed(6)},${p.lat.toFixed(6)}`).join(';');
+  const url = `${osrmUrl.replace(/\/$/, '')}/table/v1/driving/${coords}?annotations=distance`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
+  try {
+    const resp = await fetch(url, { signal: controller.signal });
+    if (!resp.ok) throw new Error(`OSRM ${resp.status}`);
+    const data = await resp.json() as { code?: string; distances?: (number | null)[][]; message?: string };
+    if (data.code !== 'Ok' || !data.distances) throw new Error(data.message || data.code || 'no distances');
+    return data.distances.map(row => row.map(v => (typeof v === 'number' && isFinite(v) ? v : NaN)));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function prefetchOutletMatrix(points: { lat: number; lng: number }[]): Promise<{ filled: number; requests: number; failed: boolean }> {
+  if (!process.env.OSRM_URL || points.length < 2) return { filled: 0, requests: 0, failed: false };
+  // Skip what is already known.
+  const need = points.filter((p, i) => points.some((q, j) => j !== i && getPairKm(p.lat, p.lng, q.lat, q.lng) === undefined));
+  if (need.length < 2) return { filled: 0, requests: 0, failed: false };
+  const half = Math.max(10, Math.floor(MAX_TABLE / 2));
+  const chunks: { lat: number; lng: number }[][] = [];
+  for (let i = 0; i < need.length; i += half) chunks.push(need.slice(i, i + half));
+  let filled = 0, requests = 0;
+  const store = (pts: { lat: number; lng: number }[], m: number[][]) => {
+    for (let a = 0; a < pts.length; a++) for (let b = a + 1; b < pts.length; b++) {
+      // Roads are one-way here and there; take the shorter direction as the pair's distance.
+      const ab = m[a]?.[b], ba = m[b]?.[a];
+      const meters = Number.isFinite(ab) && Number.isFinite(ba) ? Math.min(ab, ba) : Number.isFinite(ab) ? ab : ba;
+      if (Number.isFinite(meters) && setPairKm(pts[a].lat, pts[a].lng, pts[b].lat, pts[b].lng, meters / 1000)) filled++;
+    }
+  };
+  try {
+    if (chunks.length === 1) {
+      const m = await fetchTable(chunks[0]); requests++;
+      if (m) store(chunks[0], m);
+    } else {
+      for (let i = 0; i < chunks.length; i++) {
+        for (let j = i + 1; j < chunks.length; j++) {
+          const pts = [...chunks[i], ...chunks[j]];
+          const m = await fetchTable(pts); requests++;
+          if (m) store(pts, m);
+        }
+      }
+    }
+    lastOsrmError = '';
+    return { filled, requests, failed: false };
+  } catch (err) {
+    lastOsrmError = (err as Error).message;
+    console.warn(`[road-distance] OSRM table failed after ${requests} request(s), using the detour estimate: ${lastOsrmError}`);
+    return { filled, requests, failed: true };
+  }
+}
+
+/** The driven line for a sequence of stops: geometry, road km, minutes, and the km at which each stop is reached. */
+export async function osrmRoute(stops: { lat: number; lng: number }[]): Promise<{ coordinates: [number, number][]; distanceKm: number; durationMin: number; stopKm: number[] } | null> {
+  const osrmUrl = process.env.OSRM_URL;
+  if (!osrmUrl || stops.length < 2) return null;
+  const coords = stops.map(p => `${p.lng.toFixed(6)},${p.lat.toFixed(6)}`).join(';');
+  const url = `${osrmUrl.replace(/\/$/, '')}/route/v1/driving/${coords}?overview=full&geometries=geojson&steps=false`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
+  try {
+    const resp = await fetch(url, { signal: controller.signal });
+    if (!resp.ok) throw new Error(`OSRM ${resp.status}`);
+    const data = await resp.json() as { code?: string; routes?: { distance: number; duration: number; geometry: { coordinates: [number, number][] }; legs: { distance: number }[] }[] };
+    const r = data.routes?.[0];
+    if (data.code !== 'Ok' || !r) return null;
+    const stopKm = [0];
+    for (const leg of r.legs) stopKm.push(stopKm[stopKm.length - 1] + leg.distance / 1000);
+    return { coordinates: r.geometry.coordinates, distanceKm: r.distance / 1000, durationMin: r.duration / 60, stopKm };
+  } catch (err) {
+    lastOsrmError = (err as Error).message;
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** For the health endpoint: is a road server configured, and did it answer lately? */
+let osrmProbe: { at: number; ok: boolean; message: string } | null = null;
+export async function osrmStatus(): Promise<{ configured: boolean; reachable: boolean | null; message: string; pairsCached: number }> {
+  if (!process.env.OSRM_URL) return { configured: false, reachable: null, message: 'OSRM_URL not set; road-aware mode uses a detour estimate', pairsCached: pairCount };
+  if (!osrmProbe || Date.now() - osrmProbe.at > 60000) {
+    try {
+      const m = await fetchTable([{ lat: 0.5, lng: 0.5 }, { lat: 0.51, lng: 0.51 }]).catch(() => null);
+      // A server with no road data at that spot answers "NoRoute"/"NoSegment"; that still proves it is up.
+      osrmProbe = { at: Date.now(), ok: true, message: m ? 'OSRM answering' : 'OSRM up' };
+    } catch (err) {
+      osrmProbe = { at: Date.now(), ok: false, message: (err as Error).message };
+    }
+    if (lastOsrmError && !osrmProbe.ok) osrmProbe.message = lastOsrmError;
+  }
+  return { configured: true, reachable: osrmProbe.ok, message: osrmProbe.message, pairsCached: pairCount };
 }
 
 // Octile distance: travel the diagonal while both axes still have ground to
@@ -181,12 +333,12 @@ function octileKm(lat1: number, lng1: number, lat2: number, lng2: number): numbe
 
 // The distance every grouping decision should use.
 export function geoDist(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const straight = haversineKm(lat1, lng1, lat2, lng2);
-  if (currentMode === 'haversine') return straight;
+  if (currentMode === 'haversine') return haversineKm(lat1, lng1, lat2, lng2);
   if (currentMode === 'grid') return octileKm(lat1, lng1, lat2, lng2);
 
-  const cached = osrmCache.get(cacheKey(lat1, lng1, lat2, lng2));
-  if (cached !== undefined) return cached;
-
-  return straight * DETOUR_FACTOR + countBarrierCrossings(lat1, lng1, lat2, lng2) * BARRIER_PENALTY_KM;
+  if (pairCount > 0) {
+    const road = getPairKm(lat1, lng1, lat2, lng2);
+    if (road !== undefined) return road;
+  }
+  return haversineKm(lat1, lng1, lat2, lng2) * DETOUR_FACTOR + countBarrierCrossings(lat1, lng1, lat2, lng2) * BARRIER_PENALTY_KM;
 }
