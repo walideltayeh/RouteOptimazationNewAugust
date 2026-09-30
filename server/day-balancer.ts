@@ -323,6 +323,8 @@ export function polishByCohesion(
   weightFn: (o: Outlet) => number,
   tolerance: Band = 0.08,
   maxPasses: number = 4,
+  /** An outlet moves when another group's nearest member is under this share of its own group's nearest member. */
+  margin: number = 0.8,
 ): Outlet[][] {
   const working = groups.map(g => [...g]);
   if (working.length < 2) return working;
@@ -361,7 +363,7 @@ export function polishByCohesion(
         }
         // Clearly nearer, not marginally: a 20% margin stops outlets
         // ping-ponging along a boundary where both groups fit equally well.
-        if (bestG < 0 || bestD >= own * 0.8) continue;
+        if (bestG < 0 || bestD >= own * margin) continue;
 
         const w = weightFn(o);
         if (loads[gi] - w < lo) continue;
@@ -1217,23 +1219,16 @@ export function improveByRouteCost(
  * ------------------------------------------------------------------ */
 
 /**
- * Hand a rep's stranded pockets to the rep whose area they sit in, and take
- * adjoining outlets back so both loads stay in band.
- *
- * A territory is cut into pieces that can be driven within the hop limit.
- * A small piece that is nowhere near the rest of its own territory but
- * sits among another rep's outlets is a pocket the balance passes left
- * behind: whoever holds it must give it a whole day or stitch it onto a
- * day across town, while the neighbour drives past it every week. Measured
- * on the Damascus plan, one rep held pockets of 7 and 8 outlets with 17 and
- * 27 of a neighbour's outlets within a kilometre, and another a pocket of
- * 17 inside a neighbour's patch. No single-outlet border move fixes that,
- * because every day of both reps is at its limit: the pocket has to move
- * as a unit and be paid for with a run of the receiver's outlets that
- * adjoin the giver's core.
- *
- * Pockets nobody else is near (a village 10 km out) stay where they are:
- * someone has to drive there, and that is a day-cut matter.
+ * Territory pocket handover. A pocket is a piece of a rep's territory with no
+ * same-rep outlet within the hop limit of it. When it sits among another
+ * rep's outlets, and that rep's connected core is nearer to it than its own
+ * core, it is handed to that rep and paid for with the receiver's outlets that
+ * adjoin the giver's core, nearest first, trimmed so both loads stay in band
+ * and the receiver stays connected. When nothing of the receiver adjoins the
+ * giver's core (the two territories do not touch) a small pocket is given
+ * outright; the caller's load repair then evens the loads out through the
+ * reps in between. Pockets nobody is near (a village) are left alone: the
+ * day cut reports those hops as unavoidable.
  */
 export function exchangePockets(
   groups: Outlet[][],
@@ -1247,35 +1242,43 @@ export function exchangePockets(
   if (working.length < 2 || maxHopKm <= 0) return { groups: working, moves };
   const loadOf = (g: Outlet[]) => g.reduce((s, o) => s + weightFn(o), 0);
   const total = working.reduce((s, g) => s + loadOf(g), 0);
-  const { lo, hi } = bandOf(total / working.length, tolerance);
+  const target = total / working.length;
+  const { lo, hi } = bandOf(target, tolerance);
+  // A pocket given outright may push the receiver this far past the band; the
+  // load repair that follows brings it back through the neighbours.
+  const outrightLimit = 2 * (hi - target);
   const near = (o: Outlet, g: Outlet[]) => { let m = Infinity; for (const x of g) { const v = geoDist(o.latitude, o.longitude, x.latitude, x.longitude); if (v < m) m = v; } return m; };
+  const gapBetween = (a: Outlet[], b: Outlet[]) => a.reduce((m, o) => Math.min(m, near(o, b)), Infinity);
 
   for (let round = 0; round < maxRounds; round++) {
     let movedThisRound = 0;
+    // Every group's pieces, largest first; the largest is its core.
+    const compsOf = working.map(g => (g.length < 2 ? [g] : reachabilityComponents(g, maxHopKm).sort((a, b) => b.length - a.length)));
     for (let gi = 0; gi < working.length; gi++) {
       const g = working[gi];
-      if (g.length < 2) continue;
-      const comps = reachabilityComponents(g, maxHopKm).sort((a, b) => b.length - a.length);
+      const comps = compsOf[gi];
       if (comps.length < 2) continue;
       const core = comps[0];
+      let moved = false;
       for (const pocket of comps.slice(1)) {
         if (pocket.length > Math.max(3, Math.floor(g.length * 0.4))) continue;
         if (pocket.some(o => o.geoStatus === 'offset')) continue;
-        // Whose area is it in: the rep with the most outlets within a kilometre of the pocket.
-        let bestG = -1, bestInside = 0, bestGap = Infinity;
+        const ownGap = gapBetween(pocket, core);
+        // Whose area is it in: the rep with the most outlets within a
+        // kilometre of the pocket, provided that rep's core is nearer to the
+        // pocket than the giver's own core (a neighbour's stray pocket in the
+        // same spot does not count as that neighbour's area).
+        let bestG = -1, bestInside = 0, bestCoreGap = Infinity;
         for (let gj = 0; gj < working.length; gj++) {
           if (gj === gi || working[gj].length === 0) continue;
-          let inside = 0, gap = Infinity;
-          for (const x of working[gj]) {
-            const v = near(x, pocket);
-            if (v <= 1.0) inside++;
-            if (v < gap) gap = v;
-          }
-          if (inside > bestInside || (inside === bestInside && gap < bestGap)) { bestG = gj; bestInside = inside; bestGap = gap; }
+          let inside = 0;
+          for (const x of working[gj]) if (near(x, pocket) <= 1.0) inside++;
+          if (inside < Math.min(5, pocket.length)) continue;
+          const coreGap = gapBetween(pocket, compsOf[gj][0]);
+          if (coreGap >= ownGap) continue; // it must end up nearer to a core than it is now
+          if (inside > bestInside || (inside === bestInside && coreGap < bestCoreGap)) { bestG = gj; bestInside = inside; bestCoreGap = coreGap; }
         }
-        // It must really sit among the other rep's outlets, closer to them than to its own core.
-        const ownGap = pocket.reduce((m, o) => Math.min(m, near(o, core)), Infinity);
-        if (bestG < 0 || bestInside < Math.min(5, pocket.length) || bestGap > maxHopKm || bestGap >= ownGap) continue;
+        if (bestG < 0) continue;
 
         const w = loadOf(pocket);
         const pocketIds = new Set(pocket.map(o => o.id));
@@ -1296,27 +1299,101 @@ export function exchangePockets(
         // the band and the receiver stays as connected as it was: a border
         // outlet whose departure would strand other outlets of the receiver
         // (or the pocket itself) is not returned.
-        const receiverComps = reachabilityComponents(receiver, maxHopKm).length;
-        const fits = (n: number): boolean => {
-          const bw = back.slice(0, n).reduce((s, o) => s + weightFn(o), 0);
+        const receiverComps = compsOf[bestG].length;
+        const loadsFit = (bw: number, slack: number) => {
           const ga = loadOf(g) - w + bw, ra = loadOf(receiver) + w - bw;
-          if (ga < lo || ga > hi || ra < lo || ra > hi) return false;
+          return ga >= lo - slack && ga <= hi + slack && ra >= lo - slack && ra <= hi + slack;
+        };
+        const stillConnected = (n: number) => {
           const ids = new Set(back.slice(0, n).map(o => o.id));
           return reachabilityComponents(receiver.filter(o => !ids.has(o.id)).concat(pocket), maxHopKm).length <= receiverComps;
         };
+        const backWeight = (n: number) => back.slice(0, n).reduce((s, o) => s + weightFn(o), 0);
         let keep = back.length;
-        while (keep >= 0 && !fits(keep)) keep--;
-        if (keep < 0) continue;
+        while (keep >= 0 && !(loadsFit(backWeight(keep), 0) && stillConnected(keep))) keep--;
+        if (keep < 0) {
+          // No return that keeps the band. A small pocket still goes outright
+          // when the territories do not touch; the load repair evens it out.
+          if (candidates.length === 0 && w <= outrightLimit && loadsFit(0, outrightLimit) && stillConnected(0)) keep = 0;
+          else continue;
+        }
         back.length = keep;
         const backIds = new Set(back.map(o => o.id));
         working[gi] = g.filter(o => !pocketIds.has(o.id)).concat(back);
         working[bestG] = receiver.filter(o => !backIds.has(o.id)).concat(pocket);
         moves.push({ pocket: pocket.length, from: gi, to: bestG, returned: back.length });
         movedThisRound++;
+        moved = true;
         break; // this group's pieces changed; recompute on the next round
       }
+      if (moved) break; // the receiver's pieces changed too
     }
     if (movedThisRound === 0) break;
   }
   return { groups: working, moves };
+}
+
+/**
+ * Day-level stray handover, by neighbourhood. An outlet whose eight nearest
+ * outlets are mostly another day's (that day holds a majority of them, and
+ * more than the outlet's own day) sits in that day's area and goes to it,
+ * within the band, biggest majority first. A chain of strays votes for
+ * itself, so this is repeated until nothing moves. No return: strays are not
+ * a border. The caller decides by plain driving distance whether to keep it.
+ */
+export function handOverStrays(
+  groups: Outlet[][],
+  weightFn: (o: Outlet) => number,
+  tolerance: Band,
+  k: number = 8,
+): { groups: Outlet[][]; moved: number } {
+  const working = groups.map(g => [...g]);
+  let moved = 0;
+  if (working.length < 2) return { groups: working, moved };
+  const loadOf = (g: Outlet[]) => g.reduce((s, o) => s + weightFn(o), 0);
+  const total = working.reduce((s, g) => s + loadOf(g), 0);
+  const { lo, hi } = bandOf(total / working.length, tolerance);
+
+  for (let round = 0; round < 4; round++) {
+    const all: { o: Outlet; g: number }[] = [];
+    working.forEach((g, gi) => g.forEach(o => all.push({ o, g: gi })));
+    const kk = Math.min(k, all.length - 1);
+    if (kk < 3) break;
+    const candidates: { idx: number; to: number; margin: number }[] = [];
+    for (let i = 0; i < all.length; i++) {
+      const { o, g } = all[i];
+      if (o.geoStatus === 'offset') continue;
+      // k nearest by a partial sort: keep the k best seen so far.
+      const best: { d: number; g: number }[] = [];
+      for (let j = 0; j < all.length; j++) {
+        if (j === i) continue;
+        const d = geoDist(o.latitude, o.longitude, all[j].o.latitude, all[j].o.longitude);
+        if (best.length < kk) { best.push({ d, g: all[j].g }); if (best.length === kk) best.sort((a, b) => a.d - b.d); }
+        else if (d < best[kk - 1].d) { best[kk - 1] = { d, g: all[j].g }; best.sort((a, b) => a.d - b.d); }
+      }
+      const votes = new Map<number, number>();
+      for (const b of best) votes.set(b.g, (votes.get(b.g) ?? 0) + 1);
+      const own = votes.get(g) ?? 0;
+      let top = -1, topVotes = 0;
+      votes.forEach((v, gg) => { if (gg !== g && v > topVotes) { top = gg; topVotes = v; } });
+      if (top >= 0 && topVotes * 2 > kk && topVotes > own) candidates.push({ idx: i, to: top, margin: topVotes - own });
+    }
+    if (candidates.length === 0) break;
+    candidates.sort((a, b) => b.margin - a.margin);
+    const loads = working.map(loadOf);
+    const moving = new Map<number, number>(); // index in all -> receiving group
+    for (const c of candidates) {
+      const { o, g } = all[c.idx];
+      const w = weightFn(o);
+      if (loads[g] - w < lo || loads[c.to] + w > hi) continue;
+      loads[g] -= w; loads[c.to] += w;
+      moving.set(c.idx, c.to);
+    }
+    if (moving.size === 0) break;
+    const next: Outlet[][] = working.map(() => []);
+    all.forEach((e, i) => next[moving.get(i) ?? e.g].push(e.o));
+    for (let gi = 0; gi < working.length; gi++) working[gi] = next[gi];
+    moved += moving.size;
+  }
+  return { groups: working, moved };
 }

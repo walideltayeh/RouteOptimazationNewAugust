@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { Outlet } from "../shared/schema";
-import { exchangePockets, reachabilityComponents } from "../server/day-balancer";
+import { exchangePockets, reachabilityComponents, repairLoads } from "../server/day-balancer";
 
 function outlet(id: string, lat: number, lng: number, vf = 2): Outlet {
   return { id, name: id, code: id, pinnedRoute: null, address: "", latitude: lat, longitude: lng, visitFrequency: vf, timePerVisit: 30, value: null, geoStatus: null, territory: null, repId: null, cluster: null, createdAt: null } as Outlet;
@@ -54,6 +54,44 @@ describe("exchangePockets", () => {
     expect(groups.map(g => g.length)).toEqual([65, 65]);
     expect(reachabilityComponents(groups[0], 4).length).toBe(1);
     expect(reachabilityComponents(groups[1], 4).length).toBe(1);
+  });
+
+  it("does not treat a neighbour's own stray pocket as that neighbour's area; the stray goes to the nearer core instead", () => {
+    // A's core in the west with a 17-outlet pocket 5 km east of it. B's core is
+    // 12 km further east, but B also has a stray 7 right beside A's pocket.
+    // B's stray must not pull A's 17 away; rather B's 7 joins A, whose core is nearer.
+    const aCore = grid("a", 60, 33.50, 36.20);                 // lng 36.200 .. 36.236
+    const aPocket = grid("p", 17, 33.503, 36.295, 0.002);      // ~5.5 km east of A's core
+    const bStray = grid("s", 7, 33.505, 36.300, 0.002);        // right beside A's pocket
+    const bCore = grid("b", 60, 33.50, 36.43);                 // 12 km east of the pocket
+    const { groups, moves } = exchangePockets([[...aCore, ...aPocket], [...bCore, ...bStray]], w, 0.1, 4);
+    const idsA = new Set(groups[0].map(o => o.id));
+    expect(aPocket.every(o => idsA.has(o.id))).toBe(true);     // A keeps its pocket
+    expect(bStray.every(o => idsA.has(o.id))).toBe(true);      // B's stray joined A
+    expect(moves).toEqual([{ pocket: 7, from: 1, to: 0, returned: 0 }]);
+  });
+
+  it("gives a small pocket outright when the territories do not touch, and the load repair evens it out", () => {
+    // West, middle and east reps side by side. East owns 4 outlets deep inside
+    // the west rep's area; nothing of the west rep is anywhere near the east
+    // core, so no return is possible and the band would be broken by a plain give.
+    const west = grid("w", 62, 33.50, 36.20);                  // lng 36.200 .. 36.240
+    const mid = grid("m", 60, 33.50, 36.248);                  // 36.248 .. 36.284, adjoins both
+    const east = grid("e", 58, 33.50, 36.292);                 // 36.292 .. 36.328
+    const stray = grid("x", 4, 33.503, 36.205, 0.002);         // inside west, east's
+    const groups0 = [west, [...mid], [...east, ...stray]];
+    const { groups, moves } = exchangePockets(groups0, w, 0.05, 4);
+    expect(moves).toEqual([{ pocket: 4, from: 2, to: 0, returned: 0 }]);
+    const idsW = new Set(groups[0].map(o => o.id));
+    expect(stray.every(o => idsW.has(o.id))).toBe(true);
+    // Straight after the give the west rep is over the 5% band; the repair
+    // pass the optimizer runs next moves border outlets west -> middle -> east.
+    const repaired = repairLoads(groups, w, 0.05, 4);
+    const loads = repaired.map(g => g.reduce((s, o) => s + w(o), 0));
+    const mean = loads.reduce((a, b) => a + b, 0) / 3;
+    for (const l of loads) expect(Math.abs(l - mean)).toBeLessThanOrEqual(0.05 * mean + 1e-9);
+    expect(repaired.flat().length).toBe(184);
+    for (const g of repaired) expect(reachabilityComponents(g, 4).length).toBe(1);
   });
 
   it("leaves a pocket alone when no other rep is near it", () => {
