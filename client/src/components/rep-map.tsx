@@ -16,7 +16,8 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { Check, ChevronsUpDown, Zap, Save, Download, GripVertical, Edit2, Trash2, RefreshCw, MapPin, Upload, BarChart3, Search, Maximize2, Minimize2, ChevronUp, ChevronDown } from "lucide-react";
+import { Check, ChevronsUpDown, Zap, Save, Download, GripVertical, Edit2, Trash2, RefreshCw, MapPin, Upload, BarChart3, Search, Maximize2, Minimize2, ChevronUp, ChevronDown, Play } from "lucide-react";
+import { useRoutePlayback, RoutePlaybackPanel } from "@/components/route-playback";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -109,6 +110,9 @@ export function RepMap() {
   const [colorBy, setColorBy] = useState<'day' | 'vf'>('day'); // Marker coloring mode
   const [showAllLinkedRoles, setShowAllLinkedRoles] = useState(false); // Show rep + all linked role routes
   const [isMapLoaded, setIsMapLoaded] = useState(false);
+  // Route playback: drive one rep's day from stop 1 to the end on the map.
+  // Declared after isMapLoaded on purpose: a hook call reads it during render.
+  const playback = useRoutePlayback(map, isMapLoaded);
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
@@ -1880,6 +1884,18 @@ export function RepMap() {
         >
           <div ref={mapContainer} className={cn("rounded-lg overflow-hidden border", isFullscreen ? "h-full" : "h-full min-h-[400px]")} />
 
+          {playback.state && (
+            <RoutePlaybackPanel
+              state={playback.state}
+              onPlay={playback.play}
+              onPause={playback.pause}
+              onRestart={playback.restart}
+              onStop={playback.stop}
+              onSpeed={playback.setSpeed}
+              onSeek={playback.seek}
+            />
+          )}
+
           {/* Fullscreen Toggle */}
           <Button
             variant="secondary"
@@ -2042,6 +2058,27 @@ export function RepMap() {
                           <> · <span className="font-bold">{dayData.schedule.totalDistance.toFixed(1)} km</span></>
                         )}
                       </span>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6"
+                        onClick={() => {
+                          const order = ((dayData.schedule.routeOrder as string[]) || []).length > 0 ? (dayData.schedule.routeOrder as string[]) : dayData.outlets.map(o => o.id);
+                          const byId = new Map(dayData.outlets.map(o => [o.id, o]));
+                          const stops = order.map(id => byId.get(id)).filter((o): o is Outlet => !!o).map(o => ({ id: o.id, name: o.name, lat: o.latitude, lng: o.longitude }));
+                          playback.start({
+                            key: `${repId}-${scheduleKey}`,
+                            repName: repData.rep.name,
+                            dayLabel: `${daysOfWeek[dayData.dayOfWeek - 1] || `Day ${dayData.dayOfWeek}`} W${dayData.week}`,
+                            color: dayData.color,
+                            stops,
+                          });
+                        }}
+                        title="Play this route from stop 1 to the end"
+                        data-testid={`button-play-route-${dayData.schedule.id}`}
+                      >
+                        <Play className="h-3 w-3" />
+                      </Button>
                       <Button
                         variant="ghost"
                         size="icon"
