@@ -110,9 +110,6 @@ export function RepMap() {
   const [colorBy, setColorBy] = useState<'day' | 'vf'>('day'); // Marker coloring mode
   const [showAllLinkedRoles, setShowAllLinkedRoles] = useState(false); // Show rep + all linked role routes
   const [isMapLoaded, setIsMapLoaded] = useState(false);
-  // Route playback: drive one rep's day from stop 1 to the end on the map.
-  // Declared after isMapLoaded on purpose: a hook call reads it during render.
-  const playback = useRoutePlayback(map, isMapLoaded);
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
@@ -146,6 +143,9 @@ export function RepMap() {
   const geoJSONLayersRef = useRef<{ circleLayerId: string; handlers: { click: any; mouseenter: any; mouseleave: any } }[]>([]);
   const createdLayersRef = useRef<Set<string>>(new Set());
   const { toast } = useToast();
+  // Route playback: drive one rep's day from stop 1 to the end on the map.
+  // Declared after isMapLoaded and toast on purpose: it reads both.
+  const playback = useRoutePlayback(map, isMapLoaded, (message) => toast({ title: "Playback", description: message, variant: "destructive" }));
   const queryClient = useQueryClient();
 
   const { data: mapboxConfig } = useQuery<{ token?: string }>({
@@ -479,6 +479,22 @@ export function RepMap() {
   }, [outlets, outletSearchQuery]);
 
   // Universe view: Group all outlets by zone for selected reps
+  // Every route currently on the map, in one flat list, for the Play controls.
+  const playableRoutes = useMemo(() => Object.entries(repDayOutlets).flatMap(([repId, repData]) =>
+    Object.entries(repData.daySchedules).map(([scheduleKey, dayData]) => ({
+      key: `${repId}-${scheduleKey}`,
+      repId, scheduleKey, repName: repData.rep.name, color: dayData.color,
+      dayLabel: `${daysOfWeek[dayData.dayOfWeek - 1] || `Day ${dayData.dayOfWeek}`} W${dayData.week}`,
+      stops: (((dayData.schedule.routeOrder as string[]) || []).length > 0 ? (dayData.schedule.routeOrder as string[]) : dayData.outlets.map(o => o.id))
+        .map(id => dayData.outlets.find(o => o.id === id)).filter((o): o is Outlet => !!o)
+        .map(o => ({ id: o.id, name: o.name, lat: o.latitude, lng: o.longitude })),
+    }))
+  ), [repDayOutlets]);
+  const playRoute = (key: string) => {
+    const r = playableRoutes.find(x => x.key === key);
+    if (r) playback.start({ key: r.key, repName: r.repName, dayLabel: r.dayLabel, color: r.color, stops: r.stops });
+  };
+
   const universeViewData = useMemo(() => {
     if (viewMode !== 'universe' || selectedReps.length === 0) return null;
     
@@ -1555,6 +1571,29 @@ export function RepMap() {
           {renderRepSelector(open, setOpen)}
         </div>
 
+        {/* Play a route: one button when a single day route is on the map,
+            a picker when there are several. */}
+        {viewMode === 'schedule' && playableRoutes.length === 1 && (
+          <Button size="sm" variant="outline" className="rounded-full" onClick={() => playRoute(playableRoutes[0].key)} data-testid="button-play-route">
+            <Play className="mr-1.5 h-3.5 w-3.5" /> Play {playableRoutes[0].dayLabel}
+          </Button>
+        )}
+        {viewMode === 'schedule' && playableRoutes.length > 1 && (
+          <Select value="" onValueChange={playRoute}>
+            <SelectTrigger className="h-9 w-[220px] rounded-full text-sm" data-testid="select-play-route">
+              <span className="flex items-center"><Play className="mr-1.5 h-3.5 w-3.5" /> Play a route…</span>
+            </SelectTrigger>
+            <SelectContent>
+              {playableRoutes.map(r => (
+                <SelectItem key={r.key} value={r.key}>
+                  <span className="mr-2 inline-block h-2.5 w-2.5 rounded-full align-middle" style={{ backgroundColor: r.color }} />
+                  {r.repName} · {r.dayLabel} · {r.stops.length} stops
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+
         {/* Action Buttons */}
         {selectedReps.length > 0 && (
           <div className="flex gap-2 mt-4">
@@ -2062,18 +2101,7 @@ export function RepMap() {
                         variant="ghost"
                         size="icon"
                         className="h-6 w-6"
-                        onClick={() => {
-                          const order = ((dayData.schedule.routeOrder as string[]) || []).length > 0 ? (dayData.schedule.routeOrder as string[]) : dayData.outlets.map(o => o.id);
-                          const byId = new Map(dayData.outlets.map(o => [o.id, o]));
-                          const stops = order.map(id => byId.get(id)).filter((o): o is Outlet => !!o).map(o => ({ id: o.id, name: o.name, lat: o.latitude, lng: o.longitude }));
-                          playback.start({
-                            key: `${repId}-${scheduleKey}`,
-                            repName: repData.rep.name,
-                            dayLabel: `${daysOfWeek[dayData.dayOfWeek - 1] || `Day ${dayData.dayOfWeek}`} W${dayData.week}`,
-                            color: dayData.color,
-                            stops,
-                          });
-                        }}
+                        onClick={() => playRoute(`${repId}-${scheduleKey}`)}
                         title="Play this route from stop 1 to the end"
                         data-testid={`button-play-route-${dayData.schedule.id}`}
                       >
