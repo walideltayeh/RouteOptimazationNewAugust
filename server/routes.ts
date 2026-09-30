@@ -7,7 +7,7 @@ import { storage } from "./storage";
 import { loadBlob, saveBlob, deleteBlob } from "./persist";
 import { isAdminConfigured, verifyAdmin, adminCredentialSource } from "./admin-credentials";
 import { solveBalancedGroups } from "./balanced-solver";
-import { totalWeeklyLoad, growBalancedRegions, partitionByHilbert, repairLoads, swapForCompactness, polishByCohesion, polishByTourLength, recutPairs, routeCost, longestHop, swapStranded, reachabilityComponents, gapBetween, weeklyLoadOf, type Band, improveByRouteCost, exchangePockets } from "./day-balancer";
+import { totalWeeklyLoad, growBalancedRegions, partitionByHilbert, repairLoads, swapForCompactness, polishByCohesion, polishByTourLength, recutPairs, routeCost, longestHop, swapStranded, reachabilityComponents, gapBetween, weeklyLoadOf, type Band, improveByRouteCost, exchangePockets, tourLength, handOverStrays } from "./day-balancer";
 import { 
   insertOptimizationRunSchema, 
   insertOutletSchema, 
@@ -3182,6 +3182,26 @@ async function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[]
       console.log(`[vrp] ${rep.name}: route-cost polish ${best.toFixed(1)}km -> ${after.toFixed(1)}km over ${k} day-groups`);
       groups = improved;
     }
+    // Last, geography over pricing. On sparse ground a day can keep outlets
+    // deep inside another day's area because they are stepping stones between
+    // two of its own far-apart pieces: the hop penalty makes them look
+    // valuable though the plain drive hardly changes. An outlet whose nearest
+    // neighbours are mostly another day's goes to that day (handOverStrays),
+    // then any outlet whose nearest same-day outlet is more than twice as far
+    // as another day's nearest; both within the band, and kept only if the
+    // plain driving distance of the rep's days grows by at most eight percent.
+    {
+      const plain = (gs: Outlet[][]) => gs.reduce((sum, g) => sum + tourLength(g), 0);
+      const cohesive = polishByCohesion(handOverStrays(groups, runLoadOf, band).groups, runLoadOf, band, 2, 0.5);
+      const movedCount = cohesive.reduce((n, g, i) => n + g.filter(o => !groups[i].some(x => x.id === o.id)).length, 0);
+      if (movedCount > 0) {
+        const kmBefore = plain(groups), kmAfter = plain(cohesive);
+        if (kmAfter <= kmBefore * 1.08 + 0.5) {
+          console.log(`[cohesion] ${rep.name}: ${movedCount} outlet(s) moved to the day whose outlets surround them (${kmBefore.toFixed(1)}km -> ${kmAfter.toFixed(1)}km plain drive)`);
+          groups = cohesive;
+        }
+      }
+    }
     return groups;
   };
 
@@ -5749,6 +5769,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
           console.log(`[territory] pocket of ${mv.pocket} outlet(s) moved from ${allReps[mv.from]?.name ?? mv.from} to ${allReps[mv.to]?.name ?? mv.to}, ${mv.returned} adjoining outlet(s) returned`);
         }
         for (let i = 0; i < repOutletGroups.length; i++) repOutletGroups[i] = ex.groups[i];
+        // A pocket given outright leaves the receiver above the band and the
+        // giver below it; border moves through the reps in between even that out.
+        if (ex.moves.some(mv => mv.returned === 0)) {
+          const repaired = repairLoads(repOutletGroups, monthlyVisitsOf, territoryBand, maxHopKm);
+          for (let i = 0; i < repOutletGroups.length; i++) repOutletGroups[i] = repaired[i];
+        }
       }
       const zoneAssignments = assignZonesToRepsBalanced(clusters, allReps, balanceTolerance);
       {
