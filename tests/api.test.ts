@@ -183,3 +183,28 @@ describe("plan lifecycle", () => {
     expect(fs.existsSync(path.join(process.env.DATA_DIR!, "plan-settings.json"))).toBe(true);
   });
 });
+
+describe("upload of a planner's workbook", () => {
+  it("reads the sheet that has coordinates, names the others, and says what it assumed", async () => {
+    const XLSX = await import("xlsx");
+    const wb = XLSX.utils.book_new();
+    // A summary sheet first, as planners' workbooks usually open.
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["Rep", "Stores"], ["TDR1", 290]]), "Route Summary");
+    const rows: (string | number)[][] = [["Client Code", "Name", "Latitude", "Longitude"]];
+    for (let i = 0; i < 30; i++) rows.push([`K${i}`, `Shop ${i}`, 33.50 + (i % 6) * 0.004, 36.28 + Math.floor(i / 6) * 0.004]);
+    rows.push(["K99", "Tripoli in Libya", 32.8872, 13.1913]); // a geocoding mistake
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), "Outlets");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["Working Day", "Date"], [1, "2026-10-03"]]), "Calendar");
+    const buf: Buffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+    const form = new FormData();
+    form.append("file", new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), "plan.xlsx");
+    const r = await call("planner", "POST", "/api/upload", undefined, form);
+    expect(r.status).toBe(200);
+    expect(r.data.report.sheetUsed).toBe("Outlets");
+    expect(r.data.report.otherSheets).toEqual(["Route Summary", "Calendar"]);
+    expect(r.data.report.validOutlets).toBe(31);
+    expect(r.data.report.rowsUsingDefaultVf).toBe(31);
+    expect(r.data.report.geoOutliers).toBe(1);
+    expect(r.data.report.geoOutlierDetails[0].name).toBe("Tripoli in Libya");
+  });
+});

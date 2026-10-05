@@ -26,8 +26,12 @@ npm run dev            # serves app + API on http://localhost:5000
 
 1. **Upload** a CSV/XLSX with `Outlet Name, Latitude, Longitude` (optional:
    `vf` 1/2/4 visit frequency, `vc`/`value` commercial weight, address,
-   district). Outlets with GPS points far outside the market's core area are
-   flagged for review — never silently used or removed.
+   district). In a workbook, the first sheet with coordinate columns is read
+   and the others are named in the upload report; a file without a `vf`
+   column is reported as assumed biweekly. Outlets separated from every other
+   outlet by more than 30 km (a "Tripoli" geocoded to Libya, a warehouse in
+   another city) are flagged for review — never silently used or removed.
+   Distant towns that connect to the market through other towns are kept.
 2. **Set parameters**: working days/week, min/max **actual visits per day**
    (visit-frequency aware: with biweekly outlets, zones are sized so the due
    share each week hits your target), coverage weighting, and the distance
@@ -40,8 +44,12 @@ npm run dev            # serves app + API on http://localhost:5000
    improved as a periodic vehicle-routing problem: outlets and runs of outlets
    are relocated and exchanged between days by what the day tours cost to
    drive (road distances when `OSRM_URL` is set), within the visits-per-day
-   band and the hop limit, then each day is ordered as a tour. Visit
-   frequencies rotate across the cycle's repeats.
+   band and the hop limit, then each day is ordered as a tour. Days, and
+   the alternating weeks within a day, are cut by straight lines wherever
+   that drives no more than four percent further, so routes do not overlap.
+   Visit frequencies rotate across the cycle's repeats. When the visits band
+   cannot be met with a whole number of reps, days are held within ten
+   percent of the achievable average and the plan says so.
 4. **Review**: territory balance report, suggested low-worth pockets for
    indirect coverage, and flagged geographic outliers — tick what to exclude
    and re-run; nothing is removed without your choice.
