@@ -20,6 +20,12 @@ interface UploadReport {
   vf2Count: number;
   vf4Count: number;
   recommendedReps: number;
+  geoOutliers?: number;
+  geoOutlierDetails?: { name: string; distanceKm: number }[];
+  rowsUsingDefaultVf?: number;
+  defaultVisitFrequencyUsed?: number;
+  sheetUsed?: string | null;
+  otherSheets?: string[];
 }
 
 interface PendingFileInfo {
@@ -386,6 +392,26 @@ export default function FileUpload() {
                 <Badge className="bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200">VF2: {uploadResult.vf2Count}</Badge>
                 <Badge className="bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200">VF4: {uploadResult.vf4Count}</Badge>
               </div>
+              {uploadResult.sheetUsed && (uploadResult.otherSheets?.length ?? 0) > 0 && (
+                <p className="text-xs text-gray-600 dark:text-gray-400" data-testid="text-upload-sheet">
+                  <FileText className="inline h-3 w-3 mr-1" />
+                  Read the sheet "{uploadResult.sheetUsed}". This workbook also has: {uploadResult.otherSheets!.join(", ")}. To use another, move it first in the workbook or save it on its own.
+                </p>
+              )}
+              {(uploadResult.rowsUsingDefaultVf ?? 0) > 0 && (
+                <p className="text-xs text-amber-700 dark:text-amber-400" data-testid="text-upload-default-vf">
+                  <AlertTriangle className="inline h-3 w-3 mr-1" />
+                  {uploadResult.rowsUsingDefaultVf === uploadResult.validOutlets ? "The file has no visit frequency column: all" : `${uploadResult.rowsUsingDefaultVf} of the`} {uploadResult.validOutlets} outlets were set to{" "}
+                  {({ 1: "monthly (VF1)", 2: "every two weeks (VF2)", 3: "three weeks in four (VF3)", 4: "weekly (VF4)" } as Record<number, string>)[uploadResult.defaultVisitFrequencyUsed ?? 2]}. Add a "VF" column with 1, 2 or 4 if that is not right; it decides how many reps the plan needs.
+                </p>
+              )}
+              {(uploadResult.geoOutliers ?? 0) > 0 && (
+                <p className="text-xs text-amber-700 dark:text-amber-400" data-testid="text-upload-geo-outliers">
+                  <AlertTriangle className="inline h-3 w-3 mr-1" />
+                  {uploadResult.geoOutliers} outlet{uploadResult.geoOutliers === 1 ? " is" : "s are"} far from every other outlet
+                  {uploadResult.geoOutlierDetails?.[0] ? ` (for example "${uploadResult.geoOutlierDetails[0].name}", ${Math.round(uploadResult.geoOutlierDetails[0].distanceKm).toLocaleString()} km away)` : ""}, most likely wrong coordinates. They are held out of the routes for your review.
+                </p>
+              )}
               {uploadResult.skippedRows > 0 && (
                 <div className="mt-2">
                   <p className="text-xs font-medium text-amber-700 dark:text-amber-400 mb-1">

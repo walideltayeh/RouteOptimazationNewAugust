@@ -7,7 +7,8 @@ import { storage } from "./storage";
 import { loadBlob, saveBlob, deleteBlob } from "./persist";
 import { isAdminConfigured, verifyAdmin, adminCredentialSource } from "./admin-credentials";
 import { solveBalancedGroups } from "./balanced-solver";
-import { totalWeeklyLoad, growBalancedRegions, partitionByHilbert, repairLoads, swapForCompactness, polishByCohesion, polishByTourLength, recutPairs, routeCost, longestHop, swapStranded, reachabilityComponents, gapBetween, weeklyLoadOf, type Band, improveByRouteCost, exchangePockets, tourLength, handOverStrays, collapseBlocks, unitLoad } from "./day-balancer";
+import { detectGeoOutliers, type GeoOutlier } from "./geo-outliers";
+import { totalWeeklyLoad, growBalancedRegions, partitionByHilbert, repairLoads, swapForCompactness, polishByCohesion, polishByTourLength, recutPairs, routeCost, longestHop, swapStranded, reachabilityComponents, gapBetween, weeklyLoadOf, type Band, improveByRouteCost, exchangePockets, tourLength, handOverStrays, collapseBlocks, unitLoad, lineSplit } from "./day-balancer";
 import { 
   insertOptimizationRunSchema, 
   insertOutletSchema, 
@@ -1929,110 +1930,7 @@ function analyzeCoverageWorthiness(
   return { suggestions: suggestions.slice(0, 15), weightModeUsed };
 }
 
-export interface GeoOutlier {
-  id: string;
-  name: string;
-  latitude: number;
-  longitude: number;
-  distanceKm: number;
-}
-
-// Flags outlets located far outside the dataset's core coverage area (the
-// market plus its rural belt) - e.g. an outlet coded to Baghdad whose GPS
-// point sits in another governorate. The core center is the MEDIAN of all
-// coordinates, which the outliers themselves cannot drag (unlike a mean).
-// Always straight-line geometry, independent of the distance mode.
-// Highlight-only: nothing is removed - the user decides via the exclusion
-// flow after seeing the evidence.
-function detectGeoOutliers(
-  outlets: { id: string; name: string; latitude: number; longitude: number }[],
-  radiusKm: number = 30
-): GeoOutlier[] {
-  if (outlets.length < 10) return [];
-  const median = (arr: number[]) => {
-    const s = [...arr].sort((a, b) => a - b);
-    return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
-  };
-  // Cluster-level isolation. Two weaker tests fail on real data: distance
-  // from a median centre punishes legitimately distant-but-populated regions
-  // (it flagged 483 real Lebanese outlets, 18% of that universe), while
-  // k-nearest-neighbour distance misses the most common bad-data shape -
-  // several records sharing one wrong coordinate, which look perfectly
-  // neighbourly to each other (6 co-located Baghdad records 450km away
-  // scored 0km). So: link outlets into components by proximity, then flag
-  // whole components that are both small and far from the market's mass.
-  const LINK_KM = 5;            // outlets within 5km belong to one component
-  const CELL = LINK_KM / 111;   // degrees, ~5km
-  const grid = new Map<string, typeof outlets>();
-  const keyOf = (lat: number, lng: number) => `${Math.floor(lat / CELL)}:${Math.floor(lng / CELL)}`;
-  for (const o of outlets) {
-    const k = keyOf(o.latitude, o.longitude);
-    if (!grid.has(k)) grid.set(k, []);
-    grid.get(k)!.push(o);
-  }
-
-  const componentOf = new Map<string, number>();
-  const components: { outlets: typeof outlets; lat: number; lng: number }[] = [];
-  for (const seed of outlets) {
-    if (componentOf.has(seed.id)) continue;
-    const idx = components.length;
-    const queue = [seed];
-    const members: typeof outlets = [];
-    componentOf.set(seed.id, idx);
-    while (queue.length > 0) {
-      const cur = queue.pop()!;
-      members.push(cur);
-      const cy = Math.floor(cur.latitude / CELL);
-      const cx = Math.floor(cur.longitude / CELL);
-      for (let dy = -1; dy <= 1; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          const cell = grid.get(`${cy + dy}:${cx + dx}`);
-          if (!cell) continue;
-          for (const n of cell) {
-            if (componentOf.has(n.id)) continue;
-            if (haversineKm(cur.latitude, cur.longitude, n.latitude, n.longitude) <= LINK_KM) {
-              componentOf.set(n.id, idx);
-              queue.push(n);
-            }
-          }
-        }
-      }
-    }
-    components.push({
-      outlets: members,
-      lat: members.reduce((s, o) => s + o.latitude, 0) / members.length,
-      lng: members.reduce((s, o) => s + o.longitude, 0) / members.length,
-    });
-  }
-
-  // A component is part of the market if it holds a meaningful share of the
-  // universe; anything smaller must prove it sits near one that does.
-  const minRealSize = Math.max(10, Math.floor(outlets.length * 0.01));
-  const mainComponents = components.filter(c => c.outlets.length >= minRealSize);
-  if (mainComponents.length === 0) return [];
-
-  const flagged: GeoOutlier[] = [];
-  for (const c of components) {
-    if (c.outlets.length >= minRealSize) continue;
-    let nearest = Infinity;
-    for (const m of mainComponents) {
-      if (m === c) continue;
-      const d = haversineKm(c.lat, c.lng, m.lat, m.lng);
-      if (d < nearest) nearest = d;
-    }
-    if (nearest > radiusKm) {
-      for (const o of c.outlets) {
-        flagged.push({
-          id: o.id, name: o.name,
-          latitude: o.latitude, longitude: o.longitude,
-          distanceKm: Math.round(nearest * 10) / 10
-        });
-      }
-    }
-  }
-  flagged.sort((a, b) => b.distanceKm - a.distanceKm);
-  return flagged;
-}
+export type { GeoOutlier } from "./geo-outliers";
 
 function clusterOutletsIntoDailyGroups(outlets: Outlet[], k: number): Outlet[][] {
   if (outlets.length === 0) return [];
@@ -2907,8 +2805,25 @@ let dayVisitsMax = 0;
 // all - 466 biweekly outlets at 25-30 a day are 39 for one rep or 19.5 for
 // two - and a 2% room on that side would only shred villages to chase a
 // number no day can reach. Ten percent then.
-const roomBelow = (mean: number, atLeast: number) => dayVisitsMin > mean ? Math.max(atLeast, 0.10) : Math.min(0.35, Math.max(atLeast, (mean - dayVisitsMin) / mean));
-const roomAbove = (mean: number, atLeast: number) => dayVisitsMax < mean ? Math.max(atLeast, 0.10) : Math.min(0.35, Math.max(atLeast, (dayVisitsMax - mean) / mean));
+// And the other side is held to ten percent as well: with the floor out of
+// reach (Erbil: 24 a day against a floor of 25) the ceiling's 25% of room
+// let days run from 19 to 30 when every day could sit near 24.
+// The day bounds a rep with this mean can actually aim for: the user's, or
+// within ten percent of the mean on a side the user's cannot be met.
+const achievableDayBounds = (mean: number): { lo: number; hi: number } => ({
+  lo: mean * (1 - roomBelow(mean, 0)),
+  hi: mean * (1 + roomAbove(mean, 0)),
+});
+const roomBelow = (mean: number, atLeast: number) => {
+  if (dayVisitsMin > mean) return Math.max(atLeast, 0.10);
+  const room = Math.min(0.35, Math.max(atLeast, (mean - dayVisitsMin) / mean));
+  return dayVisitsMax < mean ? Math.min(room, Math.max(atLeast, 0.10)) : room;
+};
+const roomAbove = (mean: number, atLeast: number) => {
+  if (dayVisitsMax < mean) return Math.max(atLeast, 0.10);
+  const room = Math.min(0.35, Math.max(atLeast, (dayVisitsMax - mean) / mean));
+  return dayVisitsMin > mean ? Math.min(room, Math.max(atLeast, 0.10)) : room;
+};
 
 // The settings the last full optimization ran with, kept on disk.
 //
@@ -3212,6 +3127,22 @@ async function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[]
         }
       }
     }
+    // Days cut by straight lines cannot overlap one another: each day is its
+    // own convex patch of the territory. On the Damascus file that cut also
+    // drives three percent less than the polished one. It is kept when its
+    // route cost (driving plus the hop-limit penalty) is no more than four
+    // percent above the polished days', so a territory whose shape needs a
+    // curved boundary keeps the polished days.
+    {
+      const byLine = lineSplit(piece, k, runLoadOf, band);
+      if (byLine) {
+        const lineCost = totalCost(byLine), polishedCost = totalCost(groups);
+        if (lineCost <= polishedCost * 1.04 + 0.2) {
+          console.log(`[days] ${rep.name}: straight-cut days kept (${lineCost.toFixed(1)}km vs ${polishedCost.toFixed(1)}km polished)`);
+          groups = byLine;
+        }
+      }
+    }
     return groups;
   };
 
@@ -3298,8 +3229,12 @@ async function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[]
   // it takes out, join them and say so. Days of 17 are lost calls; one 5 km
   // drive is a known cost.
   if (pieces.length > 1) {
-    const lo = dayVisitsMin > 0 ? dayVisitsMin : targetLoad * (1 - dayLoadTolerance);
-    const hi = dayVisitsMax > 0 ? dayVisitsMax : targetLoad * (1 + dayLoadTolerance);
+    // Against what this rep's days can reach: with 24 a day against a floor
+    // of 25, the raw floor counted every day as out of band and pushed a
+    // 73-outlet pocket onto 2 days of 18 while the core ran at 27.
+    const reachable = achievableDayBounds(targetLoad);
+    const lo = dayVisitsMin > 0 ? reachable.lo : targetLoad * (1 - dayLoadTolerance);
+    const hi = dayVisitsMax > 0 ? reachable.hi : targetLoad * (1 + dayLoadTolerance);
     const daysOutOfBand = (loads: number[], alloc: number[]) =>
       loads.reduce((n, l, i) => n + ((l / alloc[i] < lo - 0.5 || l / alloc[i] > hi + 0.5) ? alloc[i] : 0), 0);
     let bad = daysOutOfBand(pieceLoads, days);
@@ -3538,13 +3473,29 @@ function scheduleFromDailyClusters(rep: Rep, dailyClusters: Outlet[][], repOutle
       const weekMean = pool.length / Math.max(1, buckets);
       const blocksW = collapseBlocks(pool, 0.5, () => 1, weekMean * 1.1);
       const shareW = (pool.length - blocksW.units.length + blocksW.blocks) / Math.max(1, pool.length);
-      const byOutlet = splitWeekUnits(pool, buckets);
+      const kmOf = (gs: Outlet[][]) => gs.reduce((s, g) => s + tourLength(g), 0);
+      // A split whose weeks all sit inside the band beats one that does not,
+      // however short: two villages of 17 and 27 split village by village
+      // drive less, but a 17-call day is the plan the user said they cannot
+      // use. Among splits equally in or out of band, the shorter one wins.
+      const wb = weekBand(weekMean);
+      const wLo = weekMean * (1 - (typeof wb === 'number' ? wb : wb.below)) - 1e-9;
+      const wHi = weekMean * (1 + (typeof wb === 'number' ? wb : wb.above)) + 1e-9;
+      const inBand = (gs: Outlet[][]) => gs.every(g => g.length >= wLo && g.length <= wHi);
+      const better = (cand: Outlet[][], cur: Outlet[][], slack: number) =>
+        inBand(cand) !== inBand(cur) ? inBand(cand) : kmOf(cand) <= kmOf(cur) * slack + 0.2;
+      let best = splitWeekUnits(pool, buckets);
       if (blocksW.blocks > 0 && blocksW.units.length >= 3 * buckets && shareW >= 0.4) {
-        const byVillage = repairLoads(blocksW.expand(splitWeekUnits(blocksW.units, buckets, 0.12)), () => 1, weekBand(pool.length / Math.max(1, buckets)), maxHopKm);
-        const kmO = byOutlet.reduce((s, g) => s + tourLength(g), 0), kmV = byVillage.reduce((s, g) => s + tourLength(g), 0);
-        if (kmV <= kmO * 1.05 + 0.2) return byVillage;
+        const byVillage = repairLoads(blocksW.expand(splitWeekUnits(blocksW.units, buckets, 0.12)), () => 1, wb, maxHopKm);
+        if (better(byVillage, best, 1.05)) best = byVillage;
       }
-      return byOutlet;
+      // Weeks of the same weekday are cut by straight lines when that drives
+      // no more than four percent further: the two routes then never cross
+      // each other's streets. The region-growing split above keeps its place
+      // only where it is clearly shorter.
+      const byLine = lineSplit(pool, buckets, () => 1, wb);
+      if (byLine && better(byLine, best, 1.04)) best = byLine;
+      return best;
     };
     // Same band and hop limit as the day-groups above: the user's floor and
     // ceiling against this pool's own mean, not a symmetric 5% around it.
@@ -4145,6 +4096,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const requestedDefaultVf = parseInt(String((req.body as any)?.defaultVisitFrequency ?? ""), 10);
       const defaultVisitFrequency = [1, 2, 3, 4].includes(requestedDefaultVf) ? requestedDefaultVf : 2;
       let rowsUsingDefaultVf = 0;
+      let sheetUsed: string | null = null;
+      let otherSheets: string[] = [];
 
       // Parse file based on type
       if (mimetype === "text/csv" || originalname.endsWith(".csv")) {
@@ -4161,7 +4114,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
       } else if (mimetype === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" || originalname.endsWith(".xlsx") || originalname.endsWith(".xls")) {
         try {
           const workbook = XLSX.read(buffer, { type: "buffer" });
-          const sheetName = workbook.SheetNames[0];
+          // The first sheet whose header row has coordinates, not simply the
+          // first sheet: a workbook often opens on a summary or a calendar.
+          // The report says which sheet was read and names the others, since
+          // a planner's workbook can hold several outlet lists.
+          const headerOf = (ws: XLSX.WorkSheet): string[] => {
+            if (!ws || !ws['!ref']) return [];
+            const range = XLSX.utils.decode_range(ws['!ref']);
+            const out: string[] = [];
+            for (let c = range.s.c; c <= Math.min(range.e.c, range.s.c + 60); c++) {
+              const cell = ws[XLSX.utils.encode_cell({ r: range.s.r, c })];
+              if (cell && cell.v != null) out.push(String(cell.v).toLowerCase().replace(/[_\s]+/g, ''));
+            }
+            return out;
+          };
+          const hasCoords = (h: string[]) => h.some(x => x.includes('lat')) && h.some(x => x.includes('lng') || x.includes('lon'));
+          const sheetName = workbook.SheetNames.find(n => hasCoords(headerOf(workbook.Sheets[n]))) ?? workbook.SheetNames[0];
+          sheetUsed = sheetName;
+          otherSheets = workbook.SheetNames.filter(n => n !== sheetName);
           const worksheet = workbook.Sheets[sheetName];
           data = XLSX.utils.sheet_to_json(worksheet);
           
@@ -4472,7 +4442,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // assumed for them. Drives the "we guessed this" notice on upload.
           rowsUsingDefaultVf,
           heldOutCarriedOver: carriedOver,
-          defaultVisitFrequencyUsed: defaultVisitFrequency
+          defaultVisitFrequencyUsed: defaultVisitFrequency,
+          sheetUsed,
+          otherSheets,
         }
       });
 
@@ -5862,6 +5834,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // the territory whose outlets are nearest to it.
       {
         const wd = Math.max(1, workingWeek.length);
+        // The floor and ceiling the days are actually cut to. When the volume
+        // cannot reach the user's floor (1,150 biweekly outlets on 4 reps is
+        // 24 a day against a floor of 25) every rep reads as short, and
+        // chasing that moved whole neighbourhoods between reps: one rep ended
+        // at 504 visits a month and another at 616. Within ten percent of the
+        // achievable mean is what the day cut aims for, so it is what this
+        // pass measures.
+        const dayFloor = projectedVisitsPerDay < minVisitsPerDay ? Math.floor(projectedVisitsPerDay * 0.9) : minVisitsPerDay;
+        const dayCeiling = projectedVisitsPerDay < minVisitsPerDay ? Math.min(maxVisitsPerDay, Math.ceil(projectedVisitsPerDay * 1.1)) : maxVisitsPerDay;
         const cellDay = (sc: InsertSchedule) => (sc.week - 1) * wd + Math.max(0, workingWeek.indexOf(sc.dayOfWeek)) - cycleStartSlot + 1;
         // Per rep: outlets its core is short of, outlets its core must shed,
         // and outlets its core can still absorb. Pocket days are left out of
@@ -5876,9 +5857,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           for (const sc of cells) {
             const n = (sc.outletIds as string[]).length;
             visits += n;
-            if (n > maxVisitsPerDay) over += n - maxVisitsPerDay;
-            else spare += maxVisitsPerDay - n;
-            if (n < minVisitsPerDay) under += minVisitsPerDay - n;
+            if (n > dayCeiling) over += n - dayCeiling;
+            else spare += dayCeiling - n;
+            if (n < dayFloor) under += dayFloor - n;
           }
           const cv = visits / outlets; // cell-visits one outlet adds
           return cv > 0

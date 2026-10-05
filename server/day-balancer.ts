@@ -1436,3 +1436,104 @@ export function collapseBlocks(
 export function unitLoad(loadOf: (o: Outlet) => number): (o: Outlet) => number {
   return (o: Outlet) => { const m = (o as BlockUnit).blockMembers; return m ? m.reduce((s, x) => s + loadOf(x), 0) : loadOf(o); };
 }
+
+/**
+ * Splits a group into k parts by straight cuts, recursively: the best of 36
+ * cut directions at each level, cutting where both sides stay inside the
+ * band and, among those positions, at the widest natural gap or nearest the
+ * balance point, whichever drives shorter. Parts separated by a line cannot
+ * overlap, so this is how a day's outlets are shared between alternating
+ * weeks without the two routes crossing the same streets. Returns null when
+ * no cut fits the band (lumpy weights), so the caller keeps its own split.
+ */
+export function lineSplit(
+  group: Outlet[],
+  k: number,
+  weightFn: (o: Outlet) => number,
+  tolerance: Band,
+  directions: number = 36,
+): Outlet[][] | null {
+  if (k <= 1) return [group.slice()];
+  if (group.length < k) return null;
+  // Fixed limits per part, from the whole group's mean: passing a relative
+  // band down the recursion let each level drift a little further, and a
+  // 20-25 day came out at 18 or 27.
+  const unit = group.reduce((s, o) => s + weightFn(o), 0) / k;
+  const { below, above } = typeof tolerance === 'number' ? { below: tolerance, above: tolerance } : tolerance;
+  return cutInto(group, k, weightFn, unit * (1 - below) - 1e-9, unit * (1 + above) + 1e-9, directions);
+}
+
+/** A quick tour estimate for ranking cut directions on big halves: nearest neighbour without 2-opt. */
+function roughTour(g: Outlet[]): number {
+  if (g.length < 2) return 0;
+  const left = g.slice(1);
+  let cur = g[0], total = 0;
+  while (left.length > 0) {
+    let bi = 0, bd = Infinity;
+    for (let i = 0; i < left.length; i++) {
+      const d = geoDist(cur.latitude, cur.longitude, left[i].latitude, left[i].longitude);
+      if (d < bd) { bd = d; bi = i; }
+    }
+    total += bd; cur = left[bi]; left[bi] = left[left.length - 1]; left.pop();
+  }
+  return total;
+}
+
+function cutInto(
+  group: Outlet[],
+  k: number,
+  weightFn: (o: Outlet) => number,
+  lo: number,
+  hi: number,
+  directions: number,
+): Outlet[][] | null {
+  if (k <= 1) {
+    const w = group.reduce((s, o) => s + weightFn(o), 0);
+    return w >= lo && w <= hi ? [group.slice()] : null;
+  }
+  if (group.length < k) return null;
+  const total = group.reduce((s, o) => s + weightFn(o), 0);
+  const k1 = Math.floor(k / 2), k2 = k - k1;
+  const target = (total * k1) / k;
+  const lat0 = group.reduce((s, o) => s + o.latitude, 0) / group.length;
+  const kx = 111.32 * Math.cos((lat0 * Math.PI) / 180), ky = 110.57;
+  const xs = group.map(o => o.longitude * kx), ys = group.map(o => o.latitude * ky);
+  const w = group.map(weightFn);
+  const fits = (left: number) => left >= k1 * lo && left <= k1 * hi && total - left >= k2 * lo && total - left <= k2 * hi;
+  // Exact tours where the halves are single routes or small; a quick estimate above that.
+  const cost = (g: Outlet[]) => (g.length <= 40 ? tourLength(g) : roughTour(g));
+
+  let best: { cost: number; left: Outlet[]; right: Outlet[] } | null = null;
+  const seen = new Set<string>();
+  for (let a = 0; a < directions; a++) {
+    const th = (Math.PI * a) / directions;
+    const c = Math.cos(th), s = Math.sin(th);
+    const order = group.map((_, i) => i).sort((i, j) => (xs[i] * c + ys[i] * s) - (xs[j] * c + ys[j] * s));
+    const proj = order.map(i => xs[i] * c + ys[i] * s);
+    let run = 0, gapPos = -1, gapSize = -1, nearPos = -1, nearDiff = Infinity;
+    for (let p = 1; p < order.length; p++) {
+      run += w[order[p - 1]];
+      if (!fits(run)) continue;
+      const gap = proj[p] - proj[p - 1];
+      if (gap > gapSize) { gapSize = gap; gapPos = p; }
+      const diff = Math.abs(run - target);
+      if (diff < nearDiff) { nearDiff = diff; nearPos = p; }
+    }
+    for (const p of [gapPos, nearPos]) {
+      if (p <= 0) continue;
+      const leftIdx = order.slice(0, p);
+      const key = leftIdx.slice().sort((x, y) => x - y).join(',');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const left = leftIdx.map(i => group[i]);
+      const right = order.slice(p).map(i => group[i]);
+      const cst = cost(left) + cost(right);
+      if (!best || cst < best.cost - 1e-9) best = { cost: cst, left, right };
+    }
+  }
+  if (!best) return null;
+  const L = cutInto(best.left, k1, weightFn, lo, hi, directions);
+  const Rr = cutInto(best.right, k2, weightFn, lo, hi, directions);
+  if (!L || !Rr) return null;
+  return [...L, ...Rr];
+}
