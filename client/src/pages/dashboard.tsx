@@ -8,6 +8,7 @@ import AnalyticsCharts from "@/components/analytics-charts";
 import MLInsights from "@/components/ml-insights";
 import TerritoryMap from "@/components/territory-map";
 import TerritoryCustomization from "@/components/territory-customization";
+import RtmStudio from "@/components/rtm-studio";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -59,6 +60,15 @@ export default function Dashboard() {
   const [resetNonce, setResetNonce] = useState(0);
   const [, setLocation] = useLocation();
   const [offsetMode, setOffsetMode] = useState<OffsetMode>('global');
+  // The detailed, step-by-step controls sit under RTM Studio, folded away
+  // unless the planner opens them; the choice is remembered on this device.
+  const [showDetails, setShowDetailsState] = useState<boolean>(() => {
+    try { return localStorage.getItem("dashboard.showDetails") === "1"; } catch { return false; }
+  });
+  const setShowDetails = (v: boolean) => {
+    setShowDetailsState(v);
+    try { localStorage.setItem("dashboard.showDetails", v ? "1" : "0"); } catch { /* private window */ }
+  };
   const [selectedRepIds, setSelectedRepIds] = useState<string[]>([]);
 
   const { data: metrics, isLoading } = useQuery<DashboardMetrics>({
@@ -234,8 +244,8 @@ export default function Dashboard() {
         <header className="bg-white dark:bg-[#1c1c1e] shadow-apple border border-[#e5e5e5] dark:border-[#38383a] px-4 py-3 md:px-6 rounded-2xl">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h2 className="text-lg font-semibold text-[#1d1d1f] dark:text-white">Route Optimization</h2>
-              <p className="text-sm text-[#86868b]">Upload outlets, set the working week and visit band, then optimize.</p>
+              <h2 className="text-lg font-semibold text-[#1d1d1f] dark:text-white">Route-to-market planner</h2>
+              <p className="text-sm text-[#86868b]">Territories, day routes and journey plans for every rep, from one outlet list.</p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               {authStatus?.canEdit && (
@@ -295,6 +305,22 @@ export default function Dashboard() {
           </div>
         </header>
 
+        <RtmStudio canEdit={!!authStatus?.canEdit} />
+
+        <button
+          type="button"
+          onClick={() => setShowDetails(!showDetails)}
+          className="flex w-full items-center justify-between rounded-2xl border border-[#e5e5e5] bg-white px-5 py-3 text-left dark:border-[#38383a] dark:bg-[#1c1c1e]"
+          data-testid="button-toggle-details"
+        >
+          <span>
+            <span className="text-sm font-medium text-[#1d1d1f] dark:text-white">Detailed planning controls</span>
+            <span className="ml-2 text-xs text-[#86868b]">Manual settings, exclusions, barriers, role hierarchy, schedules and analytics</span>
+          </span>
+          {showDetails ? <ChevronDown className="h-5 w-5 text-[#86868b]" /> : <ChevronRight className="h-5 w-5 text-[#86868b]" />}
+        </button>
+
+        {showDetails && (<>
         {/* Key Metrics Cards - Only show after optimization */}
         {hasOptimization && (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
@@ -796,6 +822,7 @@ export default function Dashboard() {
             </div>
           )}
         </div>
+        </>)}
       </div>
 
       <Dialog open={showResetConfirm} onOpenChange={setShowResetConfirm}>

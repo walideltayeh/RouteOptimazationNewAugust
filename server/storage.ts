@@ -233,6 +233,7 @@ export class MemStorage implements IStorage {
       geoStatus: insertOutlet.geoStatus ?? null,
       code: insertOutlet.code ?? null,
       pinnedRoute: insertOutlet.pinnedRoute ?? null,
+      channel: insertOutlet.channel ?? null,
     };
     this.outlets.set(id, outlet);
     return outlet;

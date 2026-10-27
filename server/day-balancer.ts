@@ -1463,8 +1463,25 @@ export function lineSplit(
   return cutInto(group, k, weightFn, unit * (1 - below) - 1e-9, unit * (1 + above) + 1e-9, directions);
 }
 
+/**
+ * A tour-length estimate from spread alone, for ranking cuts of very large
+ * groups (a whole city into territories): the expected length of a good tour
+ * through n points over an area A grows as sqrt(n * A) (Beardwood, Halton
+ * and Hammersley), with A taken from the points' spread around their centre.
+ */
+export function spreadTour(g: Outlet[]): number {
+  const n = g.length;
+  if (n < 2) return 0;
+  const lat0 = g.reduce((s, o) => s + o.latitude, 0) / n, lng0 = g.reduce((s, o) => s + o.longitude, 0) / n;
+  const kx = 111.32 * Math.cos((lat0 * Math.PI) / 180), ky = 110.57;
+  let ss = 0;
+  for (const o of g) { const dx = (o.longitude - lng0) * kx, dy = (o.latitude - lat0) * ky; ss += dx * dx + dy * dy; }
+  const area = Math.PI * (ss / n);
+  return 0.7124 * Math.sqrt(n * area);
+}
+
 /** A quick tour estimate for ranking cut directions on big halves: nearest neighbour without 2-opt. */
-function roughTour(g: Outlet[]): number {
+export function roughTour(g: Outlet[]): number {
   if (g.length < 2) return 0;
   const left = g.slice(1);
   let cur = g[0], total = 0;
@@ -1499,11 +1516,23 @@ function cutInto(
   const kx = 111.32 * Math.cos((lat0 * Math.PI) / 180), ky = 110.57;
   const xs = group.map(o => o.longitude * kx), ys = group.map(o => o.latitude * ky);
   const w = group.map(weightFn);
-  const fits = (left: number) => left >= k1 * lo && left <= k1 * hi && total - left >= k2 * lo && total - left <= k2 * hi;
-  // Exact tours where the halves are single routes or small; a quick estimate above that.
-  const cost = (g: Outlet[]) => (g.length <= 40 ? tourLength(g) : roughTour(g));
+  // A side that will be cut again keeps one outlet's weight of room inside
+  // its bounds: 595 outlets of 2 visits each cannot make two parts of 566 to
+  // 595 visits, though 1,190 is within twice the limits.
+  const wMax = w.reduce((m, x) => Math.max(m, x), 0);
+  const slack = (parts: number) => (parts > 1 ? Math.min(wMax, (hi - lo) * parts / 4) : 0);
+  const fits = (left: number) =>
+    left >= k1 * lo + slack(k1) && left <= k1 * hi - slack(k1) &&
+    total - left >= k2 * lo + slack(k2) && total - left <= k2 * hi - slack(k2);
+  // Exact tours where the halves are single routes or small; a quick
+  // estimate above that; the spread estimate for a whole city, where even a
+  // nearest-neighbour tour per candidate took 100 seconds on 7,800 outlets.
+  // One measure per level, so the two halves are always compared alike.
+  const cost = group.length > 1200
+    ? (g: Outlet[]) => spreadTour(g)
+    : (g: Outlet[]) => (g.length <= 40 ? tourLength(g) : roughTour(g));
 
-  let best: { cost: number; left: Outlet[]; right: Outlet[] } | null = null;
+  const candidates: { cost: number; left: Outlet[]; right: Outlet[] }[] = [];
   const seen = new Set<string>();
   for (let a = 0; a < directions; a++) {
     const th = (Math.PI * a) / directions;
@@ -1527,13 +1556,73 @@ function cutInto(
       seen.add(key);
       const left = leftIdx.map(i => group[i]);
       const right = order.slice(p).map(i => group[i]);
-      const cst = cost(left) + cost(right);
-      if (!best || cst < best.cost - 1e-9) best = { cost: cst, left, right };
+      candidates.push({ cost: cost(left) + cost(right), left, right });
     }
   }
-  if (!best) return null;
-  const L = cutInto(best.left, k1, weightFn, lo, hi, directions);
-  const Rr = cutInto(best.right, k2, weightFn, lo, hi, directions);
-  if (!L || !Rr) return null;
-  return [...L, ...Rr];
+  // The cheapest cut whose halves can themselves be cut; a few tries at most.
+  candidates.sort((a, b) => a.cost - b.cost);
+  for (const c of candidates.slice(0, 4)) {
+    const L = cutInto(c.left, k1, weightFn, lo, hi, directions);
+    if (!L) continue;
+    const Rr = cutInto(c.right, k2, weightFn, lo, hi, directions);
+    if (!Rr) continue;
+    return [...L, ...Rr];
+  }
+  return null;
+}
+
+/**
+ * The order in which a rep's day-groups are driven across the cycle, so
+ * consecutive working days are next to each other on the map: a call missed
+ * on Saturday can be picked up on Sunday a few streets away, and the week
+ * sweeps across the territory instead of jumping from one end to the other.
+ * Returns a permutation of the group indices: the shortest open path through
+ * the groups' centres, exact up to eight groups and nearest neighbour plus
+ * 2-opt above that. Empty groups go last.
+ */
+export function sequenceDays(groups: Outlet[][]): number[] {
+  const idx = groups.map((g, i) => i).filter(i => groups[i].length > 0);
+  const empty = groups.map((g, i) => i).filter(i => groups[i].length === 0);
+  if (idx.length <= 2) return [...idx, ...empty];
+  const c = idx.map(i => {
+    const g = groups[i];
+    return { lat: g.reduce((s, o) => s + o.latitude, 0) / g.length, lng: g.reduce((s, o) => s + o.longitude, 0) / g.length };
+  });
+  const n = idx.length;
+  const D = c.map(a => c.map(b => geoDist(a.lat, a.lng, b.lat, b.lng)));
+  const len = (p: number[]) => { let s = 0; for (let i = 1; i < p.length; i++) s += D[p[i - 1]][p[i]]; return s; };
+  let best: number[];
+  if (n <= 8) {
+    // Exact: every order, by Heap's algorithm.
+    const a = Array.from({ length: n }, (_, i) => i);
+    best = a.slice(); let bestLen = len(a);
+    const cnt = new Array(n).fill(0);
+    let i = 0;
+    while (i < n) {
+      if (cnt[i] < i) {
+        const j = i % 2 === 0 ? 0 : cnt[i];
+        [a[j], a[i]] = [a[i], a[j]];
+        const l = len(a);
+        if (l < bestLen - 1e-12) { bestLen = l; best = a.slice(); }
+        cnt[i]++; i = 0;
+      } else { cnt[i] = 0; i++; }
+    }
+  } else {
+    best = []; let bestLen = Infinity;
+    for (let s0 = 0; s0 < n; s0++) {
+      const p = [s0]; const left = new Set(Array.from({ length: n }, (_, i) => i)); left.delete(s0);
+      while (left.size) { const cur = p[p.length - 1]; let nx = -1, nd = Infinity; left.forEach(j => { if (D[cur][j] < nd) { nd = D[cur][j]; nx = j; } }); p.push(nx); left.delete(nx); }
+      for (let improved = true; improved;) {
+        improved = false;
+        for (let i = 0; i < n - 2; i++) for (let j = i + 2; j < n; j++) {
+          const before = D[p[i]][p[i + 1]] + (j + 1 < n ? D[p[j]][p[j + 1]] : 0);
+          const after = D[p[i]][p[j]] + (j + 1 < n ? D[p[i + 1]][p[j + 1]] : 0);
+          if (after < before - 1e-12) { p.splice(i + 1, j - i, ...p.slice(i + 1, j + 1).reverse()); improved = true; }
+        }
+      }
+      const l = len(p);
+      if (l < bestLen - 1e-12) { bestLen = l; best = p; }
+    }
+  }
+  return [...best.map(k => idx[k]), ...empty];
 }

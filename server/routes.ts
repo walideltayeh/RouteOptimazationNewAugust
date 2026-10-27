@@ -8,7 +8,12 @@ import { loadBlob, saveBlob, deleteBlob } from "./persist";
 import { isAdminConfigured, verifyAdmin, adminCredentialSource } from "./admin-credentials";
 import { solveBalancedGroups } from "./balanced-solver";
 import { detectGeoOutliers, type GeoOutlier } from "./geo-outliers";
-import { totalWeeklyLoad, growBalancedRegions, partitionByHilbert, repairLoads, swapForCompactness, polishByCohesion, polishByTourLength, recutPairs, routeCost, longestHop, swapStranded, reachabilityComponents, gapBetween, weeklyLoadOf, type Band, improveByRouteCost, exchangePockets, tourLength, handOverStrays, collapseBlocks, unitLoad, lineSplit } from "./day-balancer";
+import { classifyChannel, callMinutesFor, chooseHeadcount, kthNeighbourKm, DEFAULT_WORKDAY, guessWorkingWeek, median } from "./rtm";
+import { buildBlueprint } from "./blueprint";
+import { scorePlan } from "./scorecard";
+import { buildPjpWorkbook } from "./pjp-export";
+const UPLOAD_META_KEY = "upload-meta";
+import { totalWeeklyLoad, growBalancedRegions, partitionByHilbert, repairLoads, swapForCompactness, polishByCohesion, polishByTourLength, recutPairs, routeCost, longestHop, swapStranded, reachabilityComponents, gapBetween, weeklyLoadOf, type Band, improveByRouteCost, exchangePockets, tourLength, handOverStrays, collapseBlocks, unitLoad, lineSplit, roughTour, sequenceDays } from "./day-balancer";
 import { 
   insertOptimizationRunSchema, 
   insertOutletSchema, 
@@ -2800,6 +2805,40 @@ let maxHopKm = 4;
 // as stated rather than as a symmetric tolerance around whatever the mean is.
 let dayVisitsMin = 0;
 let dayVisitsMax = 0;
+
+// Balancing by working time. In 'visits' mode every outlet weighs one visit.
+// In 'time' mode an outlet weighs its call minutes plus the driving it takes
+// to reach it (from how near its neighbours are), scaled so the average
+// outlet still weighs exactly one visit: team size and the visits band keep
+// their meaning, but a day of 30-minute supermarket calls or of far-apart
+// villages gets fewer stops, and a day of dense kiosks more. Equal days of
+// work, not equal counts, is what keeps every day inside the shift.
+let balanceBy: 'visits' | 'time' = 'visits';
+let workloadMean = 0;
+const workloadWeight = new Map<string, number>();
+const wOf = (o: { id: string }) => (balanceBy === 'time' ? workloadWeight.get(o.id) ?? 1 : 1);
+function workloadMinutes(outlets: Outlet[]): number[] {
+  const nn = kthNeighbourKm(outlets, 2);
+  return outlets.map((o, i) => callMinutesFor(o, 15, true) + (Math.min(nn[i], 6) * DEFAULT_WORKDAY.detourFactor / DEFAULT_WORKDAY.speedKmh) * 60);
+}
+/** Sets the weights for a full run: the mean is taken over the whole universe and kept for rebuilds. */
+function prepareWorkloadWeights(outlets: Outlet[]) {
+  workloadWeight.clear();
+  if (balanceBy !== 'time' || outlets.length === 0) return;
+  const raw = workloadMinutes(outlets);
+  const visits = outlets.reduce((s, o) => s + (o.visitFrequency || 1), 0);
+  workloadMean = outlets.reduce((s, o, i) => s + (o.visitFrequency || 1) * raw[i], 0) / Math.max(1, visits);
+  outlets.forEach((o, i) => workloadWeight.set(o.id, Math.max(0.3, Math.min(4, raw[i] / Math.max(1e-6, workloadMean)))));
+}
+/** For a rebuild after a restart: weigh any outlet not yet weighed against the saved mean. */
+function ensureWorkloadWeights(outlets: Outlet[]) {
+  if (balanceBy !== 'time') return;
+  const missing = outlets.filter(o => !workloadWeight.has(o.id));
+  if (missing.length === 0) return;
+  const raw = workloadMinutes(outlets);
+  const mean = workloadMean > 0 ? workloadMean : raw.reduce((a, b) => a + b, 0) / Math.max(1, raw.length);
+  outlets.forEach((o, i) => { if (!workloadWeight.has(o.id)) workloadWeight.set(o.id, Math.max(0.3, Math.min(4, raw[i] / mean))); });
+}
 // Room below and above a mean for the day band. When the floor is above the
 // mean (or the ceiling below it) the rep count could not honour the band at
 // all - 466 biweekly outlets at 25-30 a day are 39 for one rep or 19.5 for
@@ -2853,6 +2892,12 @@ interface PlanSettings {
   cycleStartSlot?: number;
   /** Rivers, railways, motorways without crossings: part of the plan, not of the code. */
   barriers?: Barrier[];
+  /** The country the plan was made for, so a file from another market is not planned on this one's week. */
+  country?: string | null;
+  /** Days and territories balanced by visit count or by working time. */
+  balanceBy?: 'visits' | 'time';
+  /** Average minutes per visit (call + driving) the time weights are scaled by. */
+  workloadMean?: number;
 }
 // Kept in the blob store - Postgres on the published site - like the rest of
 // the app's state; see persist.ts.
@@ -2892,6 +2937,8 @@ function applyPlanSettings(): PlanSettings | null {
   cycleStartSlot = planSettings.cycleStartSlot ?? 0;
   setDistanceMode(planSettings.distanceMode === 'road' ? 'road' : planSettings.distanceMode === 'grid' ? 'grid' : 'haversine');
   setBarriers(planSettings.barriers ?? []);
+  balanceBy = planSettings.balanceBy === 'time' ? 'time' : 'visits';
+  workloadMean = planSettings.workloadMean ?? 0;
   return planSettings;
 }
 // Loaded in registerRoutes, before the routes go live.
@@ -2995,8 +3042,9 @@ async function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[]
   // visits; an outlet needing more gets a second group (see membershipsFor),
   // and the overflow is budgeted there, not here. On a four-week cycle nothing
   // overflows and this is exactly the old vf/4.
-  const runLoadOf = unitLoad((o: Outlet) => Math.min(o.visitFrequency ?? 1, cycleRuns) / cycleRuns);
+  const runLoadOf = unitLoad((o: Outlet) => (Math.min(o.visitFrequency ?? 1, cycleRuns) / cycleRuns) * wOf(o));
   const repOutlets = zoneGroups.flat();
+  ensureWorkloadWeights(repOutlets);
   if (repOutlets.length === 0) return [];
 
   // Real road distances between every pair of this rep's outlets, when a
@@ -3048,7 +3096,8 @@ async function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[]
     const band = bandFor(piece, k, atLeast);
     let groups = repairLoads(
       // Exact assignment when the solver is there; the curve when it is not.
-      (await solveBalancedGroups(piece, k, unitLoad(o => Math.min(o.visitFrequency ?? 1, cycleRuns)), band))
+      // Integer weights for the flow solver: tenths of a visit when balancing by time.
+      (await solveBalancedGroups(piece, k, unitLoad(o => Math.min(o.visitFrequency ?? 1, cycleRuns) * (balanceBy === 'time' ? 10 * wOf(o) : 1)), band))
         ?? partitionByHilbert(piece, k, runLoadOf),
       runLoadOf,
       band,
@@ -3288,10 +3337,18 @@ async function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[]
     // plain driving distance is within five percent of the outlet-level cut.
     let groups = await partitionPiece(pieces[i], days[i]);
     if (useBlocks) {
-      const byVillage = repairLoads(blocksP.expand(await partitionPiece(blocksP.units, days[i], 0.12)), runLoadOf, bandFor(pieces[i], days[i]), maxHopKm);
+      const pieceBand = bandFor(pieces[i], days[i]);
+      const byVillage = repairLoads(blocksP.expand(await partitionPiece(blocksP.units, days[i], 0.12)), runLoadOf, pieceBand, maxHopKm);
       const kmO = groups.reduce((s, g) => s + tourLength(g), 0), kmV = byVillage.reduce((s, g) => s + tourLength(g), 0);
-      if (kmV <= kmO * 1.05 + 0.5) { console.log(`[villages] ${rep.name}: village cut kept (${kmV.toFixed(1)}km vs ${kmO.toFixed(1)}km by outlets)`); groups = byVillage; }
-      else console.log(`[villages] ${rep.name}: village cut dropped (${kmV.toFixed(1)}km vs ${kmO.toFixed(1)}km by outlets)`);
+      // Days outside the band, by the piece's own band. Whole villages are
+      // worth a little driving, never a 33-visit day next to a 23.
+      const pieceMean = pieces[i].reduce((s, o) => s + runLoadOf(o), 0) / Math.max(1, days[i]);
+      const lo = pieceMean * (1 - (typeof pieceBand === 'number' ? pieceBand : pieceBand.below)) - 0.5;
+      const hi = pieceMean * (1 + (typeof pieceBand === 'number' ? pieceBand : pieceBand.above)) + 0.5;
+      const offBand = (gs: Outlet[][]) => gs.filter(g => { const l = g.reduce((s, o) => s + runLoadOf(o), 0); return l < lo || l > hi; }).length;
+      const offO = offBand(groups), offV = offBand(byVillage);
+      if (offV <= offO && kmV <= kmO * 1.05 + 0.5) { console.log(`[villages] ${rep.name}: village cut kept (${kmV.toFixed(1)}km vs ${kmO.toFixed(1)}km by outlets)`); groups = byVillage; }
+      else console.log(`[villages] ${rep.name}: village cut dropped (${kmV.toFixed(1)}km vs ${kmO.toFixed(1)}km by outlets; ${offV} vs ${offO} days off the band)`);
     }
     if (i > 0) for (let g = 0; g < groups.length; g++) pocketGroups.add(dailyClusters.length + g);
     dailyClusters.push(...groups);
@@ -3324,6 +3381,18 @@ async function buildAnchorAwareSchedulesFromZones(rep: Rep, zoneGroups: Outlet[]
     }
   }
   while (dailyClusters.length < numDays) dailyClusters.push([]);
+
+  // Day sequencing: the cycle's working days sweep across the territory, each
+  // day next to the one before it, rather than in the order the cut produced.
+  {
+    const order = sequenceDays(dailyClusters);
+    const moved = order.some((g, i) => g !== i);
+    if (moved) {
+      const newIndex = new Map(order.map((g, i) => [g, i]));
+      pocketGroups = new Set(Array.from(pocketGroups).map(g => newIndex.get(g) ?? g));
+      dailyClusters = order.map(g => dailyClusters[g]);
+    }
+  }
 
   if (maxHopKm > 0) {
     const hops = dailyClusters.filter(g => g.length > 1).map(longestHop);
@@ -3466,12 +3535,12 @@ function scheduleFromDailyClusters(rep: Rep, dailyClusters: Outlet[][], repOutle
     // These buckets ARE the actual day-routes the rep drives, so the tour-length
     // polish belongs here as well as at the day-group level above: polishing the
     // group only shapes the pool that the weeks are then drawn from.
-    const oneVisit = unitLoad(() => 1);
+    const oneVisit = unitLoad(o => wOf(o));
     const splitWeeks = (pool: Outlet[], buckets: number): Outlet[][] => {
       // Whole villages per week where they fit: a village of 15 in a day of
       // 39 goes to one week, not 8 and 7 across both.
-      const weekMean = pool.length / Math.max(1, buckets);
-      const blocksW = collapseBlocks(pool, 0.5, () => 1, weekMean * 1.1);
+      const weekMean = pool.reduce((s, o) => s + wOf(o), 0) / Math.max(1, buckets);
+      const blocksW = collapseBlocks(pool, 0.5, o => wOf(o), weekMean * 1.1);
       const shareW = (pool.length - blocksW.units.length + blocksW.blocks) / Math.max(1, pool.length);
       const kmOf = (gs: Outlet[][]) => gs.reduce((s, g) => s + tourLength(g), 0);
       // A split whose weeks all sit inside the band beats one that does not,
@@ -3481,19 +3550,20 @@ function scheduleFromDailyClusters(rep: Rep, dailyClusters: Outlet[][], repOutle
       const wb = weekBand(weekMean);
       const wLo = weekMean * (1 - (typeof wb === 'number' ? wb : wb.below)) - 1e-9;
       const wHi = weekMean * (1 + (typeof wb === 'number' ? wb : wb.above)) + 1e-9;
-      const inBand = (gs: Outlet[][]) => gs.every(g => g.length >= wLo && g.length <= wHi);
+      const loadW = (g: Outlet[]) => g.reduce((s, o) => s + wOf(o), 0);
+      const inBand = (gs: Outlet[][]) => gs.every(g => loadW(g) >= wLo && loadW(g) <= wHi);
       const better = (cand: Outlet[][], cur: Outlet[][], slack: number) =>
         inBand(cand) !== inBand(cur) ? inBand(cand) : kmOf(cand) <= kmOf(cur) * slack + 0.2;
       let best = splitWeekUnits(pool, buckets);
       if (blocksW.blocks > 0 && blocksW.units.length >= 3 * buckets && shareW >= 0.4) {
-        const byVillage = repairLoads(blocksW.expand(splitWeekUnits(blocksW.units, buckets, 0.12)), () => 1, wb, maxHopKm);
+        const byVillage = repairLoads(blocksW.expand(splitWeekUnits(blocksW.units, buckets, 0.12)), o => wOf(o), wb, maxHopKm);
         if (better(byVillage, best, 1.05)) best = byVillage;
       }
       // Weeks of the same weekday are cut by straight lines when that drives
       // no more than four percent further: the two routes then never cross
       // each other's streets. The region-growing split above keeps its place
       // only where it is clearly shorter.
-      const byLine = lineSplit(pool, buckets, () => 1, wb);
+      const byLine = lineSplit(pool, buckets, o => wOf(o), wb);
       if (byLine && better(byLine, best, 1.04)) best = byLine;
       return best;
     };
@@ -4098,6 +4168,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let rowsUsingDefaultVf = 0;
       let sheetUsed: string | null = null;
       let otherSheets: string[] = [];
+      const callTimeSources = { file: 0, channel: 0, assumed: 0 };
+      const channelCounts: Record<string, number> = {};
 
       // Parse file based on type
       if (mimetype === "text/csv" || originalname.endsWith(".csv")) {
@@ -4180,17 +4252,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const skippedRows: { row: number; reason: string }[] = [];
       for (const row of data) {
         try {
-          // Parse time per visit (default 30 minutes if not provided)
-          const timePerVisit = parseInt(
-            row.time_per_visit || row.timePerVisit || row["Time Per Visit"] || 
-            row.time || row.Time || row.duration || row.Duration || "30"
-          );
-
           // Normalize row keys to lowercase for consistent matching
           const normalizedRow: Record<string, string> = {};
           Object.keys(row).forEach(key => {
             normalizedRow[key.toLowerCase().trim().replace(/[_\s]+/g, '')] = row[key];
           });
+
+          // Trade channel / outlet type, as the file names it.
+          const channelRaw = normalizedRow['channel'] || normalizedRow['outlettype'] || normalizedRow['type'] ||
+            normalizedRow['storetype'] || normalizedRow['shoptype'] || normalizedRow['clienttag'] || normalizedRow['clienttag1'] ||
+            normalizedRow['category'] || normalizedRow['segment'] || normalizedRow['subchannel'] || normalizedRow['class'] || '';
+          const channel = String(channelRaw ?? '').trim() || null;
+
+          // Call length: the file's own column when it has one, else the
+          // usual length for the outlet's channel, else 15 minutes. The old
+          // fixed 30 made every 25-call day a 12-hour day on paper.
+          const timeRaw = normalizedRow['timepervisit'] || normalizedRow['visittime'] || normalizedRow['calltime'] ||
+            normalizedRow['callduration'] || normalizedRow['visitduration'] || normalizedRow['duration'] || normalizedRow['time'] ||
+            normalizedRow['minutes'] || '';
+          const timeFromFile = parseInt(String(timeRaw), 10);
+          let timePerVisit: number;
+          if (!isNaN(timeFromFile) && timeFromFile > 0) { timePerVisit = timeFromFile; callTimeSources.file++; }
+          else if (channel && classifyChannel(channel)) { timePerVisit = callMinutesFor({ channel }, 15, false); callTimeSources.channel++; }
+          else { timePerVisit = 15; callTimeSources.assumed++; }
+          if (channel) { const ch = classifyChannel(channel)!; channelCounts[ch] = (channelCounts[ch] ?? 0) + 1; }
           
           // Log column headers on first row for debugging
           if (outlets.length === 0) {
@@ -4290,7 +4375,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
             visitFrequency: parseInt(normalizedRow['vf'] || normalizedRow['visitfrequency'] ||
                                     row.vf || row.VF || row.visit_frequency || row["Visit Frequency"] ||
                                     String(defaultVisitFrequency)),
-            timePerVisit: isNaN(timePerVisit) ? 30 : Math.max(5, Math.min(120, timePerVisit)),
+            timePerVisit: Math.max(3, Math.min(180, timePerVisit)),
+            channel,
             value: (() => {
               // Commercial weight of the outlet (VC / volume class / sales value)
               // used by weightMode 'value' in coverage-worthiness analysis.
@@ -4391,9 +4477,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const vf2Count = outlets.filter(o => o.visitFrequency === 2).length;
       const vf4Count = outlets.filter(o => o.visitFrequency === 4).length;
 
-      // Initial rough estimate - will be refined after optimization
-      // Assuming ~25 outlets per zone and 10 zones per rep
-      const recommendedReps = Math.ceil(outlets.length / 250);
+      // What the upload found, kept for the blueprint, then the blueprint's
+      // own team size as the recommendation (it was outlets / 250).
+      await saveBlob(UPLOAD_META_KEY, JSON.stringify({
+        fileName: originalname, sheetUsed, otherSheets, rowsUsingDefaultVf, defaultVisitFrequency,
+        callTimeSources, skippedRows: skippedRows.length, uploadedAt: new Date().toISOString(),
+      })).catch(err => console.error('[upload] could not save upload facts:', (err as Error).message));
+      let recommendedReps = Math.ceil(outlets.length / 250);
+      let blueprint: Awaited<ReturnType<typeof currentBlueprint>> | null = null;
+      try { blueprint = await currentBlueprint(); recommendedReps = blueprint.headcount.reps; }
+      catch (err) { console.error('[upload] blueprint failed:', (err as Error).message); }
 
       // Create optimization run record
       const optimizationRun = await storage.createOptimizationRun({
@@ -4427,6 +4520,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           vf4: vf4Count,
           recommendedReps
         },
+        blueprint,
         report: {
           totalRowsProcessed: data.length,
           validOutlets: outlets.length,
@@ -4445,6 +4539,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           defaultVisitFrequencyUsed: defaultVisitFrequency,
           sheetUsed,
           otherSheets,
+          callTimeSources,
+          channels: channelCounts,
         }
       });
 
@@ -5003,6 +5099,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // The Permanent Journey Plan: summary with the scorecard, every stop with its
+  // date and a map link, a sheet per rep, each rep-day's load, and the outlet master.
+  app.get("/api/export/pjp", async (_req, res) => {
+    try {
+      const schedules = await storage.getSchedules();
+      if (schedules.length === 0) return res.status(400).json({ message: "No plan to export yet. Build the RTM first." });
+      applyPlanSettings();
+      const cycleDates = upcomingWorkingDates(400, workingWeek);
+      const dateOf = (week: number, dayOfWeek: number): string => {
+        const slot = workingWeek.indexOf(dayOfWeek);
+        if (slot < 0) return '';
+        const index = (week - 1) * workingWeek.length + slot - cycleStartSlot;
+        const d = index >= 0 ? cycleDates[index] : undefined;
+        return d ? ymd(d) : '';
+      };
+      const buffer = buildPjpWorkbook({
+        outlets: await storage.getOutlets(),
+        reps: await storage.getReps(),
+        schedules: schedules.map(s => ({ repId: s.repId, week: s.week, dayOfWeek: s.dayOfWeek, outletIds: (s.outletIds as string[]) || [], routeOrder: (s.routeOrder as string[]) || null, totalDistance: s.totalDistance })),
+        scorecard: await currentScorecard(),
+        dateOf,
+        workingWeek,
+        roadKm: planSettings?.distanceMode === 'road' && osrmConfigured(),
+      });
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="journey_plan_${new Date().toISOString().split('T')[0]}.xlsx"`);
+      res.send(buffer);
+    } catch (error) {
+      console.error("PJP export error:", error);
+      res.status(500).json({ message: "Failed to export the journey plan" });
+    }
+  });
+
   // Export role schedules to Excel (includes all roles with their day offsets)
   app.get("/api/export/role-schedules", async (req, res) => {
     try {
@@ -5367,7 +5496,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Route optimization
-  app.post("/api/optimize", asJob('optimize', async (req: Request, res: Response) => {
+  const runOptimize = async (req: Request, res: Response) => {
     const progressId = req.body.progressId || '';
     
     // Helper to yield to event loop so SSE can flush
@@ -5435,6 +5564,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const outlets = includeGeoOutliers
         ? selectedOutlets
         : selectedOutlets.filter(o => !outlierIds.has(o.id));
+
+      balanceBy = req.body.balanceBy === 'time' ? 'time' : 'visits';
+      prepareWorkloadWeights(outlets);
+      if (balanceBy === 'time') {
+        const ws = Array.from(workloadWeight.values()).sort((a, b) => a - b);
+        console.log(`[workload] balancing by working time: ${workloadMean.toFixed(1)} min per average visit; weights ${ws[0]?.toFixed(2)} to ${ws[ws.length - 1]?.toFixed(2)} (median ${ws[Math.floor(ws.length / 2)]?.toFixed(2)})`);
+      }
 
       if (!includeGeoOutliers && outlierIds.size > 0) {
         console.log(`[geo] Holding ${outlierIds.size} far-flung outlet(s) out of the routes for review (>${geoOutlierRadiusKm}km from the core area).`);
@@ -5659,9 +5795,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Aim for the middle of the requested range so a normal day sits
       // comfortably inside it rather than pinned to either end, then clamp
       // into the feasible band.
-      const midTargetPerDay = (minVisitsPerDay + maxVisitsPerDay) / 2;
-      const idealReps = Math.round(totalMonthlyVisits / (dayslotsPerRep * midTargetPerDay));
-      const requiredRepCount = Math.min(Math.max(idealReps, fewestReps), Math.max(fewestReps, mostReps));
+      // The middle of the band when a team size fits it; the nearest to the
+      // band when none does (see chooseHeadcount: one rep at 30.3 a day,
+      // not two at 15.2, for a 25-30 band).
+      const headcountChoice = chooseHeadcount(totalMonthlyVisits, dayslotsPerRep, minVisitsPerDay, maxVisitsPerDay);
+      // A team size the caller fixed (the blueprint's, sized against the shift,
+      // or the planner's own choice) wins over the band's.
+      const requestedReps = parseInt(String(req.body.reps ?? ''), 10);
+      if (requestedReps >= 1 && requestedReps <= 500 && requestedReps !== headcountChoice.reps) {
+        headcountChoice.reason = `${requestedReps} rep${requestedReps === 1 ? '' : 's'} as chosen (${(totalMonthlyVisits / (requestedReps * dayslotsPerRep)).toFixed(1)} visits a day). ${headcountChoice.reason}`;
+        headcountChoice.reps = requestedReps;
+        headcountChoice.visitsPerDay = Math.round((totalMonthlyVisits / (requestedReps * dayslotsPerRep)) * 10) / 10;
+      }
+      const requiredRepCount = headcountChoice.reps;
+      console.log(`[headcount] ${headcountChoice.reason}`);
 
       const projectedVisitsPerDay = totalMonthlyVisits / (requiredRepCount * dayslotsPerRep);
       console.log(`Headcount from demand: ${totalMonthlyVisits} monthly visits, ${dayslotsPerRep} day-slots/rep -> ${requiredRepCount} reps (~${projectedVisitsPerDay.toFixed(1)} visits/day each; feasible band ${fewestReps}-${mostReps})`);
@@ -5710,7 +5857,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // 43km wide crossed over each other. Bisection cuts the market with
       // straight lines instead, so territories tile it without overlapping,
       // and the balance comes from where each cut falls.
-      const monthlyVisitsOf = (o: Outlet) => o.visitFrequency ?? 1;
+      const monthlyVisitsOf = (o: Outlet) => (o.visitFrequency ?? 1) * wOf(o);
       // The territory band follows from the day band and the cycle, exactly as
       // the day band does: a rep's visits per cycle divided by their day-routes
       // must land inside min..max a day. With 25-30 a day over 26 days and 5
@@ -5750,7 +5897,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           polishByCohesion(
             swapForCompactness(
               repairLoads(
-                (await solveBalancedGroups(outlets, allReps.length, monthlyVisitsOf, territoryBand))
+                (await solveBalancedGroups(outlets, allReps.length, balanceBy === 'time' ? (o => 10 * monthlyVisitsOf(o)) : monthlyVisitsOf, territoryBand))
                   ?? growBalancedRegions(outlets, allReps.length, monthlyVisitsOf),
                 monthlyVisitsOf,
                 territoryBand,
@@ -5766,6 +5913,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
         monthlyVisitsOf,
         territoryBand,
       );
+      // Territories cut by straight lines cannot overlap: each rep gets one
+      // convex patch of the market, and no rep drives through another's
+      // streets. On Baghdad that cut is also 1.6% shorter to drive than the
+      // polished one, on Lebanon 0.3% longer. Kept when its rough driving
+      // (a nearest-neighbour tour per territory) is within 3% of the
+      // polished territories', so a market whose shape needs curved borders
+      // keeps them.
+      if (allReps.length > 1) {
+        const t0 = Date.now();
+        const byLine = lineSplit(outlets, allReps.length, monthlyVisitsOf, territoryBand);
+        if (byLine) {
+          const lineKm = byLine.reduce((s, g) => s + roughTour(g), 0);
+          const polishedKm = repOutletGroups.reduce((s, g) => s + roughTour(g), 0);
+          const keep = lineKm <= polishedKm * 1.03;
+          console.log(`[territory] straight-cut territories ${keep ? 'kept' : 'not kept'}: ${lineKm.toFixed(0)} km vs ${polishedKm.toFixed(0)} km polished (${Date.now() - t0} ms)`);
+          if (keep) for (let i = 0; i < repOutletGroups.length; i++) repOutletGroups[i] = byLine[i];
+        }
+      }
       // Pockets inside a neighbour's area go to that neighbour, paid for with
       // adjoining outlets, before any day is cut. See exchangePockets. This is
       // a question of geography, so it is judged on straight-line distances
@@ -5855,7 +6020,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           if (cells.length === 0 || outlets === 0) return { short: 0, excess: 0, room: 0 };
           let over = 0, under = 0, spare = 0, visits = 0;
           for (const sc of cells) {
-            const n = (sc.outletIds as string[]).length;
+            const n = balanceBy === 'time'
+              ? (sc.outletIds as string[]).reduce((s, id) => s + (workloadWeight.get(id) ?? 1), 0)
+              : (sc.outletIds as string[]).length;
             visits += n;
             if (n > dayCeiling) over += n - dayCeiling;
             else spare += dayCeiling - n;
@@ -6063,6 +6230,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         planEnd: planEndDate,
         cycleStartSlot,
         barriers,
+        // The market this plan was made for, so a file from another country
+        // is not planned on this one's working week by the next blueprint.
+        country: typeof req.body.country === 'string'
+          ? req.body.country
+          : guessWorkingWeek(median(outlets.map(o => o.latitude)), median(outlets.map(o => o.longitude))).country,
+        balanceBy,
+        workloadMean,
       });
 
       let capturedScenarioId: string | null = null;
@@ -6118,6 +6292,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         distanceMode,
         roadDistances: distanceMode === 'road' ? (osrmConfigured() ? (roadMatrixSize() > 0 ? 'osrm' : 'estimate (OSRM gave nothing)') : 'estimate (no OSRM_URL)') : 'straight-line',
         roadPairs: roadMatrixSize(),
+        headcount: { reps: requiredRepCount, reason: headcountChoice.reason, options: headcountChoice.options },
+        scorecard: await currentScorecard().catch(err => { console.error('[scorecard]', err); return null; }),
         calculation: {
           totalOutlets: outlets.length,
           totalWeeklyVisits,
@@ -6126,7 +6302,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           maxVisitsPerDay,
           estimatedReps: finalRequiredReps
         },
-        message: `Optimization completed. ${finalRequiredReps} routes created for ${totalWeeklyVisits} weekly visits (${minVisitsPerDay}-${maxVisitsPerDay} visits/day). ${outlets.length} outlets assigned.${excludedOutletIds.length > 0 ? ` ${excludedOutletIds.length} outlets excluded per user selection.` : ''}${totalRoleSchedules > 0 ? ` ${totalRoleSchedules} role schedules generated.` : ''}`
+        message: `Plan ready: ${finalRequiredReps} rep${finalRequiredReps === 1 ? '' : 's'}, ${(await storage.getSchedules()).length} day routes, ${outlets.length.toLocaleString('en-US')} outlets and ${totalWeeklyVisits.toLocaleString('en-US')} visits a month (${minVisitsPerDay}-${maxVisitsPerDay} a day).${excludedOutletIds.length > 0 ? ` ${excludedOutletIds.length} outlets excluded per user selection.` : ''}${totalRoleSchedules > 0 ? ` ${totalRoleSchedules} role schedules generated.` : ''}`
       });
 
     } catch (error) {
@@ -6134,7 +6310,62 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (progressId) progressManager.error(progressId, 'Optimization failed');
       res.status(500).json({ message: "Failed to run optimization" });
     }
+  };
+  app.post("/api/optimize", asJob('optimize', runOptimize));
+
+  // The blueprint for the outlets in storage: what to plan, before planning.
+  async function currentBlueprint(choice?: Parameters<typeof buildBlueprint>[0]["choice"]) {
+    const meta = await loadBlob(UPLOAD_META_KEY).then(t => (t ? JSON.parse(t) : null)).catch(() => null);
+    return buildBlueprint({
+      outlets: await storage.getOutlets(),
+      saved: planSettings,
+      upload: meta,
+      roadServer: osrmConfigured(),
+      choice,
+    });
+  }
+  // The planner's edits on the blueprint screen, from the query string, so
+  // the team-size options follow the band and week they are looking at.
+  const blueprintChoice = (q: Record<string, unknown>) => {
+    const num = (v: unknown) => { const n = parseFloat(String(v ?? '')); return isFinite(n) && n > 0 ? n : undefined; };
+    const days = typeof q.days === 'string' && q.days ? q.days.split(',').map(d => parseInt(d, 10)).filter(d => d >= 1 && d <= 7) : undefined;
+    return {
+      workingDays: days && days.length ? days : undefined,
+      minVisitsPerDay: num(q.min), maxVisitsPerDay: num(q.max), maxHopKm: num(q.hop),
+      balanceBy: q.balanceBy === 'time' || q.balanceBy === 'visits' ? q.balanceBy as 'time' | 'visits' : undefined,
+    };
+  };
+  app.get("/api/rtm/blueprint", async (req, res) => {
+    try {
+      if ((await storage.getOutlets()).length === 0) return res.status(404).json({ message: "Upload an outlet list first." });
+      res.json(await currentBlueprint(blueprintChoice(req.query as Record<string, unknown>)));
+    } catch (error) {
+      console.error("Blueprint error:", error);
+      res.status(500).json({ message: "Failed to analyse the outlets" });
+    }
+  });
+
+  // One click: plan the uploaded universe with the blueprint's setup, any
+  // field the caller sends in `overrides` replacing the blueprint's own.
+  app.post("/api/rtm/autopilot", asJob('optimize', async (req: Request, res: Response) => {
+    if ((await storage.getOutlets()).length === 0) return res.status(400).json({ message: "Upload an outlet list first." });
+    const bp = await currentBlueprint();
+    const overrides = (req.body && typeof req.body.overrides === 'object' && req.body.overrides) || {};
+    req.body = { ...bp.body, ...overrides, progressId: req.body?.progressId, autopilot: true };
+    console.log(`[autopilot] ${bp.market.active} outlets, ${bp.setup.weekLabel}, ${req.body.minVisitsPerDay}-${req.body.maxVisitsPerDay} visits/day, hop ${req.body.maxHopKm} km, ${req.body.distanceMode}`);
+    return runOptimize(req, res);
   }));
+
+  app.get("/api/plan/scorecard", async (_req, res) => {
+    try {
+      const sc = await currentScorecard();
+      if (!sc) return res.status(404).json({ message: "No plan yet." });
+      res.json(sc);
+    } catch (error) {
+      console.error("Scorecard error:", error);
+      res.status(500).json({ message: "Failed to score the plan" });
+    }
+  });
 
   // Optimization runs
   // --- Scenarios: compare plans before committing to one ---
@@ -6249,6 +6480,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
     saveScenarioIndex();
     return id;
+  }
+
+  // The RTM scorecard of the plan in storage, judged against the settings it
+  // was built with. Kept until the plan or its settings change: on a
+  // 7,800-outlet plan it takes a few seconds, and the dashboard asks often.
+  let scorecardCache: { key: string; value: ReturnType<typeof scorePlan> } | null = null;
+  async function currentScorecard() {
+    const schedules = await storage.getSchedules();
+    if (schedules.length === 0) return null;
+    const ps = planSettings;
+    const outletsNow = await storage.getOutlets();
+    let h = 0;
+    for (const sc of schedules) { const str = `${sc.id}:${sc.repId}:${sc.week}:${sc.dayOfWeek}:${((sc.routeOrder as string[]) || (sc.outletIds as string[]) || []).join(',')}`; for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0; }
+    for (const o of outletsNow) { const str = `${o.id}:${o.territory ?? ''}:${o.geoStatus ?? ''}`; for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0; }
+    const key = `${h}|${schedules.length}|${outletsNow.length}|${JSON.stringify(ps ?? {})}|${osrmConfigured()}`;
+    if (scorecardCache?.key === key) return scorecardCache.value;
+    const value = scorePlan({
+      outlets: outletsNow,
+      reps: await storage.getReps(),
+      schedules: schedules.map(s => ({ repId: s.repId, week: s.week, dayOfWeek: s.dayOfWeek, outletIds: (s.outletIds as string[]) || [], routeOrder: (s.routeOrder as string[]) || null, totalDistance: s.totalDistance })),
+      band: { min: ps?.minVisitsPerDay ?? dayVisitsMin, max: ps?.maxVisitsPerDay ?? dayVisitsMax },
+      maxHopKm: ps?.maxHopKm ?? 4,
+      roadKm: ps?.distanceMode === 'road' && osrmConfigured(),
+      callTimeIsReal: true,
+      balanceBy: ps?.balanceBy === 'time' ? 'time' : 'visits',
+    });
+    scorecardCache = { key, value };
+    return value;
   }
 
   // Solution-quality KPIs for the plan currently in storage. These are the

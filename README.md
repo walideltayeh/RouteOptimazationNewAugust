@@ -22,6 +22,71 @@ npm run dev            # serves app + API on http://localhost:5000
 | `OSRM_URL` | for road distances | An OSRM routing server, e.g. `https://router.project-osrm.org` (public demo: fine for trials, not for production) or a self-hosted one with the country's map extract. With it, the "Road distances" mode prices every pair of a rep's outlets by road: day cuts, hop limit, stop order, kilometres, and the playback follows real streets. |
 | `OSRM_MAX_TABLE` | optional | Coordinates per table request (default 100, the demo server's cap). Raise it on a self-hosted server started with `--max-table-size` to fetch a rep's matrix in one request. |
 
+## RTM Studio: the plan in two clicks
+
+The dashboard opens on **RTM Studio**.
+
+1. **Drop the outlet list.** The upload runs at once and the *blueprint*
+   appears: where the market is and how dense, the channels it holds and
+   their call times, the data checks to fix first (wrong-country GPS points,
+   missing frequencies, duplicates), and the recommended setup - working
+   week (from the country), visits a day (from a workload model: call time
+   plus travel time against an 8-hour shift), how days are balanced (by
+   visit count, or by working time when calls differ), and team-size options
+   with the visits and hours each gives. Anything can be changed; the team
+   options recompute as you type.
+2. **Build my RTM.** The whole engine runs as one background job and returns
+   a graded plan (A-D) with its KPIs - coverage, visits and km a day, workday
+   hours against the shift, route and territory overlap, rep balance, long
+   drives - plain-language checks, a per-rep table, and the **journey plan**
+   workbook (summary, every stop with date and map link, a sheet per rep, each
+   rep-day's load, the outlet master).
+
+The detailed, step-by-step controls are still on the dashboard under
+*Detailed planning controls*.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/rtm/blueprint` | The blueprint for the outlets loaded; `?days=6,7,1&min=25&max=30&balanceBy=time&hop=4` recomputes it with the planner's edits |
+| `POST /api/rtm/autopilot` | Plan with the blueprint's setup (background job); `{ overrides: {...} }` replaces any field, `reps` fixes the team size |
+| `GET /api/plan/scorecard` | Grade, KPIs, checks and per-rep figures of the plan loaded |
+| `GET /api/export/pjp` | The journey-plan workbook |
+
+## How the engine plans
+
+Each stage keeps the best of several methods, judged by driving distance
+inside the visits band; nothing is kept that breaks the band to save a
+kilometre.
+
+- **Data.** Geographic outliers by the real gap between outlets, with towns
+  allowed to connect to the market through each other. Channels recognised
+  in English and Arabic; call time from the file, else by channel.
+- **Team size.** Workload model (calls x call time + travel between calls,
+  from local outlet density) against the shift; when no whole number of reps
+  fits the band, the nearest one, with an overload weighed more than a light day.
+- **Balancing.** By visit count, or by working time: each outlet weighs its
+  call minutes plus the driving to reach it, scaled so the average outlet is
+  one visit.
+- **Territories.** Capacitated assignment solved exactly as a min-cost flow
+  (OR-Tools) inside Lloyd iterations with restarts, then compactness swaps,
+  cohesion and tour-length polishing and load repair; against it, a
+  recursive straight-line partition (36 directions a level, ranked by a
+  Beardwood-Halton-Hammersley tour estimate) whose territories cannot
+  overlap. Then pocket exchange between reps and a feedback pass from the
+  day cuts.
+- **Days.** Pieces reachable within the hop limit get their fair share of
+  days; each piece is cut by the flow solver (Hilbert curve as fallback),
+  village-aware where villages dominate, improved by swaps, recuts and a
+  periodic-VRP local search (segment relocation and CROSS exchange priced by
+  re-toured days), and compared with a straight-line cut. Days are then
+  sequenced so consecutive working days are neighbours (exact up to eight
+  days, nearest neighbour plus 2-opt beyond).
+- **Weeks.** A day's outlets are shared between alternating weeks by a
+  straight cut wherever that keeps both weeks in band and drives no more
+  than 4% further, so the two routes never cross.
+- **Route order.** Nearest neighbour, 2-opt, Or-opt and 3-opt; on real road
+  distances from OSRM when `OSRM_URL` is set.
+
 ## Workflow
 
 1. **Upload** a CSV/XLSX with `Outlet Name, Latitude, Longitude` (optional:
