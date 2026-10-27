@@ -208,3 +208,70 @@ describe("upload of a planner's workbook", () => {
     expect(r.data.report.geoOutlierDetails[0].name).toBe("Tripoli in Libya");
   });
 });
+
+describe("RTM Studio: upload, blueprint, one-click build, scorecard, journey plan", () => {
+  it("plans a channel-tagged universe in one click and exports the journey plan", async () => {
+    // 150 outlets in three neighbourhoods; a supermarket in every five.
+    const lines = ["Outlet Code,Outlet Name,Channel,Latitude,Longitude,VF"];
+    let seed = 11; const rnd = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
+    for (let i = 0; i < 150; i++) {
+      const c = i % 3;
+      lines.push(`R${i},Shop ${i},${i % 5 === 0 ? "Super Market" : "Grocery"},${(33.50 + c * 0.03 + (rnd() - 0.5) * 0.012).toFixed(6)},${(36.28 + c * 0.03 + (rnd() - 0.5) * 0.012).toFixed(6)},2`);
+    }
+    const form = new FormData();
+    form.append("file", new Blob([lines.join("\n")], { type: "text/csv" }), "universe.csv");
+    const up = await call("planner", "POST", "/api/upload", undefined, form);
+    expect(up.status).toBe(200);
+    expect(up.data.report.callTimeSources).toEqual({ file: 0, channel: 150, assumed: 0 });
+    expect(up.data.blueprint.headcount.reps).toBeGreaterThanOrEqual(1);
+
+    const bp = (await call("viewer", "GET", "/api/rtm/blueprint")).data;
+    expect(bp.market.country).toBe("Syria");
+    expect(bp.setup.weekLabel).toBe("Sat-Thu");
+    expect(bp.channels.map((c: any) => c.key).sort()).toEqual(["grocery", "supermarket"]);
+    expect(bp.setup.balanceBy).toBe("time"); // 30-minute supermarkets next to 12-minute groceries
+    expect(bp.checks.find((c: any) => c.id === "calltime").status).toBe("pass");
+
+    // The planner's edits recompute the blueprint: a 5-day week and 8-14 visits.
+    const edited = (await call("viewer", "GET", "/api/rtm/blueprint?days=6,7,1,2,3&min=8&max=14")).data;
+    expect(edited.setup.weekSource).toBe("your choice");
+    expect(edited.setup.workingDays).toEqual([6, 7, 1, 2, 3]);
+    expect(edited.setup.cycleWorkingDays).toBe(20);
+    expect([edited.setup.minVisitsPerDay, edited.setup.maxVisitsPerDay]).toEqual([8, 14]);
+    expect(edited.setup.bandSource).toBe("your choice");
+    // 300 visits a month on 20 days at 8-14 a day: one or two reps.
+    expect(edited.headcount.reps).toBeGreaterThanOrEqual(1);
+    expect(edited.headcount.reps).toBeLessThanOrEqual(2);
+
+    // A viewer cannot build; a planner can, with one override.
+    expect((await call("viewer", "POST", "/api/rtm/autopilot", { overrides: {} })).status).toBe(403);
+    const started = await call("planner", "POST", "/api/rtm/autopilot", { overrides: { minVisitsPerDay: 8, maxVisitsPerDay: 14 } });
+    expect(started.status).toBe(202);
+    let job: any;
+    for (let i = 0; i < 600; i++) {
+      job = (await call("planner", "GET", `/api/jobs/${started.data.jobId}`)).data;
+      if (job.status === "done" || job.status === "failed") break;
+      await new Promise(r => setTimeout(r, 100));
+    }
+    expect(job.status).toBe("done");
+    expect(job.result.scorecard.grade).toMatch(/[ABCD]/);
+    expect(job.result.headcount.reps).toBeGreaterThanOrEqual(1);
+
+    const sc = (await call("viewer", "GET", "/api/plan/scorecard")).data;
+    expect(sc.kpis.planned).toBe(150);
+    expect(sc.kpis.coveragePct).toBe(100);
+    expect(sc.kpis.balanceBy).toBe("time");
+    expect(sc.perRep.length).toBe(sc.kpis.reps);
+
+    const pjp = await call("viewer", "GET", "/api/export/pjp");
+    expect(pjp.status).toBe(200);
+    const XLSX = await import("xlsx");
+    const wb = XLSX.read(new Uint8Array(pjp.data as ArrayBuffer), { type: "array" });
+    expect(wb.SheetNames.slice(0, 3)).toEqual(["Summary", "Journey Plan", "Rep Days"]);
+    expect(wb.SheetNames).toContain("Outlet Master");
+    const stops = XLSX.utils.sheet_to_json<any>(wb.Sheets["Journey Plan"]);
+    // Every planned visit in the cycle is a row: 150 outlets twice a month.
+    expect(stops.length).toBe(300);
+    expect(stops[0]["Date"]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+});

@@ -64,6 +64,17 @@ describe("lineSplit", () => {
     expect(intrusions(parts)).toBe(0);
   });
 
+  it("does not cut where whole outlets can no longer fill the parts below", () => {
+    // 21 outlets in one village and 19 in another, every outlet worth 2 visits,
+    // four parts of 19-21 visits. The natural gap leaves 42 visits on one side,
+    // which two parts of whole 2-visit outlets cannot split into 19-21 each.
+    const a = Array.from({ length: 21 }, (_, i) => outlet(`a${i}`, 33.50 + (i % 5) * 0.001, 36.30 + Math.floor(i / 5) * 0.001));
+    const b = Array.from({ length: 19 }, (_, i) => outlet(`b${i}`, 33.60 + (i % 5) * 0.001, 36.30 + Math.floor(i / 5) * 0.001));
+    const parts = lineSplit([...a, ...b], 4, () => 2, 0.05)!;
+    expect(parts).not.toBeNull();
+    for (const p of parts) expect(p.length * 2).toBe(20);
+  });
+
   it("gives up when no cut can respect the band", () => {
     const lumpy = [outlet("big", 33.5, 36.3), ...Array.from({ length: 4 }, (_, i) => outlet(`s${i}`, 33.5 + i * 0.001, 36.31))];
     expect(lineSplit(lumpy, 2, o => (o.id === "big" ? 10 : 1), 0.05)).toBeNull();
