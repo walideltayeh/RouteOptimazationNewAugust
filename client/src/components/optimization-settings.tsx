@@ -577,7 +577,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
                         })}
                         className={cn(
                           "rounded-full border px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50",
-                          off ? "border-transparent bg-foreground text-white dark:bg-muted dark:text-foreground"
+                          off ? "border-transparent bg-foreground text-background"
                               : "border-input text-muted-foreground hover:bg-muted dark:border-gray-600 dark:hover:bg-foreground/90",
                         )}>
                         {label}

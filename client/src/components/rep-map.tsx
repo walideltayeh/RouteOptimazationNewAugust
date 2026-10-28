@@ -20,6 +20,7 @@ import { Check, ChevronsUpDown, Zap, Save, Download, GripVertical, Edit2, Trash2
 import { useRoutePlayback, RoutePlaybackPanel } from "@/components/route-playback";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
+import { useTheme } from "@/lib/theme";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
@@ -91,7 +92,14 @@ function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): nu
   return 2 * R * Math.asin(Math.sqrt(a));
 }
 
+// Mapbox cannot swap a base style under layers already drawn, so a theme
+// switch remounts the map on the matching base map.
 export function RepMap() {
+  const theme = useTheme();
+  return <RepMapView key={theme} />;
+}
+
+function RepMapView() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
   const [selectedReps, setSelectedReps] = useState<string[]>([]);
@@ -947,7 +955,7 @@ export function RepMap() {
     try {
       const mapInstance = new mapboxgl.Map({
         container: mapContainer.current,
-        style: 'mapbox://styles/mapbox/light-v11',
+        style: document.documentElement.classList.contains('dark') ? 'mapbox://styles/mapbox/dark-v11' : 'mapbox://styles/mapbox/light-v11',
         // No home city: the render effect fits the map to whatever data is
         // loaded. Until then, the world.
         center: [20, 20],

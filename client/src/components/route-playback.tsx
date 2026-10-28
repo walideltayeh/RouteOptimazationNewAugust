@@ -118,7 +118,7 @@ export function RoutePlaybackPanel({ state, onPlay, onPause, onRestart, onStop, 
         <Button size="sm" variant="outline" className="h-7 px-2" onClick={onRestart} title="Restart"><RotateCcw className="h-3.5 w-3.5" /></Button>
         <div className="ml-auto flex items-center gap-1">
           {[1, 2, 4].map(s => (
-            <button key={s} type="button" onClick={() => onSpeed(s)} className={`rounded-full px-2 py-0.5 text-xs ${state.speed === s ? "bg-foreground text-white" : "bg-muted text-foreground hover:bg-accent"}`} data-testid={`button-speed-${s}`}>{s}x</button>
+            <button key={s} type="button" onClick={() => onSpeed(s)} className={`rounded-full px-2 py-0.5 text-xs ${state.speed === s ? "bg-foreground text-background" : "bg-muted text-foreground hover:bg-accent"}`} data-testid={`button-speed-${s}`}>{s}x</button>
           ))}
         </div>
       </div>

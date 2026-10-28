@@ -244,7 +244,7 @@ export default function RtmStudio({ canEdit }: { canEdit: boolean }) {
     <section className="overflow-hidden rounded-2xl border bg-card shadow-apple" data-testid="rtm-studio">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b bg-gradient-to-r from-primary/[0.04] via-transparent to-transparent px-5 py-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-[#8f1220] shadow-[0_6px_16px_-6px_rgba(200,30,45,0.6)]"><Sparkles className="h-5 w-5 text-white" /></div>
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-[hsl(var(--brand-from))] to-[hsl(var(--brand-to))] shadow-[0_6px_16px_-6px_hsl(var(--primary)/0.6)]"><Sparkles className="h-5 w-5 text-white" /></div>
           <div>
             <h2 className="text-[17px] font-semibold tracking-tight text-foreground">RTM Studio</h2>
             <p className="text-sm text-muted-foreground">Your route-to-market plan in two clicks: drop the outlet list, then build.</p>

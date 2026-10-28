@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { ArrowRight, Map, Route, FileSpreadsheet } from 'lucide-react';
 import BrandMark from '@/components/brand-mark';
+import ThemeToggle from '@/components/theme-toggle';
 import { motion, AnimatePresence } from 'framer-motion';
 
 interface LandingPageProps {
@@ -40,8 +41,9 @@ const enum Phase {
 
 const PHASE_DURATIONS = [2.5, 3.0, 2.5, 5.0, 2.0];
 
-// Brand red, ink and slate: territories read apart without leaving the brand.
-const CLUSTER_COLORS = [
+// Brand colour with ink and slate on light; magenta with silver on black.
+// Territories read apart without leaving the brand.
+const LIGHT_COLORS = [
   [200, 30, 45],
   [15, 23, 42],
   [71, 85, 105],
@@ -49,6 +51,17 @@ const CLUSTER_COLORS = [
   [148, 27, 42],
   [100, 116, 139],
 ];
+const DARK_COLORS = [
+  [232, 6, 200],
+  [236, 236, 240],
+  [150, 150, 158],
+  [244, 114, 222],
+  [170, 20, 150],
+  [200, 200, 208],
+];
+const isDark = () => document.documentElement.classList.contains('dark');
+// Picked once a frame, so a theme switch shows on the next frame.
+let CLUSTER_COLORS = LIGHT_COLORS;
 
 function easeInOutCubic(t: number) {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
@@ -206,6 +219,7 @@ function OptimizationCanvas() {
     let lastTime = performance.now();
 
     const loop = (now: number) => {
+      CLUSTER_COLORS = isDark() ? DARK_COLORS : LIGHT_COLORS;
       const dt = Math.min((now - lastTime) / 1000, 0.05);
       lastTime = now;
 
@@ -475,7 +489,8 @@ function OptimizationCanvas() {
       // The phase in the bottom-left corner, clear of the hero; phones skip it.
       if (w >= 640) {
         ctx.font = '500 11px "Inter Variable", Inter, system-ui, sans-serif';
-        ctx.fillStyle = `rgba(15, 23, 42, ${labelAlpha * 0.45})`;
+        const ink = isDark() ? '255, 255, 255' : '15, 23, 42';
+        ctx.fillStyle = `rgba(${ink}, ${labelAlpha * 0.45})`;
         ctx.textAlign = 'left';
         const labelX = 40, labelY = h - 34;
         ctx.fillText(label, labelX, labelY);
@@ -484,10 +499,10 @@ function OptimizationCanvas() {
         const barW = 96;
         const barH = 2;
         const barY = labelY + 8;
-        ctx.fillStyle = `rgba(15, 23, 42, 0.08)`;
+        ctx.fillStyle = `rgba(${ink}, 0.1)`;
         ctx.fillRect(labelX, barY, barW, barH);
         const filled = (s.phase + phaseT) / totalPhases;
-        ctx.fillStyle = `rgba(200, 30, 45, 0.55)`;
+        ctx.fillStyle = isDark() ? `rgba(232, 6, 200, 0.7)` : `rgba(200, 30, 45, 0.55)`;
         ctx.fillRect(labelX, barY, barW * filled, barH);
       }
 
@@ -572,7 +587,7 @@ export default function LandingPage({ onAdminLogin }: LandingPageProps) {
         className="pointer-events-none absolute inset-0"
         style={{
           background:
-            'radial-gradient(ellipse 52% 48% at 50% 50%, rgba(245,247,250,0.94), rgba(245,247,250,0.7) 60%, rgba(245,247,250,0.1))',
+            'radial-gradient(ellipse 52% 48% at 50% 50%, hsl(var(--background) / 0.94), hsl(var(--background) / 0.7) 60%, hsl(var(--background) / 0.1))',
         }}
       />
 
@@ -581,9 +596,12 @@ export default function LandingPage({ onAdminLogin }: LandingPageProps) {
           <BrandMark className="h-8 w-8" />
           <span className="text-[15px] font-semibold tracking-tight text-foreground">RouteOptima</span>
         </div>
-        <Button variant="outline" size="sm" onClick={onAdminLogin} data-testid="button-header-sign-in">
-          Sign in
-        </Button>
+        <div className="flex items-center gap-1.5">
+          <ThemeToggle />
+          <Button variant="outline" size="sm" onClick={onAdminLogin} data-testid="button-header-sign-in">
+            Sign in
+          </Button>
+        </div>
       </header>
 
       <div className="relative z-10 flex flex-1 flex-col items-center justify-center px-6 pb-10">
@@ -606,7 +624,7 @@ export default function LandingPage({ onAdminLogin }: LandingPageProps) {
                 transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
                 className="mb-6 flex justify-center"
               >
-                <BrandMark className="h-16 w-16 drop-shadow-[0_12px_24px_rgba(200,30,45,0.35)]" />
+                <BrandMark className="h-16 w-16 drop-shadow-[0_12px_24px_hsl(var(--primary)/0.4)]" />
               </motion.div>
 
               <AnimatedTitle
@@ -643,7 +661,7 @@ export default function LandingPage({ onAdminLogin }: LandingPageProps) {
                   onClick={onAdminLogin}
                   variant="brand"
                   size="lg"
-                  className="group h-12 min-w-[240px] px-7 text-[15px] shadow-[0_10px_30px_-8px_rgba(200,30,45,0.55)]"
+                  className="group h-12 min-w-[240px] px-7 text-[15px] shadow-[0_10px_30px_-8px_hsl(var(--primary)/0.6)]"
                   data-testid="button-sign-in"
                 >
                   Sign in to your workspace

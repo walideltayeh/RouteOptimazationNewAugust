@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Menu, PanelLeftClose, PanelLeftOpen, Store, Users, CalendarRange, Gauge } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import JobStatus from "@/components/job-status";
+import ThemeToggle from "@/components/theme-toggle";
 import type { Rep } from "@shared/schema";
 
 const TITLES: Record<string, { title: string; blurb: string }> = {
@@ -60,6 +61,7 @@ export default function AppHeader({ collapsed, onToggleCollapsed, onOpenMobile }
           {plan?.configured && <Chip icon={Gauge} title="Visits per day">{plan.minVisitsPerDay}–{plan.maxVisitsPerDay}/day</Chip>}
         </div>
         <JobStatus />
+        <ThemeToggle />
       </div>
     </header>
   );
