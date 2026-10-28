@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { MapPin, Users, Navigation, Trash2, RefreshCw, Download, X, LassoSelect, Layers } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useTheme } from '@/lib/theme';
+import SaveUniverseButton from '@/components/save-universe-button';
 import { apiRequest } from '@/lib/queryClient';
 import { runJob } from '@/lib/jobs';
 import type { Outlet, Rep } from '@shared/schema';
@@ -123,6 +124,7 @@ function TerritoryMapView({ className }: TerritoryMapProps) {
       setSelectedIds(new Set());
       setShowLassoDeleteConfirm(false);
       queryClient.invalidateQueries({ queryKey: ['/api/outlets'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/health'] });
       queryClient.invalidateQueries({ queryKey: ['/api/schedules'] });
       queryClient.invalidateQueries({ queryKey: ['/api/outlets/duplicates'] });
       toast({ title: `${r.deleted} outlet${r.deleted === 1 ? '' : 's'} deleted`, description: `${r.before.toLocaleString()} before, ${r.after.toLocaleString()} now.` });
@@ -225,7 +227,8 @@ function TerritoryMapView({ className }: TerritoryMapProps) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/outlets'] });
       queryClient.invalidateQueries({ queryKey: ['/api/schedules'] });
-      toast({ title: "Success", description: "Outlet deleted successfully" });
+      queryClient.invalidateQueries({ queryKey: ['/api/health'] });
+      toast({ title: "Outlet deleted", description: "Save the edited universe to keep a copy of the list as it is now." });
       setSelectedOutlet(null);
       setShowDeleteConfirm(false);
       setNeedsReoptimization(true);
@@ -826,6 +829,7 @@ function TerritoryMapView({ className }: TerritoryMapProps) {
                 <Download className="h-4 w-4" />
                 {isExporting ? 'Exporting…' : 'Export to Excel'}
               </Button>
+              <SaveUniverseButton />
             </div>
           </div>
         </CardHeader>
@@ -917,6 +921,7 @@ function TerritoryMapView({ className }: TerritoryMapProps) {
             <Button size="sm" variant="outline" disabled={isOptimizing} onClick={() => { setIsOptimizing(true); reoptimizeMutation.mutate(); }} data-testid="button-reoptimize-after-move">
               {isOptimizing ? 'Rebuilding…' : "Rebuild every rep's routes"}
             </Button>
+            <SaveUniverseButton showName variant="brand" className="h-9" />
             <Button size="sm" variant="ghost" onClick={() => setReworkSummary(null)}>Dismiss</Button>
           </div>
         </div>
@@ -936,6 +941,7 @@ function TerritoryMapView({ className }: TerritoryMapProps) {
                 {planSettings.minVisitsPerDay}-{planSettings.maxVisitsPerDay} visits/day · {planSettings.workingDayNames?.[0]}-{planSettings.workingDayNames?.[planSettings.workingDayNames.length - 1]}{planSettings.planStart ? ` · ${planSettings.planStart} to ${planSettings.planEnd}` : ''}
               </span>
             )}
+            <SaveUniverseButton showName variant="brand" className="h-9" />
             <Button size="sm" variant="ghost" onClick={() => setDeleteSummary(null)}>Dismiss</Button>
           </div>
         </div>

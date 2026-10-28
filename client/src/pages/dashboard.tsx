@@ -9,6 +9,8 @@ import MLInsights from "@/components/ml-insights";
 import TerritoryMap from "@/components/territory-map";
 import TerritoryCustomization from "@/components/territory-customization";
 import RtmStudio from "@/components/rtm-studio";
+import SaveUniverseButton from "@/components/save-universe-button";
+import { useUniverse } from "@/hooks/use-universe";
 import StepBadge from "@/components/step-badge";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -17,7 +19,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { ArrowUp, Store, Users, CalendarCheck, TrendingUp, Download, Plus, Brain, Trash2, Map, Edit3, ChevronDown, ChevronRight, UserCog, ArrowDown, Save, RotateCcw, GitCompare, SlidersHorizontal } from "lucide-react";
+import { Users, Download, Plus, Brain, Trash2, Map, Edit3, ChevronDown, ChevronRight, ArrowDown, Save, RotateCcw, GitCompare, SlidersHorizontal, FileSpreadsheet, Upload, X } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
@@ -77,6 +79,9 @@ export default function Dashboard() {
     try { localStorage.setItem("dashboard.showDetails", v ? "1" : "0"); } catch { /* private window */ }
   };
   const [selectedRepIds, setSelectedRepIds] = useState<string[]>([]);
+  // The uploader in the detailed controls is shown on demand once a file is in.
+  const [showUploader, setShowUploader] = useState(false);
+  const { data: universe } = useUniverse();
 
   const { data: metrics, isLoading } = useQuery<DashboardMetrics>({
     queryKey: ["/api/dashboard/metrics"],
@@ -223,7 +228,7 @@ export default function Dashboard() {
       return;
     }
     setCurrentStep(1);
-    document.getElementById("upload-step")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    document.querySelector('[data-testid="rtm-studio"]')?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
   // Re-running on the same data belongs on the Scenarios page: it keeps the
@@ -334,122 +339,48 @@ export default function Dashboard() {
         </button>
 
         {showDetails && (<>
-        {/* Key Metrics Cards - Only show after optimization */}
-        {hasOptimization && (
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
-          <Card>
-            <CardContent className="p-5">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-[13px] font-medium text-muted-foreground">Total Outlets</p>
-                  <p className="mt-2 text-[28px] font-semibold leading-none tracking-tight tabular-nums text-foreground">
-                    {metrics?.totalOutlets.toLocaleString() || 0}
-                  </p>
-                  <p className="mt-2.5 text-xs text-muted-foreground">
-                    Across <span className="font-semibold">{metrics?.activeReps || 0}</span> territories
-                  </p>
-                </div>
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
-                  <Store className="h-5 w-5 text-primary" />
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent className="p-5">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-[13px] font-medium text-muted-foreground">Active Reps</p>
-                  <p className="mt-2 text-[28px] font-semibold leading-none tracking-tight tabular-nums text-foreground">
-                    {metrics?.activeReps || 0}
-                  </p>
-                  <p className="mt-2.5 text-xs text-muted-foreground">
-                    Recommended: <span className="font-semibold">{metrics?.recommendedReps || 0}</span>
-                  </p>
-                </div>
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-info/10">
-                  <Users className="h-5 w-5 text-info" />
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent className="p-5">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-[13px] font-medium text-muted-foreground">Avg Daily Visits</p>
-                  <p className="mt-2 text-[28px] font-semibold leading-none tracking-tight tabular-nums text-foreground">
-                    {metrics?.avgDailyVisits || 0}
-                  </p>
-                  <p className="mt-2.5 text-xs text-muted-foreground">
-                    Target: <span className="font-semibold">{metrics?.minDailyVisits || 0}-{metrics?.maxDailyVisits || 0}</span> per rep
-                  </p>
-                </div>
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-warning/10">
-                  <CalendarCheck className="h-5 w-5 text-warning" />
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent className="p-5">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-[13px] font-medium text-muted-foreground">Territory Balance</p>
-                  <p className="mt-2 text-[28px] font-semibold leading-none tracking-tight tabular-nums text-foreground">
-                    {metrics?.territoryBalance ?? 0}%
-                  </p>
-                  <p className="mt-2.5 text-xs text-muted-foreground">
-                    Workload evenness across reps
-                  </p>
-                </div>
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-success/10">
-                  <TrendingUp className="h-5 w-5 text-success" />
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-          </div>
-        )}
-
         {/* Step-by-step process */}
         <div className="space-y-6">
-          {/* Step 1: File Upload */}
+          {/* The file being planned. Everything below re-plans it; uploading
+              again is only for a different list. */}
           <div id="upload-step">
-            <FileUpload key={resetNonce} />
-          </div>
-
-          {/* File Analysis Summary (shown after upload) */}
-          {hasOutlets && (
-            <div className="animate-in fade-in slide-in-from-bottom-3 duration-500">
-              <Card>
-                <CardHeader>
-                  <CardTitle>File analysis</CardTitle>
-                  <CardDescription>What the uploaded list holds, by visit frequency.</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                    {[
-                      { label: "Total outlets", value: outlets.length, dot: "bg-foreground" },
-                      { label: "VF1 · monthly", value: outlets.filter(o => o.visitFrequency === 1).length, dot: "bg-success" },
-                      { label: "VF2 · every two weeks", value: outlets.filter(o => o.visitFrequency === 2).length, dot: "bg-warning" },
-                      { label: "VF4 · weekly", value: outlets.filter(o => o.visitFrequency === 4).length, dot: "bg-primary" },
-                    ].map(t => (
-                      <div key={t.label} className="rounded-xl border bg-muted/40 px-4 py-3.5">
-                        <p className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
-                          <span className={`h-2 w-2 rounded-full ${t.dot}`} />{t.label}
-                        </p>
-                        <p className="mt-1.5 text-2xl font-semibold tracking-tight tabular-nums text-foreground">{t.value.toLocaleString()}</p>
-                      </div>
-                    ))}
+            {hasOutlets && !showUploader ? (
+              <div className="flex flex-wrap items-center gap-3 rounded-2xl border bg-card px-5 py-3.5 shadow-apple" data-testid="working-file">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"><FileSpreadsheet className="h-4 w-4" /></span>
+                <div className="min-w-0 flex-1">
+                  <p className="eyebrow">Working file</p>
+                  <p className="truncate text-sm font-medium text-foreground" data-testid="text-working-file">
+                    {universe?.fileName ?? "Uploaded outlet list"}
+                    <span className="font-normal text-muted-foreground">
+                      {` · ${outlets.length.toLocaleString()} outlets`}
+                      {universe?.editsSinceSave ? ` · ${universe.editsSinceSave.toLocaleString()} unsaved edit${universe.editsSinceSave === 1 ? "" : "s"}` : ""}
+                    </span>
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    The settings below re-plan this file; nothing needs uploading again.
+                    {universe?.lastSaved ? ` Last saved as ${universe.lastSaved.fileName}.` : ""}
+                  </p>
+                </div>
+                <SaveUniverseButton />
+                {authStatus?.canEdit && (
+                  <Button size="sm" variant="ghost" className="h-9" onClick={() => setShowUploader(true)} data-testid="button-show-uploader">
+                    <Upload className="h-4 w-4" /> Upload a different file
+                  </Button>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {hasOutlets && (
+                  <div className="flex justify-end">
+                    <Button size="sm" variant="ghost" onClick={() => setShowUploader(false)} data-testid="button-hide-uploader">
+                      <X className="h-4 w-4" /> Close the uploader
+                    </Button>
                   </div>
-                </CardContent>
-              </Card>
-            </div>
-          )}
+                )}
+                <FileUpload key={resetNonce} />
+              </div>
+            )}
+          </div>
 
           {/* Step 2: Initial Optimization */}
           <div id="optimization-settings" className={`transition-all ${!hasOutlets ? 'opacity-50 pointer-events-none' : 'animate-in fade-in slide-in-from-bottom-3 duration-500'}`}>
@@ -483,7 +414,7 @@ export default function Dashboard() {
                 <CardHeader>
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
-                      <StepBadge n={3} />
+                      <StepBadge n={2} />
                       <div>
                         <CardTitle>Configure the role hierarchy</CardTitle>
                         <CardDescription>
@@ -759,7 +690,7 @@ export default function Dashboard() {
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-500">
               <Card>
                 <CardHeader>
-                  <CardTitle className="flex items-center"><StepBadge n={4} />Results: maps, territories and schedules</CardTitle>
+                  <CardTitle className="flex items-center"><StepBadge n={3} />Results: maps, territories and schedules</CardTitle>
                 </CardHeader>
                 <CardContent className="p-4">
                   {/* Main Dashboard Tabs */}

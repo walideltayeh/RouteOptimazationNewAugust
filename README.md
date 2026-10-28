@@ -43,7 +43,15 @@ The dashboard opens on **RTM Studio**.
    rep-day's load, the outlet master).
 
 The detailed, step-by-step controls are still on the dashboard under
-*Detailed planning controls*.
+*Detailed planning controls*: plan settings on the file already loaded (no
+second upload), duplicate and outlier exclusions, the role hierarchy, and
+the results tabs.
+
+**Edited universe.** After deleting or moving outlets with the lasso on the
+Territory Map, *Save edited universe* downloads the list as it stands now as
+`<file> Universe Edited v.N.xlsx`, with each outlet's rep and status. The
+button counts the edits not yet saved; the version goes up with each save,
+and uploading an edited file carries on from its version.
 
 | Endpoint | Purpose |
 |---|---|
@@ -51,6 +59,8 @@ The detailed, step-by-step controls are still on the dashboard under
 | `POST /api/rtm/autopilot` | Plan with the blueprint's setup (background job); `{ overrides: {...} }` replaces any field, `reps` fixes the team size |
 | `GET /api/plan/scorecard` | Grade, KPIs, checks and per-rep figures of the plan loaded |
 | `GET /api/export/pjp` | The journey-plan workbook |
+| `GET /api/universe` | The working file, edits since the last save, and the next "Universe Edited" file name |
+| `POST /api/universe/save` | Save the edited universe as `<file> Universe Edited v.N.xlsx` (planners and admins) |
 
 ## How the engine plans
 
