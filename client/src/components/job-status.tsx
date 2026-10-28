@@ -53,12 +53,12 @@ export default function JobStatus() {
   const pct = Math.max(0, Math.min(100, Math.round(active.progress?.percent ?? 0)));
   const label = active.kind === "optimize" ? "Optimizing" : "Rebuilding routes";
   return (
-    <div className="flex items-center gap-2 rounded-full border border-[#e5e5e5] bg-white px-3 py-1 text-xs text-[#1d1d1f] shadow-sm dark:border-[#38383a] dark:bg-[#2c2c2e] dark:text-white" data-testid="job-status" title={active.progress?.detail || ""}>
-      {active.status === "failed" ? <XCircle className="h-3.5 w-3.5 text-red-500" /> : active.status === "done" ? <CheckCircle2 className="h-3.5 w-3.5 text-green-600" /> : <Loader2 className="h-3.5 w-3.5 animate-spin text-[#8B0000]" />}
+    <div className="flex h-7 items-center gap-2 rounded-md border bg-card px-2.5 text-xs text-foreground shadow-xs" data-testid="job-status" title={active.progress?.detail || ""}>
+      {active.status === "failed" ? <XCircle className="h-3.5 w-3.5 text-destructive" /> : active.status === "done" ? <CheckCircle2 className="h-3.5 w-3.5 text-success" /> : <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />}
       <span className="font-medium">{label}</span>
-      <span className="text-[#86868b]">{pct}%{active.progress?.stage ? ` · ${active.progress.stage}` : ""}</span>
-      <span className="ml-1 hidden h-1.5 w-24 overflow-hidden rounded-full bg-[#e8e8ed] sm:block dark:bg-[#3a3a3c]">
-        <span className="block h-full bg-[#8B0000] transition-[width] duration-500" style={{ width: `${pct}%` }} />
+      <span className="text-muted-foreground">{pct}%{active.progress?.stage ? ` · ${active.progress.stage}` : ""}</span>
+      <span className="ml-1 hidden h-1.5 w-24 overflow-hidden rounded-full bg-accent sm:block dark:bg-accent">
+        <span className="block h-full bg-primary transition-[width] duration-500" style={{ width: `${pct}%` }} />
       </span>
     </div>
   );

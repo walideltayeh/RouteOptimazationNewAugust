@@ -57,20 +57,20 @@ export default function UsersPage() {
 
   if (!isAdmin) {
     return (
-      <div className="p-4 md:p-6"><div className="mx-auto max-w-3xl rounded-2xl border border-[#e5e5e5] bg-white p-6 text-sm text-[#6e6e73]">Only an admin can manage accounts.</div></div>
+      <div className="px-4 py-5 md:px-8 md:py-7"><div className="mx-auto max-w-3xl rounded-2xl border bg-card p-6 text-sm text-muted-foreground shadow-apple">Only an admin can manage accounts.</div></div>
     );
   }
 
   return (
-    <div className="p-4 md:p-6">
+    <div className="px-4 py-5 md:px-8 md:py-7">
       <div className="mx-auto max-w-6xl space-y-6">
-        <p className="text-sm text-[#6e6e73] dark:text-[#98989d]">Who can sign in, and what they may do. Admins manage accounts, planners change the plan, viewers only look.</p>
+        <p className="max-w-3xl text-sm text-muted-foreground">Who can sign in, and what they may do. Admins manage accounts, planners change the plan, viewers only look.</p>
 
         <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
           {(Object.keys(ROLE_INFO) as Role[]).map(r => { const I = ROLE_INFO[r].icon; return (
-            <div key={r} className="flex items-start gap-3 rounded-2xl border border-[#e5e5e5] bg-white p-4 dark:border-[#38383a] dark:bg-[#1c1c1e]">
-              <I className="mt-0.5 h-5 w-5 text-[#8B0000]" />
-              <div><div className="text-sm font-semibold">{ROLE_INFO[r].label}</div><div className="text-xs text-[#6e6e73]">{ROLE_INFO[r].blurb}</div></div>
+            <div key={r} className="flex items-start gap-3 rounded-2xl border bg-card p-4 shadow-apple">
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"><I className="h-[18px] w-[18px]" /></span>
+              <div><div className="text-sm font-semibold">{ROLE_INFO[r].label}</div><div className="text-xs text-muted-foreground">{ROLE_INFO[r].blurb}</div></div>
             </div>
           ); })}
         </div>
@@ -88,9 +88,9 @@ export default function UsersPage() {
                 </Select>
               </div>
               <div><Label htmlFor="u-pass">Temporary password</Label><Input id="u-pass" type="text" value={password} onChange={e => setPassword(e.target.value)} placeholder="At least 8 characters" required minLength={8} className="mt-1" data-testid="input-user-password" /></div>
-              <Button type="submit" disabled={create.isPending} data-testid="button-create-user">{create.isPending ? "Adding…" : "Add account"}</Button>
+              <Button type="submit" variant="brand" disabled={create.isPending} data-testid="button-create-user">{create.isPending ? "Adding…" : "Add account"}</Button>
             </form>
-            <p className="mt-2 text-xs text-[#6e6e73]">Share the temporary password with them; they must choose their own at first sign-in.</p>
+            <p className="mt-2 text-xs text-muted-foreground">Share the temporary password with them; they must choose their own at first sign-in.</p>
           </CardContent>
         </Card>
 
@@ -99,33 +99,38 @@ export default function UsersPage() {
           <CardContent className="p-0">
             <div className="overflow-x-auto">
               <table className="w-full text-sm" data-testid="table-users">
-                <thead className="border-b border-[#e5e5e5] text-left text-xs uppercase tracking-wide text-[#86868b]">
-                  <tr><th className="px-4 py-2">Name</th><th className="px-4 py-2">Email</th><th className="px-4 py-2">Role</th><th className="px-4 py-2">Status</th><th className="px-4 py-2">Last sign-in</th><th className="px-4 py-2 text-right">Actions</th></tr>
+                <thead className="border-y bg-muted/50 text-left text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">
+                  <tr><th className="px-4 py-2.5 font-semibold">Name</th><th className="px-4 py-2.5 font-semibold">Email</th><th className="px-4 py-2.5 font-semibold">Role</th><th className="px-4 py-2.5 font-semibold">Status</th><th className="px-4 py-2.5 font-semibold">Last sign-in</th><th className="px-4 py-2.5 text-right font-semibold">Actions</th></tr>
                 </thead>
                 <tbody>
-                  {isLoading && <tr><td className="px-4 py-3 text-[#6e6e73]" colSpan={6}>Loading…</td></tr>}
+                  {isLoading && <tr><td className="px-4 py-3 text-muted-foreground" colSpan={6}>Loading…</td></tr>}
                   {users.map(u => {
                     const self = u.id === me?.id;
                     return (
-                      <tr key={u.id} className="border-b border-[#f0f0f0] last:border-0 dark:border-[#2c2c2e]" data-testid={`row-user-${u.email}`}>
-                        <td className="px-4 py-2.5 font-medium">{u.name}{self && <span className="ml-2 text-xs text-[#86868b]">(you)</span>}</td>
-                        <td className="px-4 py-2.5 text-[#6e6e73]">{u.email}</td>
-                        <td className="px-4 py-2.5">
+                      <tr key={u.id} className="border-b last:border-0 hover:bg-muted/40" data-testid={`row-user-${u.email}`}>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2.5">
+                            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold text-foreground ring-1 ring-inset ring-border">{(u.name || u.email).split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]!.toUpperCase()).join("")}</span>
+                            <span className="font-medium">{u.name}{self && <span className="ml-2 text-xs font-normal text-muted-foreground">(you)</span>}</span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-muted-foreground">{u.email}</td>
+                        <td className="px-4 py-3">
                           <Select value={u.role} onValueChange={v => update.mutate({ id: u.id, patch: { role: v as Role } })} disabled={self}>
                             <SelectTrigger className="h-8 w-[130px] text-xs"><SelectValue /></SelectTrigger>
                             <SelectContent>{(Object.keys(ROLE_INFO) as Role[]).map(r => <SelectItem key={r} value={r}>{ROLE_INFO[r].label}</SelectItem>)}</SelectContent>
                           </Select>
                         </td>
-                        <td className="px-4 py-2.5">
-                          {u.isActive ? <Badge variant="outline" className="border-green-200 bg-green-50 text-green-700">Active</Badge> : <Badge variant="outline" className="border-gray-200 bg-gray-50 text-gray-500">Deactivated</Badge>}
-                          {u.mustChangePassword && <span className="ml-2 text-xs text-amber-700">password reset pending</span>}
+                        <td className="px-4 py-3">
+                          {u.isActive ? <Badge variant="success"><span className="h-1.5 w-1.5 rounded-full bg-success" />Active</Badge> : <Badge variant="secondary" className="text-muted-foreground">Deactivated</Badge>}
+                          {u.mustChangePassword && <span className="ml-2 text-xs text-warning">password reset pending</span>}
                         </td>
-                        <td className="px-4 py-2.5 text-[#6e6e73]">{fmt(u.lastLoginAt)}</td>
-                        <td className="px-4 py-2.5">
+                        <td className="px-4 py-3 text-muted-foreground">{fmt(u.lastLoginAt)}</td>
+                        <td className="px-4 py-3">
                           <div className="flex justify-end gap-1">
                             <Button size="sm" variant="ghost" className="h-8" onClick={() => resetPassword(u)} title="Reset password"><KeyRound className="h-4 w-4" /></Button>
                             <Button size="sm" variant="ghost" className="h-8" disabled={self} onClick={() => update.mutate({ id: u.id, patch: { isActive: !u.isActive } })} title={u.isActive ? "Deactivate" : "Reactivate"}>{u.isActive ? "Deactivate" : "Reactivate"}</Button>
-                            <Button size="sm" variant="ghost" className="h-8 text-red-600 hover:text-red-700" disabled={self} onClick={() => { if (window.confirm(`Delete ${u.name}'s account? This cannot be undone.`)) remove.mutate(u.id); }} title="Delete"><Trash2 className="h-4 w-4" /></Button>
+                            <Button size="sm" variant="ghost" className="h-8 text-muted-foreground hover:text-destructive" disabled={self} onClick={() => { if (window.confirm(`Delete ${u.name}'s account? This cannot be undone.`)) remove.mutate(u.id); }} title="Delete"><Trash2 className="h-4 w-4" /></Button>
                           </div>
                         </td>
                       </tr>

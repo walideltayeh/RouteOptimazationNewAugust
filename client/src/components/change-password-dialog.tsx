@@ -38,7 +38,7 @@ export default function ChangePasswordDialog({ isOpen, onClose, required }: { is
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2"><KeyRound className="h-5 w-5" /> {required ? "Choose a new password" : "Change password"}</DialogTitle>
         </DialogHeader>
-        {required && <p className="text-sm text-[#6e6e73]">Your password was set by an admin. Pick your own before you carry on.</p>}
+        {required && <p className="text-sm text-muted-foreground">Your password was set by an admin. Pick your own before you carry on.</p>}
         <form onSubmit={submit} className="space-y-4 mt-2">
           <div className="space-y-2"><Label htmlFor="cur">Current password</Label><Input id="cur" type="password" value={current} onChange={e => setCurrent(e.target.value)} required autoComplete="current-password" data-testid="input-current-password" /></div>
           <div className="space-y-2"><Label htmlFor="new">New password</Label><Input id="new" type="password" value={next} onChange={e => setNext(e.target.value)} required minLength={8} autoComplete="new-password" data-testid="input-new-password" /></div>

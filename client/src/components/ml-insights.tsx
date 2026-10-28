@@ -113,9 +113,9 @@ export default function MLInsights({ outlets, reps, schedules }: MLInsightsProps
     return (
       <Card>
         <CardContent className="text-center py-8">
-          <Brain className="mx-auto h-12 w-12 text-gray-400 mb-4" />
-          <h3 className="text-lg font-medium text-gray-900 mb-2">No Data Available</h3>
-          <p className="text-gray-500">Upload outlet data to enable ML insights and forecasting.</p>
+          <Brain className="mx-auto h-12 w-12 text-muted-foreground/70 mb-4" />
+          <h3 className="text-lg font-medium text-foreground mb-2">No Data Available</h3>
+          <p className="text-muted-foreground">Upload outlet data to enable ML insights and forecasting.</p>
         </CardContent>
       </Card>
     );
@@ -133,7 +133,7 @@ export default function MLInsights({ outlets, reps, schedules }: MLInsightsProps
               </div>
               <div>
                 <CardTitle className="text-xl">ML Insights & Forecasting</CardTitle>
-                <p className="text-sm text-gray-600">
+                <p className="text-sm text-muted-foreground">
                   AI-powered demand prediction and territory optimization
                 </p>
               </div>
@@ -142,7 +142,7 @@ export default function MLInsights({ outlets, reps, schedules }: MLInsightsProps
               {isTraining && (
                 <div className="flex items-center space-x-2">
                   <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-purple-600"></div>
-                  <span className="text-sm text-gray-600">Training models...</span>
+                  <span className="text-sm text-muted-foreground">Training models...</span>
                 </div>
               )}
               <Button onClick={initializeML} disabled={isTraining}>
@@ -160,7 +160,7 @@ export default function MLInsights({ outlets, reps, schedules }: MLInsightsProps
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm font-medium text-blue-900">Model Accuracy</p>
-                    <p className="text-2xl font-bold text-blue-600">
+                    <p className="text-2xl font-semibold text-blue-600">
                       {(modelMetrics.avgAccuracy * 100).toFixed(1)}%
                     </p>
                   </div>
@@ -173,7 +173,7 @@ export default function MLInsights({ outlets, reps, schedules }: MLInsightsProps
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm font-medium text-green-900">Active Models</p>
-                    <p className="text-2xl font-bold text-green-600">{modelMetrics.totalModels}</p>
+                    <p className="text-2xl font-semibold text-green-600">{modelMetrics.totalModels}</p>
                   </div>
                   <Target className="h-8 w-8 text-green-500" />
                 </div>
@@ -184,7 +184,7 @@ export default function MLInsights({ outlets, reps, schedules }: MLInsightsProps
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm font-medium text-purple-900">Coverage</p>
-                    <p className="text-2xl font-bold text-purple-600">
+                    <p className="text-2xl font-semibold text-purple-600">
                       {(modelMetrics.coverage * 100).toFixed(0)}%
                     </p>
                   </div>
@@ -218,7 +218,7 @@ export default function MLInsights({ outlets, reps, schedules }: MLInsightsProps
           <Card>
             <CardHeader>
               <CardTitle>30-Day Demand Forecasts</CardTitle>
-              <p className="text-sm text-gray-600">
+              <p className="text-sm text-muted-foreground">
                 ML predictions for outlet visit requirements
               </p>
             </CardHeader>
@@ -228,28 +228,28 @@ export default function MLInsights({ outlets, reps, schedules }: MLInsightsProps
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
                     <div className="bg-blue-50 p-3 rounded-lg">
                       <p className="text-sm font-medium text-blue-900">High Demand</p>
-                      <p className="text-xl font-bold text-blue-600">
+                      <p className="text-xl font-semibold text-blue-600">
                         {forecasts.filter(f => f.predictedVisits > 12).length}
                       </p>
                       <p className="text-xs text-blue-700">outlets predicted</p>
                     </div>
                     <div className="bg-green-50 p-3 rounded-lg">
                       <p className="text-sm font-medium text-green-900">Stable Demand</p>
-                      <p className="text-xl font-bold text-green-600">
+                      <p className="text-xl font-semibold text-green-600">
                         {forecasts.filter(f => f.predictedVisits >= 6 && f.predictedVisits <= 12).length}
                       </p>
                       <p className="text-xs text-green-700">outlets predicted</p>
                     </div>
                     <div className="bg-yellow-50 p-3 rounded-lg">
                       <p className="text-sm font-medium text-yellow-900">Low Demand</p>
-                      <p className="text-xl font-bold text-yellow-600">
+                      <p className="text-xl font-semibold text-yellow-600">
                         {forecasts.filter(f => f.predictedVisits < 6).length}
                       </p>
                       <p className="text-xs text-yellow-700">outlets predicted</p>
                     </div>
                     <div className="bg-purple-50 p-3 rounded-lg">
                       <p className="text-sm font-medium text-purple-900">Avg Confidence</p>
-                      <p className="text-xl font-bold text-purple-600">
+                      <p className="text-xl font-semibold text-purple-600">
                         {forecasts.length > 0 ? 
                           (forecasts.reduce((sum, f) => sum + f.confidence, 0) / forecasts.length * 100).toFixed(1) : 0}%
                       </p>
@@ -281,7 +281,7 @@ export default function MLInsights({ outlets, reps, schedules }: MLInsightsProps
                               <TableCell>
                                 <div>
                                   <div className="font-medium">{outlet.name}</div>
-                                  <div className="text-sm text-gray-500">VF{outlet.visitFrequency}</div>
+                                  <div className="text-sm text-muted-foreground">VF{outlet.visitFrequency}</div>
                                 </div>
                               </TableCell>
                               <TableCell className="text-center">
@@ -309,7 +309,7 @@ export default function MLInsights({ outlets, reps, schedules }: MLInsightsProps
                                   ) : forecast.trendFactor < 0.95 ? (
                                     <TrendingUp className="h-4 w-4 text-red-500 transform rotate-180" />
                                   ) : (
-                                    <span className="text-gray-400">—</span>
+                                    <span className="text-muted-foreground/70">—</span>
                                   )}
                                 </div>
                               </TableCell>
@@ -317,7 +317,7 @@ export default function MLInsights({ outlets, reps, schedules }: MLInsightsProps
                                 <span className={
                                   forecast.seasonalFactor > 1.1 ? "text-green-600 font-medium" :
                                   forecast.seasonalFactor < 0.9 ? "text-red-600 font-medium" :
-                                  "text-gray-600"
+                                  "text-muted-foreground"
                                 }>
                                   {forecast.seasonalFactor.toFixed(2)}x
                                 </span>
@@ -331,8 +331,8 @@ export default function MLInsights({ outlets, reps, schedules }: MLInsightsProps
                 </div>
               ) : (
                 <div className="text-center py-8">
-                  <Activity className="mx-auto h-12 w-12 text-gray-400 mb-4" />
-                  <p className="text-gray-500">No forecasts generated yet.</p>
+                  <Activity className="mx-auto h-12 w-12 text-muted-foreground/70 mb-4" />
+                  <p className="text-muted-foreground">No forecasts generated yet.</p>
                 </div>
               )}
             </CardContent>
@@ -346,7 +346,7 @@ export default function MLInsights({ outlets, reps, schedules }: MLInsightsProps
               <div className="flex items-center justify-between">
                 <div>
                   <CardTitle>ML Route Optimization</CardTitle>
-                  <p className="text-sm text-gray-600">
+                  <p className="text-sm text-muted-foreground">
                     AI-recommended route reassignments for better efficiency
                   </p>
                 </div>
@@ -370,7 +370,7 @@ export default function MLInsights({ outlets, reps, schedules }: MLInsightsProps
                       <div className="flex items-center justify-between">
                         <div>
                           <p className="text-sm font-medium text-green-900">Efficiency Gain</p>
-                          <p className="text-2xl font-bold text-green-600">
+                          <p className="text-2xl font-semibold text-green-600">
                             +{(optimizationResults.efficiencyGain * 100).toFixed(1)}%
                           </p>
                         </div>
@@ -382,7 +382,7 @@ export default function MLInsights({ outlets, reps, schedules }: MLInsightsProps
                       <div className="flex items-center justify-between">
                         <div>
                           <p className="text-sm font-medium text-blue-900">Workload Balance</p>
-                          <p className="text-2xl font-bold text-blue-600">
+                          <p className="text-2xl font-semibold text-blue-600">
                             {(optimizationResults.workloadBalance * 100).toFixed(1)}%
                           </p>
                         </div>
@@ -431,7 +431,7 @@ export default function MLInsights({ outlets, reps, schedules }: MLInsightsProps
                                     </Badge>
                                   </TableCell>
                                   <TableCell>
-                                    <span className="text-sm text-gray-600">
+                                    <span className="text-sm text-muted-foreground">
                                       {change.reason}
                                     </span>
                                   </TableCell>
@@ -450,15 +450,15 @@ export default function MLInsights({ outlets, reps, schedules }: MLInsightsProps
                   ) : (
                     <div className="text-center py-8">
                       <CheckCircle className="mx-auto h-12 w-12 text-green-400 mb-4" />
-                      <h3 className="text-lg font-medium text-gray-900 mb-2">Routes Optimized</h3>
-                      <p className="text-gray-500">Current route assignments are already optimal.</p>
+                      <h3 className="text-lg font-medium text-foreground mb-2">Routes Optimized</h3>
+                      <p className="text-muted-foreground">Current route assignments are already optimal.</p>
                     </div>
                   )}
                 </div>
               ) : (
                 <div className="text-center py-8">
-                  <Target className="mx-auto h-12 w-12 text-gray-400 mb-4" />
-                  <p className="text-gray-500">Run ML analysis to see optimization recommendations.</p>
+                  <Target className="mx-auto h-12 w-12 text-muted-foreground/70 mb-4" />
+                  <p className="text-muted-foreground">Run ML analysis to see optimization recommendations.</p>
                 </div>
               )}
             </CardContent>
@@ -478,7 +478,7 @@ export default function MLInsights({ outlets, reps, schedules }: MLInsightsProps
                     <AlertTriangle className="h-5 w-5 text-yellow-500 mt-0.5" />
                     <div>
                       <p className="font-medium">Seasonal Demand Patterns</p>
-                      <p className="text-sm text-gray-600">
+                      <p className="text-sm text-muted-foreground">
                         {forecasts.filter(f => f.seasonalFactor > 1.2).length} outlets show strong seasonal growth
                       </p>
                     </div>
@@ -488,7 +488,7 @@ export default function MLInsights({ outlets, reps, schedules }: MLInsightsProps
                     <TrendingUp className="h-5 w-5 text-green-500 mt-0.5" />
                     <div>
                       <p className="font-medium">Growth Opportunities</p>
-                      <p className="text-sm text-gray-600">
+                      <p className="text-sm text-muted-foreground">
                         {forecasts.filter(f => f.trendFactor > 1.1).length} outlets predicted to increase demand
                       </p>
                     </div>
@@ -498,7 +498,7 @@ export default function MLInsights({ outlets, reps, schedules }: MLInsightsProps
                     <Users className="h-5 w-5 text-blue-500 mt-0.5" />
                     <div>
                       <p className="font-medium">Workload Distribution</p>
-                      <p className="text-sm text-gray-600">
+                      <p className="text-sm text-muted-foreground">
                         {optimizationResults ? 
                           `${(optimizationResults.workloadBalance * 100).toFixed(0)}% balanced across territories`
                           : 'Analysis pending'
@@ -534,15 +534,15 @@ export default function MLInsights({ outlets, reps, schedules }: MLInsightsProps
                     </div>
                     
                     <div className="pt-2 border-t">
-                      <p className="text-sm text-gray-600">
+                      <p className="text-sm text-muted-foreground">
                         <strong>{modelMetrics.totalModels}</strong> predictive models trained on historical patterns
                       </p>
                     </div>
                   </div>
                 ) : (
                   <div className="text-center py-8">
-                    <BarChart3 className="mx-auto h-12 w-12 text-gray-400 mb-4" />
-                    <p className="text-gray-500">Initialize ML models to view performance metrics.</p>
+                    <BarChart3 className="mx-auto h-12 w-12 text-muted-foreground/70 mb-4" />
+                    <p className="text-muted-foreground">Initialize ML models to view performance metrics.</p>
                   </div>
                 )}
               </CardContent>

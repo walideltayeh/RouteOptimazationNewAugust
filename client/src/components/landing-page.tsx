@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
-import { ArrowRight, LogIn } from 'lucide-react';
+import { ArrowRight, Map, Route, FileSpreadsheet } from 'lucide-react';
+import BrandMark from '@/components/brand-mark';
 import { motion, AnimatePresence } from 'framer-motion';
 
 interface LandingPageProps {
@@ -39,13 +40,14 @@ const enum Phase {
 
 const PHASE_DURATIONS = [2.5, 3.0, 2.5, 5.0, 2.0];
 
+// Brand red, ink and slate: territories read apart without leaving the brand.
 const CLUSTER_COLORS = [
-  [139, 0, 0],
-  [180, 40, 20],
-  [100, 10, 10],
-  [160, 20, 10],
-  [120, 0, 0],
-  [80, 0, 0],
+  [200, 30, 45],
+  [15, 23, 42],
+  [71, 85, 105],
+  [225, 72, 85],
+  [148, 27, 42],
+  [100, 116, 139],
 ];
 
 function easeInOutCubic(t: number) {
@@ -470,21 +472,24 @@ function OptimizationCanvas() {
         ? 1 - easeOutExpo(phaseT)
         : Math.min(1, phaseT * 4);
 
-      ctx.font = '11px -apple-system, BlinkMacSystemFont, sans-serif';
-      ctx.fillStyle = `rgba(139, 0, 0, ${labelAlpha * 0.5})`;
-      ctx.textAlign = 'center';
-      ctx.fillText(label, w / 2, h * 0.15);
+      // The phase in the bottom-left corner, clear of the hero; phones skip it.
+      if (w >= 640) {
+        ctx.font = '500 11px "Inter Variable", Inter, system-ui, sans-serif';
+        ctx.fillStyle = `rgba(15, 23, 42, ${labelAlpha * 0.45})`;
+        ctx.textAlign = 'left';
+        const labelX = 40, labelY = h - 34;
+        ctx.fillText(label, labelX, labelY);
 
-      const totalPhases = PHASE_DURATIONS.length;
-      const barW = 120;
-      const barH = 2;
-      const barX = (w - barW) / 2;
-      const barY = h * 0.15 + 12;
-      ctx.fillStyle = `rgba(139, 0, 0, 0.08)`;
-      ctx.fillRect(barX, barY, barW, barH);
-      const filled = (s.phase + phaseT) / totalPhases;
-      ctx.fillStyle = `rgba(139, 0, 0, 0.3)`;
-      ctx.fillRect(barX, barY, barW * filled, barH);
+        const totalPhases = PHASE_DURATIONS.length;
+        const barW = 96;
+        const barH = 2;
+        const barY = labelY + 8;
+        ctx.fillStyle = `rgba(15, 23, 42, 0.08)`;
+        ctx.fillRect(labelX, barY, barW, barH);
+        const filled = (s.phase + phaseT) / totalPhases;
+        ctx.fillStyle = `rgba(200, 30, 45, 0.55)`;
+        ctx.fillRect(labelX, barY, barW * filled, barH);
+      }
 
       animRef.current = requestAnimationFrame(loop);
     };
@@ -543,6 +548,12 @@ function AnimatedTitle({ text, className }: { text: string; className?: string }
   );
 }
 
+const PROMISES = [
+  { icon: Map, title: "Territories that hold", text: "Balanced reps, no overlap between territories." },
+  { icon: Route, title: "Days that drive less", text: "Every day in the visits band, short hops between stops." },
+  { icon: FileSpreadsheet, title: "A journey plan in one file", text: "Dates, stops and map links, ready to roll out." },
+];
+
 export default function LandingPage({ onAdminLogin }: LandingPageProps) {
   const [mounted, setMounted] = useState(false);
 
@@ -552,146 +563,110 @@ export default function LandingPage({ onAdminLogin }: LandingPageProps) {
   }, []);
 
   return (
-    <div className="min-h-screen bg-[#fafafa] flex flex-col relative overflow-hidden">
+    <div className="relative flex min-h-screen flex-col overflow-hidden bg-background">
       <div className="absolute inset-0">
         <OptimizationCanvas />
       </div>
 
       <div
-        className="absolute inset-0 pointer-events-none"
+        className="pointer-events-none absolute inset-0"
         style={{
           background:
-            'radial-gradient(ellipse 50% 45% at 50% 48%, rgba(250,250,250,0.92), rgba(250,250,250,0.65), rgba(250,250,250,0.15))',
+            'radial-gradient(ellipse 52% 48% at 50% 50%, rgba(245,247,250,0.94), rgba(245,247,250,0.7) 60%, rgba(245,247,250,0.1))',
         }}
       />
 
-      <div className="flex-1 flex flex-col items-center justify-center px-6 relative z-10">
+      <header className="relative z-10 flex items-center justify-between px-6 py-5 md:px-10">
+        <div className="flex items-center gap-2.5">
+          <BrandMark className="h-8 w-8" />
+          <span className="text-[15px] font-semibold tracking-tight text-foreground">RouteOptima</span>
+        </div>
+        <Button variant="outline" size="sm" onClick={onAdminLogin} data-testid="button-header-sign-in">
+          Sign in
+        </Button>
+      </header>
+
+      <div className="relative z-10 flex flex-1 flex-col items-center justify-center px-6 pb-10">
         <AnimatePresence>
           {mounted && (
-            <motion.div className="text-center max-w-2xl">
+            <motion.div className="max-w-3xl text-center">
               <motion.div
-                initial={{ scale: 0, opacity: 0, rotate: -180 }}
-                animate={{ scale: 1, opacity: 1, rotate: 0 }}
-                transition={{ duration: 1, ease: [0.16, 1, 0.3, 1] }}
-                className="mb-6 inline-block"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
+                className="mb-7 inline-flex items-center gap-2 rounded-full border bg-card/80 px-3 py-1 text-xs font-medium text-muted-foreground shadow-xs backdrop-blur"
               >
-                <div className="w-20 h-20 mx-auto relative">
-                  <motion.div
-                    className="absolute inset-0 rounded-[22px]"
-                    style={{
-                      background: 'linear-gradient(135deg, #8B0000 0%, #4a0000 100%)',
-                      boxShadow: '0 8px 32px rgba(139, 0, 0, 0.25)',
-                    }}
-                    animate={{ rotate: 360 }}
-                    transition={{ duration: 30, repeat: Infinity, ease: 'linear' }}
-                  />
-                  <div className="absolute inset-[2px] rounded-[20px] bg-[#fafafa] flex items-center justify-center overflow-hidden">
-                    <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
-                      <motion.circle
-                        cx="18" cy="18" r="12"
-                        stroke="#8B0000"
-                        strokeWidth="0.8"
-                        strokeDasharray="4 3"
-                        fill="none"
-                        initial={{ pathLength: 0, opacity: 0 }}
-                        animate={{ pathLength: 1, opacity: 0.4, rotate: 360 }}
-                        transition={{
-                          pathLength: { duration: 1.5, delay: 0.5 },
-                          opacity: { duration: 0.5, delay: 0.5 },
-                          rotate: { duration: 20, repeat: Infinity, ease: 'linear' },
-                        }}
-                        style={{ transformOrigin: 'center' }}
-                      />
-                      <motion.path
-                        d="M10 22 L15 14 L20 20 L26 10"
-                        stroke="#8B0000"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        fill="none"
-                        initial={{ pathLength: 0 }}
-                        animate={{ pathLength: 1 }}
-                        transition={{ duration: 1.2, delay: 0.8, ease: [0.16, 1, 0.3, 1] }}
-                      />
-                      {[
-                        { cx: 10, cy: 22, delay: 1.0 },
-                        { cx: 15, cy: 14, delay: 1.15 },
-                        { cx: 20, cy: 20, delay: 1.3 },
-                        { cx: 26, cy: 10, delay: 1.45 },
-                      ].map((p, i) => (
-                        <motion.circle
-                          key={i}
-                          cx={p.cx}
-                          cy={p.cy}
-                          r="2.5"
-                          fill="#8B0000"
-                          initial={{ scale: 0, opacity: 0 }}
-                          animate={{ scale: 1, opacity: 1 }}
-                          transition={{ duration: 0.4, delay: p.delay, ease: [0.16, 1, 0.3, 1] }}
-                        />
-                      ))}
-                    </svg>
-                  </div>
-                </div>
+                <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+                Route-to-market planning for field sales
+              </motion.div>
+
+              <motion.div
+                initial={{ scale: 0.6, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
+                className="mb-6 flex justify-center"
+              >
+                <BrandMark className="h-16 w-16 drop-shadow-[0_12px_24px_rgba(200,30,45,0.35)]" />
               </motion.div>
 
               <AnimatedTitle
                 text="RouteOptima"
-                className="text-5xl md:text-7xl font-bold text-[#1d1d1f] tracking-[-0.04em] mb-3"
+                className="mb-3 text-5xl font-semibold tracking-[-0.045em] text-foreground md:text-7xl"
               />
 
-              <motion.div
-                className="overflow-hidden mb-2"
-                initial={{ height: 0 }}
-                animate={{ height: 'auto' }}
-                transition={{ duration: 0.8, delay: 0.5 }}
+              <motion.p
+                className="mb-4 text-xl font-medium tracking-tight text-primary md:text-2xl"
+                initial={{ opacity: 0, y: 16 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.7, delay: 0.5 }}
               >
-                <motion.p
-                  className="text-xl md:text-2xl font-light tracking-wide"
-                  style={{ color: '#8B0000' }}
-                  initial={{ opacity: 0, y: 30 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.8, delay: 0.6 }}
-                >
-                  From Chaos to Optimal
-                </motion.p>
-              </motion.div>
+                From chaos to optimal
+              </motion.p>
 
               <motion.p
-                className="text-base text-[#86868b] max-w-lg mx-auto mb-10 leading-relaxed"
-                initial={{ opacity: 0, y: 20 }}
+                className="mx-auto mb-9 max-w-xl text-base leading-relaxed text-muted-foreground md:text-lg"
+                initial={{ opacity: 0, y: 16 }}
                 animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.8, delay: 0.9 }}
+                transition={{ duration: 0.7, delay: 0.7 }}
               >
-                Watch scattered outlets self-organize into territories,
-                then routes trace themselves to perfection.
-                That's what we do for your sales force.
+                Drop in your outlet list. RouteOptima sizes the team, draws the territories,
+                cuts every rep's month into day routes and hands you the journey plan.
               </motion.p>
 
               <motion.div
-                className="flex flex-col sm:flex-row items-center justify-center gap-4"
-                initial={{ opacity: 0, y: 30 }}
+                className="flex flex-col items-center gap-3"
+                initial={{ opacity: 0, y: 16 }}
                 animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.8, delay: 1.1 }}
+                transition={{ duration: 0.7, delay: 0.9 }}
               >
-                <motion.div
-                  whileHover={{ scale: 1.05, y: -2 }}
-                  whileTap={{ scale: 0.97 }}
-                  transition={{ type: 'spring', stiffness: 400, damping: 17 }}
+                <Button
+                  onClick={onAdminLogin}
+                  variant="brand"
+                  size="lg"
+                  className="group h-12 min-w-[240px] px-7 text-[15px] shadow-[0_10px_30px_-8px_rgba(200,30,45,0.55)]"
+                  data-testid="button-sign-in"
                 >
-                  <Button
-                    onClick={onAdminLogin}
-                    size="lg"
-                    className="bg-[#8B0000] hover:bg-[#6B0000] text-white px-10 py-6 text-lg rounded-full min-w-[220px] group transition-all duration-300"
-                    style={{
-                      boxShadow: '0 4px 24px rgba(139, 0, 0, 0.3)',
-                    }}
-                  >
-                    <LogIn className="mr-2 h-5 w-5" />
-                    Sign In
-                    <ArrowRight className="ml-2 h-5 w-5 group-hover:translate-x-1.5 transition-transform duration-300" />
-                  </Button>
-                </motion.div>
+                  Sign in to your workspace
+                  <ArrowRight className="transition-transform duration-200 group-hover:translate-x-1" />
+                </Button>
+                <p className="text-xs text-muted-foreground">Accounts are created by your administrator.</p>
+              </motion.div>
+
+              <motion.div
+                className="mx-auto mt-14 grid max-w-3xl grid-cols-1 gap-3 text-left sm:grid-cols-3"
+                initial={{ opacity: 0, y: 16 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.7, delay: 1.1 }}
+              >
+                {PROMISES.map(({ icon: Icon, title, text }) => (
+                  <div key={title} className="rounded-xl border bg-card/80 p-4 shadow-xs backdrop-blur">
+                    <div className="mb-3 flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                      <Icon className="h-4 w-4" />
+                    </div>
+                    <p className="text-sm font-semibold text-foreground">{title}</p>
+                    <p className="mt-1 text-[13px] leading-snug text-muted-foreground">{text}</p>
+                  </div>
+                ))}
               </motion.div>
             </motion.div>
           )}
@@ -699,12 +674,12 @@ export default function LandingPage({ onAdminLogin }: LandingPageProps) {
       </div>
 
       <motion.footer
-        className="py-6 text-center relative z-10"
+        className="relative z-10 py-6 text-center"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 1, delay: 1.4 }}
       >
-        <p className="text-xs text-[#86868b] tracking-wide">Solution developed by Walid El Tayeh</p>
+        <p className="text-xs text-muted-foreground">Solution developed by Walid El Tayeh</p>
       </motion.footer>
     </div>
   );

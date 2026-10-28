@@ -17,6 +17,7 @@ import LandingPage from "@/components/landing-page";
 import LoginModal from "@/components/login-modal";
 import PersistenceBanner from "@/components/persistence-banner";
 import AppHeader from "@/components/app-header";
+import BrandMark from "@/components/brand-mark";
 import { useAuth } from "@/hooks/use-auth";
 
 function AppContent() {
@@ -28,8 +29,8 @@ function AppContent() {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-white flex items-center justify-center">
-        <div className="animate-pulse text-[#8B0000] text-xl font-semibold">RouteOptima</div>
+      <div className="flex min-h-screen items-center justify-center bg-background">
+        <BrandMark className="h-10 w-10 animate-pulse" />
       </div>
     );
   }
@@ -48,7 +49,7 @@ function AppContent() {
   }
 
   return (
-    <div className="flex h-screen bg-[#f5f5f7] dark:bg-black">
+    <div className="flex h-screen bg-background">
       <Sidebar collapsed={collapsed} mobileOpen={mobileOpen} onMobileClose={() => setMobileOpen(false)} />
       <div className="flex min-w-0 flex-1 flex-col">
         <AppHeader collapsed={collapsed} onToggleCollapsed={() => setCollapsed(v => !v)} onOpenMobile={() => setMobileOpen(true)} />

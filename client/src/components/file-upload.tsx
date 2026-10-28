@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import StepBadge from "@/components/step-badge";
 import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
 import { Upload, CloudUpload, AlertTriangle, Download, FileText, X, CheckCircle2, BarChart3 } from "lucide-react";
@@ -256,21 +257,21 @@ export default function FileUpload() {
 
   return (
     <>
-      <Card className="border-2 border-[#8B0000]">
+      <Card>
         <CardHeader>
           <CardTitle className="flex items-center">
-            <Upload className="mr-2 h-5 w-5 text-[#1d1d1f] dark:text-white" />
-            Step 1: Data Upload & Analysis
+            <StepBadge n={1} />
+            Upload and check the outlet list
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-6">
           {/* File Upload Area */}
           {!pendingFile && !uploadMutation.isPending && (
             <div
-              className={`border-2 border-dashed rounded-xl p-6 text-center transition-colors cursor-pointer ${
+              className={`cursor-pointer rounded-xl border border-dashed px-6 py-8 text-center transition-colors ${
                 isDragOver
-                  ? "border-[#8B0000] bg-[#8B0000]/5"
-                  : "border-[#d2d2d7] dark:border-[#424245] hover:border-[#8B0000]/50"
+                  ? "border-primary bg-primary/5"
+                  : "border-input bg-muted/40 hover:border-primary/50 hover:bg-primary/[0.03]"
               }`}
               onDrop={handleDrop}
               onDragOver={(e) => {
@@ -280,19 +281,21 @@ export default function FileUpload() {
               onDragLeave={() => setIsDragOver(false)}
               onClick={() => document.getElementById("file-input")?.click()}
             >
-              <CloudUpload className="mx-auto h-12 w-12 text-gray-400 mb-3" />
-              <p className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-1">
+              <span className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-xl border bg-card shadow-xs">
+                <CloudUpload className="h-5 w-5 text-muted-foreground" />
+              </span>
+              <p className="mb-1 text-sm font-semibold text-foreground">
                 Drop your CSV or Excel file here
               </p>
-              <p className="text-xs text-gray-500 mb-1">
-                Required: <span className="font-semibold text-gray-700 dark:text-gray-300">Outlet Name</span>, <span className="font-semibold text-gray-700 dark:text-gray-300">Latitude</span>, <span className="font-semibold text-gray-700 dark:text-gray-300">Longitude</span>
+              <p className="text-xs text-muted-foreground mb-1">
+                Required: <span className="font-semibold text-foreground/80 dark:text-muted-foreground/50">Outlet Name</span>, <span className="font-semibold text-foreground/80 dark:text-muted-foreground/50">Latitude</span>, <span className="font-semibold text-foreground/80 dark:text-muted-foreground/50">Longitude</span>
               </p>
-              <p className="text-xs text-gray-400 mb-3">
+              <p className="text-xs text-muted-foreground/70 mb-3">
                 .csv, .xlsx, .xls up to 50MB
               </p>
               <div className="flex items-center justify-center gap-2">
                 <Button variant="outline" size="sm">
-                  Browse Files
+                  Browse files
                 </Button>
                 <Button
                   variant="outline"
@@ -302,8 +305,8 @@ export default function FileUpload() {
                     downloadTemplate();
                   }}
                 >
-                  <Download className="mr-1 h-3.5 w-3.5" />
-                  Download Template
+                  <Download className="h-3.5 w-3.5" />
+                  Download template
                 </Button>
               </div>
               <Input
@@ -318,11 +321,11 @@ export default function FileUpload() {
 
           {/* File Preview (pending file) */}
           {pendingFile && !uploadMutation.isPending && (
-            <div className="border rounded-xl p-5 bg-gray-50 dark:bg-[#1c1c1e] space-y-4">
+            <div className="border rounded-xl p-5 bg-muted/60 dark:bg-card space-y-4">
               <div className="flex items-start gap-3">
-                <FileText className="h-10 w-10 text-[#8B0000] flex-shrink-0 mt-0.5" />
+                <FileText className="h-10 w-10 text-primary flex-shrink-0 mt-0.5" />
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold text-gray-900 dark:text-white truncate">{pendingFile.name}</p>
+                  <p className="text-sm font-semibold text-foreground dark:text-white truncate">{pendingFile.name}</p>
                   <div className="flex flex-wrap gap-2 mt-1.5">
                     <Badge variant="secondary" className="text-xs">{pendingFile.type}</Badge>
                     <Badge variant="secondary" className="text-xs">{pendingFile.size}</Badge>
@@ -336,7 +339,7 @@ export default function FileUpload() {
                 </Button>
               </div>
               <div className="flex gap-2">
-                <Button size="sm" className="bg-[#8B0000] hover:bg-[#8B0000]/90 text-white" onClick={confirmUpload}>
+                <Button size="sm" className="bg-primary hover:bg-primary/90 text-white" onClick={confirmUpload}>
                   <Upload className="mr-1.5 h-3.5 w-3.5" />
                   Upload
                 </Button>
@@ -349,18 +352,18 @@ export default function FileUpload() {
 
           {/* Upload Progress */}
           {uploadMutation.isPending && (
-            <div className="border rounded-xl p-5 bg-gray-50 dark:bg-[#1c1c1e] space-y-3">
+            <div className="border rounded-xl p-5 bg-muted/60 dark:bg-card space-y-3">
               <div className="flex items-center gap-2">
-                <div className="h-2 w-2 rounded-full bg-[#8B0000] animate-pulse" />
-                <p className="text-sm font-medium text-gray-900 dark:text-white">{uploadStage || "Uploading..."}</p>
+                <div className="h-2 w-2 rounded-full bg-primary animate-pulse" />
+                <p className="text-sm font-medium text-foreground dark:text-white">{uploadStage || "Uploading..."}</p>
               </div>
-              <div className="w-full h-3 rounded-full bg-gray-200 dark:bg-[#2c2c2e] overflow-hidden">
+              <div className="w-full h-3 rounded-full bg-accent dark:bg-muted overflow-hidden">
                 <div
-                  className="h-full bg-[#8B0000] transition-all duration-300 rounded-full"
+                  className="h-full bg-primary transition-all duration-300 rounded-full"
                   style={{ width: `${uploadProgress}%` }}
                 />
               </div>
-              <p className="text-xs text-gray-500">{uploadProgress}% complete</p>
+              <p className="text-xs text-muted-foreground">{uploadProgress}% complete</p>
             </div>
           )}
 
@@ -372,17 +375,17 @@ export default function FileUpload() {
                 <p className="text-sm font-semibold text-green-800 dark:text-green-300">Upload Complete — Data Quality Report</p>
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                <div className="bg-white dark:bg-[#1c1c1e] rounded-lg p-3 text-center border">
-                  <p className="text-lg font-bold text-gray-900 dark:text-white">{uploadResult.totalRowsProcessed}</p>
-                  <p className="text-xs text-gray-500">Total Rows</p>
+                <div className="bg-white dark:bg-card rounded-lg p-3 text-center border">
+                  <p className="text-lg font-semibold text-foreground dark:text-white">{uploadResult.totalRowsProcessed}</p>
+                  <p className="text-xs text-muted-foreground">Total Rows</p>
                 </div>
-                <div className="bg-white dark:bg-[#1c1c1e] rounded-lg p-3 text-center border">
-                  <p className="text-lg font-bold text-green-700 dark:text-green-400">{uploadResult.validOutlets}</p>
-                  <p className="text-xs text-gray-500">Valid Outlets</p>
+                <div className="bg-white dark:bg-card rounded-lg p-3 text-center border">
+                  <p className="text-lg font-semibold text-green-700 dark:text-green-400">{uploadResult.validOutlets}</p>
+                  <p className="text-xs text-muted-foreground">Valid Outlets</p>
                 </div>
-                <div className="bg-white dark:bg-[#1c1c1e] rounded-lg p-3 text-center border">
-                  <p className="text-lg font-bold text-gray-900 dark:text-white">{uploadResult.recommendedReps}</p>
-                  <p className="text-xs text-gray-500">Recommended Reps</p>
+                <div className="bg-white dark:bg-card rounded-lg p-3 text-center border">
+                  <p className="text-lg font-semibold text-foreground dark:text-white">{uploadResult.recommendedReps}</p>
+                  <p className="text-xs text-muted-foreground">Recommended Reps</p>
                 </div>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -393,7 +396,7 @@ export default function FileUpload() {
                 <Badge className="bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200">VF4: {uploadResult.vf4Count}</Badge>
               </div>
               {uploadResult.sheetUsed && (uploadResult.otherSheets?.length ?? 0) > 0 && (
-                <p className="text-xs text-gray-600 dark:text-gray-400" data-testid="text-upload-sheet">
+                <p className="text-xs text-muted-foreground dark:text-muted-foreground/70" data-testid="text-upload-sheet">
                   <FileText className="inline h-3 w-3 mr-1" />
                   Read the sheet "{uploadResult.sheetUsed}". This workbook also has: {uploadResult.otherSheets!.join(", ")}. To use another, move it first in the workbook or save it on its own.
                 </p>
@@ -418,7 +421,7 @@ export default function FileUpload() {
                     <AlertTriangle className="inline h-3 w-3 mr-1" />
                     {uploadResult.skippedRows} row{uploadResult.skippedRows !== 1 ? "s" : ""} skipped
                   </p>
-                  <ul className="text-xs text-gray-600 dark:text-gray-400 space-y-0.5 max-h-24 overflow-y-auto">
+                  <ul className="text-xs text-muted-foreground dark:text-muted-foreground/70 space-y-0.5 max-h-24 overflow-y-auto">
                     {uploadResult.skippedDetails.map((s, i) => (
                       <li key={i}>Row {s.row}: {s.reason}</li>
                     ))}
@@ -435,7 +438,7 @@ export default function FileUpload() {
                 ✓ File uploaded successfully
               </p>
               <p className="text-xs text-green-600 mt-1">
-                {analysis.outlets} outlets processed. See Step 2 for detailed analysis.
+                {analysis.outlets} outlets processed. See the analysis below.
               </p>
             </div>
           )}

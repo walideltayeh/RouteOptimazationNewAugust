@@ -9,6 +9,7 @@ import MLInsights from "@/components/ml-insights";
 import TerritoryMap from "@/components/territory-map";
 import TerritoryCustomization from "@/components/territory-customization";
 import RtmStudio from "@/components/rtm-studio";
+import StepBadge from "@/components/step-badge";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -16,7 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { ArrowUp, Store, Users, CalendarCheck, TrendingUp, Download, Plus, Brain, Trash2, Map, Edit3, ChevronDown, ChevronRight, UserCog, ArrowDown, Save, RotateCcw, GitCompare } from "lucide-react";
+import { ArrowUp, Store, Users, CalendarCheck, TrendingUp, Download, Plus, Brain, Trash2, Map, Edit3, ChevronDown, ChevronRight, UserCog, ArrowDown, Save, RotateCcw, GitCompare, SlidersHorizontal } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
@@ -27,6 +28,7 @@ interface AuthStatus {
   isAuthenticated: boolean;
   isSuperuser: boolean;
   canEdit: boolean;
+  user?: { name: string } | null;
 }
 
 interface RoleConfig {
@@ -44,6 +46,11 @@ const DEFAULT_ROLES: RoleConfig[] = [
   { role: 'merchandiser', roleName: 'Merchandiser', offsetDays: 1, colorHex: '#10B981', isActive: true },
   { role: 'collection_agent', roleName: 'Collection Agent', offsetDays: 2, colorHex: '#F59E0B', isActive: true },
 ];
+
+const greeting = () => {
+  const h = new Date().getHours();
+  return h < 5 ? "Good evening" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
+};
 
 export default function Dashboard() {
   const { toast } = useToast();
@@ -231,46 +238,49 @@ export default function Dashboard() {
       <div className="flex items-center justify-center h-full">
         <div className="text-center">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto"></div>
-          <p className="mt-2 text-sm text-gray-600">Loading dashboard...</p>
+          <p className="mt-2 text-sm text-muted-foreground">Loading dashboard...</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="p-4 md:p-6">
+    <div className="px-4 py-5 md:px-8 md:py-7">
       <div className="max-w-7xl mx-auto space-y-6">
         {/* Header */}
-        <header className="bg-white dark:bg-[#1c1c1e] shadow-apple border border-[#e5e5e5] dark:border-[#38383a] px-4 py-3 md:px-6 rounded-2xl">
-          <div className="flex flex-wrap items-center justify-between gap-3">
+        <header className="flex flex-wrap items-end justify-between gap-4">
             <div>
-              <h2 className="text-lg font-semibold text-[#1d1d1f] dark:text-white">Route-to-market planner</h2>
-              <p className="text-sm text-[#86868b]">Territories, day routes and journey plans for every rep, from one outlet list.</p>
+              <p className="eyebrow">{greeting()}{authStatus?.user?.name ? `, ${authStatus.user.name.split(" ")[0]}` : ""}</p>
+              <h2 className="mt-1.5 text-2xl font-semibold tracking-tight text-foreground lg:text-[28px]">Route-to-market planner</h2>
+              <p className="mt-1 text-sm text-muted-foreground">Territories, day routes and journey plans for every rep, from one outlet list.</p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               {authStatus?.canEdit && (
                 <Button
+                  variant="outline"
+                  size="sm"
                   onClick={handleStartNewOptimization}
                   disabled={resetAllMutation.isPending}
                   data-testid="button-new-optimization"
                 >
                   {resetAllMutation.isPending ? (
-                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                    <div className="h-4 w-4 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-foreground"></div>
                   ) : (
-                    <RotateCcw className="mr-2 h-4 w-4" />
+                    <RotateCcw className="h-4 w-4" />
                   )}
-                  Start New Optimization
+                  Start new optimization
                 </Button>
               )}
               {authStatus?.canEdit && hasOutlets && (
-                <Button variant="outline" onClick={handleCompareScenarios} data-testid="button-compare-scenarios">
-                  <GitCompare className="mr-2 h-4 w-4" />
-                  Re-run &amp; Compare
+                <Button variant="outline" size="sm" onClick={handleCompareScenarios} data-testid="button-compare-scenarios">
+                  <GitCompare className="h-4 w-4" />
+                  Re-run &amp; compare
                 </Button>
               )}
               {hasOptimization && (
                 <Button 
                   variant="outline"
+                  size="sm"
                   onClick={async () => {
                     try {
                       const response = await fetch('/api/export/territories');
@@ -297,12 +307,11 @@ export default function Dashboard() {
                     }
                   }}
                 >
-                  <Download className="mr-2 h-4 w-4" />
-                  Export Territories
+                  <Download className="h-4 w-4" />
+                  Export territories
                 </Button>
               )}
             </div>
-          </div>
         </header>
 
         <RtmStudio canEdit={!!authStatus?.canEdit} />
@@ -310,91 +319,95 @@ export default function Dashboard() {
         <button
           type="button"
           onClick={() => setShowDetails(!showDetails)}
-          className="flex w-full items-center justify-between rounded-2xl border border-[#e5e5e5] bg-white px-5 py-3 text-left dark:border-[#38383a] dark:bg-[#1c1c1e]"
+          className="group flex w-full items-center gap-3 rounded-2xl border bg-card px-5 py-3.5 text-left shadow-apple hover:border-input"
+          aria-expanded={showDetails}
           data-testid="button-toggle-details"
         >
-          <span>
-            <span className="text-sm font-medium text-[#1d1d1f] dark:text-white">Detailed planning controls</span>
-            <span className="ml-2 text-xs text-[#86868b]">Manual settings, exclusions, barriers, role hierarchy, schedules and analytics</span>
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground group-hover:text-foreground">
+            <SlidersHorizontal className="h-4 w-4" />
           </span>
-          {showDetails ? <ChevronDown className="h-5 w-5 text-[#86868b]" /> : <ChevronRight className="h-5 w-5 text-[#86868b]" />}
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-semibold text-foreground">Detailed planning controls</span>
+            <span className="block truncate text-xs text-muted-foreground">Manual settings, exclusions, barriers, role hierarchy, schedules and analytics</span>
+          </span>
+          <ChevronDown className={`h-5 w-5 shrink-0 text-muted-foreground transition-transform ${showDetails ? "rotate-180" : ""}`} />
         </button>
 
         {showDetails && (<>
         {/* Key Metrics Cards - Only show after optimization */}
         {hasOptimization && (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-          <Card className="metric-card">
-            <CardContent className="p-6">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
+          <Card>
+            <CardContent className="p-5">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-medium text-gray-600">Total Outlets</p>
-                  <p className="text-3xl font-bold text-gray-900 mt-1">
+                  <p className="text-[13px] font-medium text-muted-foreground">Total Outlets</p>
+                  <p className="mt-2 text-[28px] font-semibold leading-none tracking-tight tabular-nums text-foreground">
                     {metrics?.totalOutlets.toLocaleString() || 0}
                   </p>
-                  <p className="text-sm text-gray-500 mt-2">
+                  <p className="mt-2.5 text-xs text-muted-foreground">
                     Across <span className="font-semibold">{metrics?.activeReps || 0}</span> territories
                   </p>
                 </div>
-                <div className="w-12 h-12 bg-primary/10 rounded-xl flex items-center justify-center">
-                  <Store className="h-6 w-6 text-primary" />
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
+                  <Store className="h-5 w-5 text-primary" />
                 </div>
               </div>
             </CardContent>
           </Card>
 
-          <Card className="metric-card">
-            <CardContent className="p-6">
+          <Card>
+            <CardContent className="p-5">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-medium text-gray-600">Active Reps</p>
-                  <p className="text-3xl font-bold text-gray-900 mt-1">
+                  <p className="text-[13px] font-medium text-muted-foreground">Active Reps</p>
+                  <p className="mt-2 text-[28px] font-semibold leading-none tracking-tight tabular-nums text-foreground">
                     {metrics?.activeReps || 0}
                   </p>
-                  <p className="text-sm text-gray-500 mt-2">
+                  <p className="mt-2.5 text-xs text-muted-foreground">
                     Recommended: <span className="font-semibold">{metrics?.recommendedReps || 0}</span>
                   </p>
                 </div>
-                <div className="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center">
-                  <Users className="h-6 w-6 text-green-600" />
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-info/10">
+                  <Users className="h-5 w-5 text-info" />
                 </div>
               </div>
             </CardContent>
           </Card>
 
-          <Card className="metric-card">
-            <CardContent className="p-6">
+          <Card>
+            <CardContent className="p-5">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-medium text-gray-600">Avg Daily Visits</p>
-                  <p className="text-3xl font-bold text-gray-900 mt-1">
+                  <p className="text-[13px] font-medium text-muted-foreground">Avg Daily Visits</p>
+                  <p className="mt-2 text-[28px] font-semibold leading-none tracking-tight tabular-nums text-foreground">
                     {metrics?.avgDailyVisits || 0}
                   </p>
-                  <p className="text-sm text-gray-500 mt-2">
+                  <p className="mt-2.5 text-xs text-muted-foreground">
                     Target: <span className="font-semibold">{metrics?.minDailyVisits || 0}-{metrics?.maxDailyVisits || 0}</span> per rep
                   </p>
                 </div>
-                <div className="w-12 h-12 bg-yellow-100 rounded-xl flex items-center justify-center">
-                  <CalendarCheck className="h-6 w-6 text-yellow-600" />
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-warning/10">
+                  <CalendarCheck className="h-5 w-5 text-warning" />
                 </div>
               </div>
             </CardContent>
           </Card>
 
-          <Card className="metric-card">
-            <CardContent className="p-6">
+          <Card>
+            <CardContent className="p-5">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-medium text-gray-600">Territory Balance</p>
-                  <p className="text-3xl font-bold text-gray-900 mt-1">
+                  <p className="text-[13px] font-medium text-muted-foreground">Territory Balance</p>
+                  <p className="mt-2 text-[28px] font-semibold leading-none tracking-tight tabular-nums text-foreground">
                     {metrics?.territoryBalance ?? 0}%
                   </p>
-                  <p className="text-sm text-gray-500 mt-2">
+                  <p className="mt-2.5 text-xs text-muted-foreground">
                     Workload evenness across reps
                   </p>
                 </div>
-                <div className="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center">
-                  <TrendingUp className="h-6 w-6 text-green-600" />
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-success/10">
+                  <TrendingUp className="h-5 w-5 text-success" />
                 </div>
               </div>
             </CardContent>
@@ -414,32 +427,24 @@ export default function Dashboard() {
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-500">
               <Card>
                 <CardHeader>
-                  <CardTitle>File Analysis Summary</CardTitle>
+                  <CardTitle>File analysis</CardTitle>
+                  <CardDescription>What the uploaded list holds, by visit frequency.</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <div className="grid grid-cols-4 gap-4">
-                    <div className="text-center p-4 bg-gray-50 rounded-lg">
-                      <p className="text-sm text-gray-600">Total Outlets</p>
-                      <p className="text-2xl font-bold text-gray-900">{outlets.length}</p>
-                    </div>
-                    <div className="text-center p-4 bg-green-50 rounded-lg border border-green-200">
-                      <p className="text-sm text-green-600">VF1 (Monthly)</p>
-                      <p className="text-2xl font-bold text-green-700">
-                        {outlets.filter(o => o.visitFrequency === 1).length}
-                      </p>
-                    </div>
-                    <div className="text-center p-4 bg-orange-50 rounded-lg border border-orange-200">
-                      <p className="text-sm text-orange-600">VF2 (Bi-weekly)</p>
-                      <p className="text-2xl font-bold text-orange-700">
-                        {outlets.filter(o => o.visitFrequency === 2).length}
-                      </p>
-                    </div>
-                    <div className="text-center p-4 bg-red-50 rounded-lg border border-red-200">
-                      <p className="text-sm text-red-600">VF4 (Weekly)</p>
-                      <p className="text-2xl font-bold text-red-700">
-                        {outlets.filter(o => o.visitFrequency === 4).length}
-                      </p>
-                    </div>
+                  <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                    {[
+                      { label: "Total outlets", value: outlets.length, dot: "bg-foreground" },
+                      { label: "VF1 · monthly", value: outlets.filter(o => o.visitFrequency === 1).length, dot: "bg-success" },
+                      { label: "VF2 · every two weeks", value: outlets.filter(o => o.visitFrequency === 2).length, dot: "bg-warning" },
+                      { label: "VF4 · weekly", value: outlets.filter(o => o.visitFrequency === 4).length, dot: "bg-primary" },
+                    ].map(t => (
+                      <div key={t.label} className="rounded-xl border bg-muted/40 px-4 py-3.5">
+                        <p className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                          <span className={`h-2 w-2 rounded-full ${t.dot}`} />{t.label}
+                        </p>
+                        <p className="mt-1.5 text-2xl font-semibold tracking-tight tabular-nums text-foreground">{t.value.toLocaleString()}</p>
+                      </div>
+                    ))}
                   </div>
                 </CardContent>
               </Card>
@@ -454,16 +459,16 @@ export default function Dashboard() {
           {/* Initial Optimization Result (shown after optimization) */}
           {hasOptimization && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-500">
-              <Card className="border-[#e5e5e5] dark:border-[#38383a] bg-white dark:bg-[#1c1c1e]">
+              <Card className="border-border dark:border-border bg-white dark:bg-card">
                 <CardContent className="p-6">
                   <div className="flex items-center space-x-4">
-                    <div className="w-12 h-12 bg-[#f5f5f7] dark:bg-[#2c2c2e] rounded-xl flex items-center justify-center">
-                      <Users className="h-6 w-6 text-[#1d1d1f] dark:text-white" />
+                    <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-success/10">
+                      <Users className="h-6 w-6 text-success" />
                     </div>
                     <div>
-                      <p className="text-sm font-medium text-[#1d1d1f] dark:text-white">Initial Optimization Complete</p>
-                      <p className="text-3xl font-bold text-[#1d1d1f] dark:text-white">{reps.length} Sales Reps Required</p>
-                      <p className="text-sm text-[#86868b] mt-1">Now configure which reps should have role hierarchy applied</p>
+                      <p className="eyebrow">Initial optimization complete</p>
+                      <p className="mt-1 text-2xl font-semibold tracking-tight text-foreground">{reps.length} sales reps required</p>
+                      <p className="text-sm text-muted-foreground mt-1">Now configure which reps should have role hierarchy applied</p>
                     </div>
                   </div>
                 </CardContent>
@@ -478,11 +483,9 @@ export default function Dashboard() {
                 <CardHeader>
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 bg-[#f5f5f7] dark:bg-[#2c2c2e] rounded-lg flex items-center justify-center">
-                        <UserCog className="h-5 w-5 text-[#1d1d1f] dark:text-white" />
-                      </div>
+                      <StepBadge n={3} />
                       <div>
-                        <CardTitle>Step 3: Configure Role Hierarchy</CardTitle>
+                        <CardTitle>Configure the role hierarchy</CardTitle>
                         <CardDescription>
                           Define how Merchandisers and Collection Agents follow Sales Rep routes
                         </CardDescription>
@@ -490,7 +493,7 @@ export default function Dashboard() {
                     </div>
                     <div className="flex items-center gap-2">
                       {hasRoleHierarchy && (
-                        <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200">
+                        <Badge variant="success">
                           Configured
                         </Badge>
                       )}
@@ -508,26 +511,26 @@ export default function Dashboard() {
                 
                 {roleHierarchyExpanded && (
                   <CardContent className="space-y-4">
-                    <div className="p-3 bg-[#f5f5f7] dark:bg-[#2c2c2e] rounded-xl border border-[#e5e5e5] dark:border-[#38383a] text-sm text-[#1d1d1f] dark:text-white">
+                    <div className="p-3 bg-muted dark:bg-muted rounded-xl border border-border dark:border-border text-sm text-foreground dark:text-white">
                       <strong>How it works:</strong> Sales Reps visit outlets first. Other roles (Merchandiser, Collection Agent) 
                       automatically follow the same route on subsequent days based on the day offset you configure.
                     </div>
                     
                     {/* Mode Selector */}
-                    <div className="p-4 bg-[#f5f5f7] dark:bg-[#2c2c2e] rounded-xl border border-[#e5e5e5] dark:border-[#38383a]">
-                      <Label className="text-sm font-medium mb-3 block text-[#1d1d1f] dark:text-white">Configuration Mode</Label>
+                    <div className="p-4 bg-muted dark:bg-muted rounded-xl border border-border dark:border-border">
+                      <Label className="text-sm font-medium mb-3 block text-foreground dark:text-white">Configuration Mode</Label>
                       <div className="flex gap-3">
                         <button
                           onClick={() => setOffsetMode('global')}
                           className={`flex-1 p-3 rounded-xl border-2 transition-all text-left ${
                             offsetMode === 'global' 
-                              ? 'border-[#1d1d1f] bg-white dark:bg-[#1c1c1e]' 
-                              : 'border-[#d2d2d7] dark:border-[#424245] hover:border-[#86868b]'
+                              ? 'border-foreground bg-white dark:bg-card' 
+                              : 'border-input dark:border-input hover:border-muted-foreground'
                           }`}
                           data-testid="btn-mode-global"
                         >
-                          <div className="font-medium text-sm text-[#1d1d1f] dark:text-white">Global (Organization-wide)</div>
-                          <div className="text-xs text-[#86868b] mt-1">
+                          <div className="font-medium text-sm text-foreground dark:text-white">Global (Organization-wide)</div>
+                          <div className="text-xs text-muted-foreground mt-1">
                             Same day offsets apply to all roles and reps uniformly
                           </div>
                         </button>
@@ -541,25 +544,25 @@ export default function Dashboard() {
                           }}
                           className={`flex-1 p-3 rounded-xl border-2 transition-all text-left ${
                             offsetMode === 'custom' 
-                              ? 'border-[#1d1d1f] bg-white dark:bg-[#1c1c1e]' 
-                              : 'border-[#d2d2d7] dark:border-[#424245] hover:border-[#86868b]'
+                              ? 'border-foreground bg-white dark:bg-card' 
+                              : 'border-input dark:border-input hover:border-muted-foreground'
                           }`}
                           data-testid="btn-mode-custom"
                         >
-                          <div className="font-medium text-sm text-[#1d1d1f] dark:text-white">Custom (Selected Reps Only)</div>
-                          <div className="text-xs text-[#86868b] mt-1">
+                          <div className="font-medium text-sm text-foreground dark:text-white">Custom (Selected Reps Only)</div>
+                          <div className="text-xs text-muted-foreground mt-1">
                             Apply role hierarchy only to selected reps
                           </div>
                         </button>
                       </div>
                       {offsetMode === 'custom' && (
                         <div className="mt-4 space-y-3">
-                          <div className="p-2 bg-[#f5f5f7] dark:bg-[#2c2c2e] border border-[#e5e5e5] dark:border-[#38383a] rounded-xl text-xs text-[#1d1d1f] dark:text-white">
+                          <div className="p-2 bg-muted dark:bg-muted border border-border dark:border-border rounded-xl text-xs text-foreground dark:text-white">
                             Select which reps should have the role hierarchy applied. Unselected reps will only have Sales Rep schedules.
                           </div>
                           <div className="border rounded-lg p-3 max-h-48 overflow-y-auto">
                             <div className="flex items-center justify-between mb-2">
-                              <Label className="text-xs text-gray-500">Select Reps</Label>
+                              <Label className="text-xs text-muted-foreground">Select Reps</Label>
                               <div className="flex gap-2">
                                 <Button
                                   variant="ghost"
@@ -586,7 +589,7 @@ export default function Dashboard() {
                                   className={`flex items-center gap-2 p-2 rounded border cursor-pointer transition-all ${
                                     selectedRepIds.includes(rep.id)
                                       ? 'bg-primary/10 border-primary'
-                                      : 'bg-white border-gray-200 hover:border-gray-300'
+                                      : 'bg-white border-border hover:border-input'
                                   }`}
                                 >
                                   <input
@@ -607,7 +610,7 @@ export default function Dashboard() {
                               ))}
                             </div>
                             {reps.length > 0 && (
-                              <p className="text-xs text-gray-500 mt-2">
+                              <p className="text-xs text-muted-foreground mt-2">
                                 {selectedRepIds.length} of {reps.length} reps selected
                               </p>
                             )}
@@ -625,7 +628,7 @@ export default function Dashboard() {
                           >
                             <div className="flex-1 grid grid-cols-1 md:grid-cols-4 gap-3">
                               <div>
-                                <Label className="text-xs text-gray-500">Role Name</Label>
+                                <Label className="text-xs text-muted-foreground">Role Name</Label>
                                 <Input
                                   value={role.roleName}
                                   onChange={(e) => handleRoleChange(index, 'roleName', e.target.value)}
@@ -635,7 +638,7 @@ export default function Dashboard() {
                                 />
                               </div>
                               <div>
-                                <Label className="text-xs text-gray-500">Day Offset</Label>
+                                <Label className="text-xs text-muted-foreground">Day Offset</Label>
                                 <div className="flex items-center gap-2">
                                   <Input
                                     type="number"
@@ -647,13 +650,13 @@ export default function Dashboard() {
                                     className="h-9 w-20"
                                     data-testid={`input-offset-${index}`}
                                   />
-                                  <span className="text-xs text-gray-500">
+                                  <span className="text-xs text-muted-foreground">
                                     {role.offsetDays === 0 ? '(Same day)' : `(+${role.offsetDays} day${role.offsetDays > 1 ? 's' : ''})`}
                                   </span>
                                 </div>
                               </div>
                               <div>
-                                <Label className="text-xs text-gray-500">Color</Label>
+                                <Label className="text-xs text-muted-foreground">Color</Label>
                                 <div className="flex items-center gap-2">
                                   <input
                                     type="color"
@@ -690,7 +693,7 @@ export default function Dashboard() {
                           </div>
                           {index < roles.length - 1 && (
                             <div className="flex justify-center py-1">
-                              <ArrowDown className="h-4 w-4 text-gray-400" />
+                              <ArrowDown className="h-4 w-4 text-muted-foreground/70" />
                             </div>
                           )}
                         </div>
@@ -726,7 +729,7 @@ export default function Dashboard() {
                 {!roleHierarchyExpanded && (
                   <CardContent>
                     <div className="flex items-center gap-3 mb-2">
-                      <Badge variant="outline" className={`${offsetMode === 'global' ? 'bg-[#f5f5f7] text-[#1d1d1f] border-[#d2d2d7]' : 'bg-[#f5f5f7] text-[#1d1d1f] border-[#d2d2d7]'}`}>
+                      <Badge variant="outline" className={`${offsetMode === 'global' ? 'bg-muted text-foreground border-input' : 'bg-muted text-foreground border-input'}`}>
                         {offsetMode === 'global' ? 'Global Mode' : 'Custom Mode'}
                       </Badge>
                     </div>
@@ -742,7 +745,7 @@ export default function Dashboard() {
                         </Badge>
                       ))}
                     </div>
-                    <p className="text-xs text-gray-500 mt-2">
+                    <p className="text-xs text-muted-foreground mt-2">
                       Click to expand and customize role hierarchy
                     </p>
                   </CardContent>
@@ -756,7 +759,7 @@ export default function Dashboard() {
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-500">
               <Card>
                 <CardHeader>
-                  <CardTitle>Step 4: View Results - Maps, Territories & Schedules</CardTitle>
+                  <CardTitle className="flex items-center"><StepBadge n={4} />Results: maps, territories and schedules</CardTitle>
                 </CardHeader>
                 <CardContent className="p-4">
                   {/* Main Dashboard Tabs */}
@@ -836,7 +839,7 @@ export default function Dashboard() {
             </DialogDescription>
           </DialogHeader>
 
-          <div className="flex items-start space-x-3 rounded-lg border border-[#e5e5e5] dark:border-[#38383a] p-3">
+          <div className="flex items-start space-x-3 rounded-lg border border-border dark:border-border p-3">
             <Checkbox
               id="reset-scenarios"
               checked={resetScenariosToo}
@@ -847,7 +850,7 @@ export default function Dashboard() {
               <Label htmlFor="reset-scenarios" className="text-sm font-medium cursor-pointer">
                 Also delete saved scenarios
               </Label>
-              <p className="text-xs text-[#86868b]">
+              <p className="text-xs text-muted-foreground">
                 Leave this off to keep your saved runs on the Scenarios page, so you can still
                 compare the new plan against the old KPIs.
               </p>

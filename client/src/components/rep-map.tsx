@@ -1230,7 +1230,7 @@ export function RepMap() {
                       if (e.target.checked) setSelectedVfs([...selectedVfs, vf].sort());
                       else setSelectedVfs(selectedVfs.filter(x => x !== vf));
                     }}
-                    className="rounded border-gray-300"
+                    className="rounded border-input"
                   />
                   <div className="flex items-center gap-1.5">
                     <div
@@ -1558,9 +1558,9 @@ export function RepMap() {
     <div className="flex h-full flex-col gap-3">
       {/* Toolbar: who we are looking at, and the actions. One row, so the map
           starts near the top of the viewport instead of 1,200px down it. */}
-      <div className="flex flex-wrap items-center gap-3 rounded-xl border bg-card px-4 py-3">
+      <div className="flex flex-wrap items-center gap-3 rounded-2xl border bg-card px-4 py-3 shadow-apple">
         <div className="mr-auto min-w-[180px]">
-          <h2 className="text-lg font-semibold leading-tight">Sales Rep Routes</h2>
+          <h2 className="text-[15px] font-semibold leading-tight tracking-tight">Sales rep routes</h2>
           <p className="text-xs text-muted-foreground">
             {selectedReps.length === 0
               ? "Choose a rep to see their week"
@@ -1575,14 +1575,14 @@ export function RepMap() {
         {/* Play a route: one button when a single day route is on the map,
             a picker when there are several. */}
         {viewMode === 'schedule' && playableRoutes.length === 1 && (
-          <Button size="sm" variant="outline" className="rounded-full" onClick={() => playRoute(playableRoutes[0].key)} data-testid="button-play-route">
-            <Play className="mr-1.5 h-3.5 w-3.5" /> Play {playableRoutes[0].dayLabel}
+          <Button size="sm" variant="outline" className="" onClick={() => playRoute(playableRoutes[0].key)} data-testid="button-play-route">
+            <Play className="h-3.5 w-3.5" /> Play {playableRoutes[0].dayLabel}
           </Button>
         )}
         {viewMode === 'schedule' && playableRoutes.length > 1 && (
           <Select value="" onValueChange={playRoute}>
-            <SelectTrigger className="h-9 w-[220px] rounded-full text-sm" data-testid="select-play-route">
-              <span className="flex items-center"><Play className="mr-1.5 h-3.5 w-3.5" /> Play a route…</span>
+            <SelectTrigger className="h-9 w-[220px] text-sm" data-testid="select-play-route">
+              <span><span className="inline-flex items-center gap-1.5 text-foreground"><Play className="h-3.5 w-3.5" /> Play a route…</span></span>
             </SelectTrigger>
             <SelectContent>
               {playableRoutes.map(r => (
@@ -1597,7 +1597,7 @@ export function RepMap() {
 
         {/* Action Buttons */}
         {selectedReps.length > 0 && (
-          <div className="flex gap-2 mt-4">
+          <div className="flex flex-wrap gap-2">
             <Button
               onClick={() => {
                 setIsOptimizing(true);
@@ -1607,11 +1607,11 @@ export function RepMap() {
               size="sm"
             >
               {isOptimizing ? (
-                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                <div className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white"></div>
               ) : (
-                <Zap className="h-4 w-4 mr-2" />
+                <Zap className="h-4 w-4" />
               )}
-              Optimize Routes
+              Optimize routes
             </Button>
             <Button
               onClick={() => {
@@ -1619,13 +1619,13 @@ export function RepMap() {
                 saveRoutesMutation.mutate();
               }}
               disabled={isSaving || selectedReps.length === 0}
-              variant="secondary"
+              variant="outline"
               size="sm"
             >
               {isSaving ? (
-                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-800 mr-2"></div>
+                <div className="h-4 w-4 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-foreground"></div>
               ) : (
-                <Save className="h-4 w-4 mr-2" />
+                <Save className="h-4 w-4" />
               )}
               Save
             </Button>
@@ -1636,9 +1636,9 @@ export function RepMap() {
               size="sm"
             >
               {isExporting ? (
-                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-800 mr-2"></div>
+                <div className="h-4 w-4 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-foreground"></div>
               ) : (
-                <Download className="h-4 w-4 mr-2" />
+                <Download className="h-4 w-4" />
               )}
               Export to Excel
             </Button>
@@ -1652,7 +1652,7 @@ export function RepMap() {
           the top of the page. */}
         {/* Pending rep reassignments queued from the map */}
         {pendingCount > 0 && (
-          <div className="mt-4 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-xl border border-blue-200 dark:border-blue-800" data-testid="pending-reassignments">
+          <div className="rounded-xl border border-info/20 bg-info/[0.06] p-3" data-testid="pending-reassignments">
             <div className="flex items-center justify-between gap-3">
               <div className="text-sm text-blue-900 dark:text-blue-200 min-w-0">
                 <span className="font-semibold">{pendingCount} outlet{pendingCount === 1 ? '' : 's'} queued for reassignment.</span>{' '}
@@ -1765,7 +1765,7 @@ export function RepMap() {
       {/* Controls beside the map, not stacked above it. The map is what the
           page is for, so it gets the room. */}
       <div className="flex min-h-0 flex-1 flex-col gap-3 lg:flex-row">
-        <aside className="w-full shrink-0 space-y-4 overflow-y-auto rounded-xl border bg-card p-4 lg:w-[268px]">
+        <aside className="w-full shrink-0 space-y-4 overflow-y-auto rounded-2xl border bg-card p-4 shadow-apple lg:w-[268px]">
           {selectedReps.length > 0 && (
             <div className="space-y-2">
               <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">View</label>
@@ -1836,7 +1836,7 @@ export function RepMap() {
                         setShowAllLinkedRoles(false);
                       }
                     }}
-                    className="rounded border-gray-300"
+                    className="rounded border-input"
                     data-testid={`checkbox-role-${role.role}`}
                   />
                   <div className="flex items-center gap-1">
@@ -1855,7 +1855,7 @@ export function RepMap() {
                   type="checkbox"
                   checked={showAllLinkedRoles}
                   onChange={(e) => setShowAllLinkedRoles(e.target.checked)}
-                  className="rounded border-gray-300"
+                  className="rounded border-input"
                   data-testid="checkbox-show-all-roles"
                 />
                 <span className="text-sm">Show all linked role routes (with day offsets)</span>
@@ -1916,7 +1916,7 @@ export function RepMap() {
           className={cn(
             "relative",
             isFullscreen
-              ? "fixed inset-0 z-[60] bg-white dark:bg-[#1c1c1e] p-2"
+              ? "fixed inset-0 z-[60] bg-white dark:bg-card p-2"
               // Grow into whatever the toolbar and notices leave behind, with a
               // floor so the map is still usable on a short laptop screen.
               : "flex-1 min-h-[520px]",
@@ -1951,7 +1951,7 @@ export function RepMap() {
               an always-open panel would cover the map it is meant to filter. */}
           {isFullscreen && (
             <div className="absolute top-3 left-3 z-30 w-[min(20rem,calc(100vw-5.5rem))]">
-              <div className="rounded-xl border bg-white/95 dark:bg-[#1c1c1e]/95 backdrop-blur shadow-lg">
+              <div className="rounded-xl border bg-white/95 dark:bg-card/95 backdrop-blur shadow-lg">
                 <button
                   type="button"
                   onClick={() => setFullscreenFiltersOpen(o => !o)}
@@ -1989,7 +1989,7 @@ export function RepMap() {
 
           {/* Loading Skeleton */}
           {(schedulesLoading || !isMapLoaded) && (
-            <div className="absolute inset-0 bg-white/80 dark:bg-gray-900/80 flex flex-col items-center justify-center rounded-lg z-20">
+            <div className="absolute inset-0 bg-white/80 dark:bg-card/80 flex flex-col items-center justify-center rounded-lg z-20">
               <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-primary mb-3"></div>
               <div className="animate-pulse space-y-2 text-center">
                 <p className="text-sm font-medium text-muted-foreground">Loading map data...</p>
@@ -2000,8 +2000,8 @@ export function RepMap() {
 
         {/* Help message when nothing is selected */}
         {selectedReps.length === 0 && (
-          <div className="mt-4 p-4 bg-gray-50 border border-gray-200 rounded-lg text-center">
-            <p className="text-sm text-gray-600">
+          <div className="mt-4 p-4 bg-muted/60 border border-border rounded-lg text-center">
+            <p className="text-sm text-muted-foreground">
               Select reps, days, and weeks from the filters above to view their routes on the map
             </p>
           </div>
@@ -2009,13 +2009,13 @@ export function RepMap() {
 
         {/* Empty state when no reps or schedules exist */}
         {reps.length === 0 || schedules.length === 0 ? (
-          <div className="mt-4 p-6 bg-gray-50 border border-dashed border-gray-300 rounded-lg text-center space-y-4">
-            <MapPin className="h-10 w-10 text-gray-400 mx-auto" />
+          <div className="mt-4 p-6 bg-muted/60 border border-dashed border-input rounded-lg text-center space-y-4">
+            <MapPin className="h-10 w-10 text-muted-foreground/70 mx-auto" />
             <div>
-              <h4 className="text-sm font-semibold text-gray-700 mb-1">No route data available</h4>
-              <p className="text-xs text-gray-500">Get started by uploading outlet data and running route optimization.</p>
+              <h4 className="text-sm font-semibold text-foreground/80 mb-1">No route data available</h4>
+              <p className="text-xs text-muted-foreground">Get started by uploading outlet data and running route optimization.</p>
             </div>
-            <div className="flex items-center justify-center gap-6 text-xs text-gray-500">
+            <div className="flex items-center justify-center gap-6 text-xs text-muted-foreground">
               <div className="flex items-center gap-1.5">
                 <Upload className="h-4 w-4" />
                 <span>Upload outlets</span>
@@ -2054,7 +2054,7 @@ export function RepMap() {
 
         {/* VF Color Legend (shown when coloring by VF) */}
         {colorBy === 'vf' && selectedReps.length > 0 && (
-          <div className="mt-4 p-3 border rounded-lg bg-gray-50 dark:bg-gray-900/30">
+          <div className="mt-4 p-3 border rounded-lg bg-muted/60 dark:bg-card/30">
             <h4 className="font-semibold mb-2 text-sm">Visit Frequency Legend</h4>
             <div className="flex flex-wrap gap-x-4 gap-y-1.5">
               {[1, 2, 3, 4].map((vf) => (
@@ -2095,7 +2095,7 @@ export function RepMap() {
                         {' · '}{daysOfWeek[dayData.dayOfWeek - 1] || `Day ${dayData.dayOfWeek}`} (W{dayData.week})
                         {' · '}{dayData.outlets.length} outlets
                         {dayData.schedule.totalDistance && (
-                          <> · <span className="font-bold">{dayData.schedule.totalDistance.toFixed(1)} km</span></>
+                          <> · <span className="font-semibold">{dayData.schedule.totalDistance.toFixed(1)} km</span></>
                         )}
                       </span>
                       <Button
@@ -2170,16 +2170,16 @@ export function RepMap() {
             </DialogHeader>
             <div className="space-y-4">
               <div>
-                <p className="text-sm text-gray-600">Outlet:</p>
+                <p className="text-sm text-muted-foreground">Outlet:</p>
                 <p className="font-medium">{editingOutlet?.name}</p>
               </div>
               <div>
-                <p className="text-sm text-gray-600">Current route:</p>
+                <p className="text-sm text-muted-foreground">Current route:</p>
                 <Badge variant="outline" data-testid="text-current-route">{currentRouteLabel}</Badge>
-                {editingOutlet?.territory && <span className="ml-2 text-xs text-gray-500">{editingOutlet.territory}</span>}
+                {editingOutlet?.territory && <span className="ml-2 text-xs text-muted-foreground">{editingOutlet.territory}</span>}
               </div>
               <div>
-                <p className="text-sm text-gray-600">Current Rep:</p>
+                <p className="text-sm text-muted-foreground">Current Rep:</p>
                 <Badge variant="outline">
                   {editingOutlet?.currentRepId 
                     ? reps.find(r => r.id === editingOutlet.currentRepId)?.name || 'Unknown'
@@ -2187,7 +2187,7 @@ export function RepMap() {
                 </Badge>
               </div>
               <div>
-                <p className="text-sm text-gray-600 mb-2">Move to route (closest first):</p>
+                <p className="text-sm text-muted-foreground mb-2">Move to route (closest first):</p>
                 {/* A route, not a zone label. Day routes are cut from geography,
                     so changing the zone name - or even the rep - dropped the
                     outlet straight back into the same day. Picking the route
@@ -2205,19 +2205,19 @@ export function RepMap() {
                   </SelectContent>
                 </Select>
                 {rankedRoutes.length > 0 && (
-                  <p className="text-xs text-gray-500 mt-1" data-testid="text-nearest-route">
+                  <p className="text-xs text-muted-foreground mt-1" data-testid="text-nearest-route">
                     Nearest route: <span className="font-medium">{rankedRoutes[0].repName} · {rankedRoutes[0].dayName} W{rankedRoutes[0].weeks.join('+')}</span>, {fmtKm(rankedRoutes[0].nearestKm)} from this outlet.
                     {newRoute && newRoute !== rankedRoutes[0].key && (
-                      <button type="button" className="ml-1 underline hover:text-gray-700" onClick={() => setNewRoute(rankedRoutes[0].key)}>Use it</button>
+                      <button type="button" className="ml-1 underline hover:text-foreground/80" onClick={() => setNewRoute(rankedRoutes[0].key)}>Use it</button>
                     )}
                   </p>
                 )}
-                <p className="text-xs text-gray-500 mt-1">
+                <p className="text-xs text-muted-foreground mt-1">
                   The outlet leaves its current route, joins this one on every repeat, and stays there when routes are rebuilt. A new optimization from the dashboard starts clean.
                 </p>
               </div>
               <div>
-                <p className="text-sm text-gray-600 mb-2">Reassign to Rep (sorted by distance to this outlet):</p>
+                <p className="text-sm text-muted-foreground mb-2">Reassign to Rep (sorted by distance to this outlet):</p>
                 <Select value={newRepId} onValueChange={setNewRepId}>
                   <SelectTrigger data-testid="select-reassign-rep">
                     <SelectValue placeholder="Keep current rep or select new" />
@@ -2233,7 +2233,7 @@ export function RepMap() {
                       ))}
                   </SelectContent>
                 </Select>
-                <p className="text-xs text-gray-500 mt-1">
+                <p className="text-xs text-muted-foreground mt-1">
                   Rep changes are queued — hit "Apply &amp; Reoptimize" on the map when you're done editing.
                 </p>
               </div>

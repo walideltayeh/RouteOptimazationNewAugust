@@ -210,7 +210,7 @@ export default function RepScheduleTable() {
         <CardContent className="p-6">
           <div className="flex items-center justify-center">
             <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary"></div>
-            <span className="ml-2 text-sm text-gray-600">Loading schedules...</span>
+            <span className="ml-2 text-sm text-muted-foreground">Loading schedules...</span>
           </div>
         </CardContent>
       </Card>
@@ -230,7 +230,7 @@ export default function RepScheduleTable() {
             {/* Role Selector */}
             {availableRoles.length > 1 && (
               <div className="flex items-center gap-2">
-                <Users className="h-4 w-4 text-gray-500" />
+                <Users className="h-4 w-4 text-muted-foreground" />
                 <div className="flex gap-1">
                   {availableRoles.map((role) => (
                     <button
@@ -319,13 +319,13 @@ export default function RepScheduleTable() {
         {/* Rep Schedule Table */}
         {repsWithStats.length === 0 ? (
           <div className="text-center py-8">
-            <p className="text-gray-500">No routes available. Upload outlet data and run optimization to generate route schedules.</p>
+            <p className="text-muted-foreground">No routes available. Upload outlet data and run optimization to generate route schedules.</p>
           </div>
         ) : (
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
-                <TableRow className="bg-gray-50">
+                <TableRow className="bg-muted/60">
                   <TableHead className="font-semibold">Rep Name</TableHead>
                   <TableHead className="font-semibold">Territory</TableHead>
                   <TableHead className="text-center font-semibold">Total Zones</TableHead>
@@ -338,15 +338,15 @@ export default function RepScheduleTable() {
               </TableHeader>
               <TableBody>
                 {repsWithStats.map((rep) => (
-                  <TableRow key={rep.id} className="hover:bg-gray-50">
+                  <TableRow key={rep.id} className="hover:bg-muted/60">
                     <TableCell>
                       <div className="flex items-center">
                         <div className={`w-8 h-8 ${rep.avatarColor} rounded-full flex items-center justify-center text-white text-sm font-medium mr-3`}>
                           {rep.initials}
                         </div>
                         <div>
-                          <p className="font-medium text-gray-900">{rep.name}</p>
-                          <p className="text-sm text-gray-500">{rep.code}</p>
+                          <p className="font-medium text-foreground">{rep.name}</p>
+                          <p className="text-sm text-muted-foreground">{rep.code}</p>
                         </div>
                       </div>
                     </TableCell>
@@ -361,20 +361,20 @@ export default function RepScheduleTable() {
                       </Select>
                     </TableCell>
                     <TableCell className="text-center">
-                      <span className="text-lg font-semibold text-gray-900">
+                      <span className="text-lg font-semibold text-foreground">
                         {rep.totalZones}
                       </span>
                     </TableCell>
                     <TableCell className="text-center">
-                      <span className="text-lg font-semibold text-gray-900">
+                      <span className="text-lg font-semibold text-foreground">
                         {rep.weeklyZones}
                       </span>
                     </TableCell>
                     <TableCell className="text-center">
-                      <span className="text-sm text-gray-600">{rep.workingDaysPerWeek} days</span>
+                      <span className="text-sm text-muted-foreground">{rep.workingDaysPerWeek} days</span>
                     </TableCell>
                     <TableCell className="text-center">
-                      <span className="text-sm text-gray-600">{rep.totalZones > 0 ? '100%' : '0%'}</span>
+                      <span className="text-sm text-muted-foreground">{rep.totalZones > 0 ? '100%' : '0%'}</span>
                     </TableCell>
                     <TableCell className="text-center">
                       <Badge 
@@ -437,7 +437,7 @@ export default function RepScheduleTable() {
         {/* Pagination */}
         {repsWithStats.length > 0 && (
           <div className="flex items-center justify-between mt-6 pt-4 border-t">
-            <p className="text-sm text-gray-700">
+            <p className="text-sm text-foreground/80">
               Showing <span className="font-medium">1</span> to{" "}
               <span className="font-medium">{Math.min(repsWithStats.length, 10)}</span> of{" "}
               <span className="font-medium">{repsWithStats.length}</span> results

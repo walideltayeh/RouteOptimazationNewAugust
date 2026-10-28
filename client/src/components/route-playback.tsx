@@ -83,17 +83,17 @@ export function RoutePlaybackPanel({ state, onPlay, onPause, onRestart, onStop, 
     ? state.durationMin * fraction
     : drivingMinutes(state.km);
   return (
-    <div className="absolute bottom-3 left-3 z-30 w-[min(420px,calc(100%-24px))] rounded-xl border border-[#e5e5e5] bg-white/95 p-3 shadow-lg backdrop-blur dark:border-[#38383a] dark:bg-[#1c1c1e]/95" data-testid="route-playback">
+    <div className="absolute bottom-3 left-3 z-30 w-[min(420px,calc(100%-24px))] rounded-xl border border-border bg-white/95 p-3 shadow-lg backdrop-blur dark:border-border dark:bg-card/95" data-testid="route-playback">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-sm font-semibold">
             <span className="inline-block h-3 w-3 rounded-full" style={{ backgroundColor: state.route.color }} />
             <span className="truncate">{state.route.repName} · {state.route.dayLabel}</span>
-            <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${state.source === "road" ? "bg-green-50 text-green-700" : "bg-[#f5f5f7] text-[#6e6e73]"}`} data-testid="badge-playback-source">
+            <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${state.source === "road" ? "bg-green-50 text-green-700" : "bg-muted text-muted-foreground"}`} data-testid="badge-playback-source">
               {state.source === "road" ? "Road" : "Straight line"}
             </span>
           </div>
-          <div className="mt-0.5 truncate text-xs text-[#6e6e73]" title={stopName}>
+          <div className="mt-0.5 truncate text-xs text-muted-foreground" title={stopName}>
             {state.done ? `Route complete · ${n} stops` : `Stop ${current} of ${n}${stopName ? ` · ${stopName}` : ""}`}
           </div>
         </div>
@@ -101,28 +101,28 @@ export function RoutePlaybackPanel({ state, onPlay, onPause, onRestart, onStop, 
       </div>
 
       <div className="mt-2 flex items-baseline gap-3">
-        <div className="text-2xl font-semibold tabular-nums" data-testid="text-playback-km">{state.km.toFixed(1)}<span className="ml-1 text-sm font-normal text-[#6e6e73]">of {state.totalKm.toFixed(1)} km</span></div>
-        <div className="flex items-center gap-1 text-xs text-[#6e6e73]"><Car className="h-3.5 w-3.5" /> ~{Math.round(minutes)} min driving</div>
+        <div className="text-2xl font-semibold tabular-nums" data-testid="text-playback-km">{state.km.toFixed(1)}<span className="ml-1 text-sm font-normal text-muted-foreground">of {state.totalKm.toFixed(1)} km</span></div>
+        <div className="flex items-center gap-1 text-xs text-muted-foreground"><Car className="h-3.5 w-3.5" /> ~{Math.round(minutes)} min driving</div>
       </div>
 
       <input
         type="range" min={0} max={1000} value={Math.round(fraction * 1000)}
         onChange={e => onSeek(Number(e.target.value) / 1000)}
-        className="mt-2 w-full accent-[#8B0000]" aria-label="Position along the route" data-testid="slider-playback"
+        className="mt-2 w-full accent-primary" aria-label="Position along the route" data-testid="slider-playback"
       />
 
       <div className="mt-2 flex items-center gap-1.5">
         {state.playing
-          ? <Button size="sm" className="h-7 rounded-full px-3" onClick={onPause} data-testid="button-playback-pause"><Pause className="mr-1 h-3.5 w-3.5" /> Pause</Button>
-          : <Button size="sm" className="h-7 rounded-full px-3" onClick={onPlay} data-testid="button-playback-play"><Play className="mr-1 h-3.5 w-3.5" /> {state.done ? "Replay" : state.km > 0 ? "Resume" : "Play"}</Button>}
-        <Button size="sm" variant="outline" className="h-7 rounded-full px-2" onClick={onRestart} title="Restart"><RotateCcw className="h-3.5 w-3.5" /></Button>
+          ? <Button size="sm" className="h-7 px-3" onClick={onPause} data-testid="button-playback-pause"><Pause className="mr-1 h-3.5 w-3.5" /> Pause</Button>
+          : <Button size="sm" className="h-7 px-3" onClick={onPlay} data-testid="button-playback-play"><Play className="mr-1 h-3.5 w-3.5" /> {state.done ? "Replay" : state.km > 0 ? "Resume" : "Play"}</Button>}
+        <Button size="sm" variant="outline" className="h-7 px-2" onClick={onRestart} title="Restart"><RotateCcw className="h-3.5 w-3.5" /></Button>
         <div className="ml-auto flex items-center gap-1">
           {[1, 2, 4].map(s => (
-            <button key={s} type="button" onClick={() => onSpeed(s)} className={`rounded-full px-2 py-0.5 text-xs ${state.speed === s ? "bg-[#1d1d1f] text-white" : "bg-[#f5f5f7] text-[#1d1d1f] hover:bg-[#e8e8ed]"}`} data-testid={`button-speed-${s}`}>{s}x</button>
+            <button key={s} type="button" onClick={() => onSpeed(s)} className={`rounded-full px-2 py-0.5 text-xs ${state.speed === s ? "bg-foreground text-white" : "bg-muted text-foreground hover:bg-accent"}`} data-testid={`button-speed-${s}`}>{s}x</button>
           ))}
         </div>
       </div>
-      <p className="mt-1.5 text-[11px] text-[#86868b]">
+      <p className="mt-1.5 text-[11px] text-muted-foreground">
         {state.source === "road"
           ? "Road distance and driving time from the road server."
           : "Straight-line distances, as the optimizer plans them without a road server. Driving time assumes 25 km/h in town."}

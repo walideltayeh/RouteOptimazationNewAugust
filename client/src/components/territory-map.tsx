@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { MapPin, Users, Navigation, Trash2, RefreshCw, Download, X } from 'lucide-react';
+import { MapPin, Users, Navigation, Trash2, RefreshCw, Download, X, LassoSelect, Layers } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { apiRequest } from '@/lib/queryClient';
 import { runJob } from '@/lib/jobs';
@@ -603,7 +603,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
 
       // Create cluster marker for territory
       const clusterEl = document.createElement('div');
-      clusterEl.className = 'cluster-marker flex items-center justify-center rounded-full border-2 border-white shadow-lg cursor-pointer hover:scale-110 transition-transform font-bold text-white text-xs';
+      clusterEl.className = 'cluster-marker flex items-center justify-center rounded-full border-2 border-white shadow-lg cursor-pointer hover:scale-110 transition-transform font-semibold text-white text-xs';
       
       // Size based on outlet count
       const size = Math.min(Math.max(20 + Math.log(territoryOutlets.length) * 8, 24), 60);
@@ -615,9 +615,9 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
       // Add territory info on hover
       const popup = new mapboxgl.Popup({ offset: 25 }).setHTML(`
         <div class="p-2">
-          <h3 class="font-bold text-sm">${territory}</h3>
-          <p class="text-xs text-gray-600">${territoryOutlets.length} outlets</p>
-          <p class="text-xs text-gray-600">VF2: ${territoryOutlets.filter(o => o.visitFrequency === 2).length} | VF4: ${territoryOutlets.filter(o => o.visitFrequency === 4).length}</p>
+          <h3 class="font-semibold text-sm">${territory}</h3>
+          <p class="text-xs text-muted-foreground">${territoryOutlets.length} outlets</p>
+          <p class="text-xs text-muted-foreground">VF2: ${territoryOutlets.filter(o => o.visitFrequency === 2).length} | VF4: ${territoryOutlets.filter(o => o.visitFrequency === 4).length}</p>
         </div>
       `);
 
@@ -752,10 +752,10 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
           {/* Map */}
 
 
-                <div className="w-full h-[500px] rounded-lg bg-gray-100 flex items-center justify-center">
+                <div className="w-full h-[500px] rounded-lg bg-muted flex items-center justify-center">
                   <div className="text-center p-4">
-                    <p className="text-gray-600 mb-2">Map requires Mapbox API token</p>
-                    <p className="text-sm text-gray-500">Mapbox is not configured for this app.</p>
+                    <p className="text-muted-foreground mb-2">Map requires Mapbox API token</p>
+                    <p className="text-sm text-muted-foreground">Mapbox is not configured for this app.</p>
                   </div>
                 </div>
 
@@ -769,74 +769,60 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
 
   return (
     <div className={`flex flex-col h-full ${className}`}>
-      {/* Map Header */}
+      {/* Map toolbar: the page title is in the app header */}
       <Card className="mb-4">
-        <CardHeader className="pb-3">
+        <CardHeader className="p-3 md:px-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <CardTitle className="flex items-center">
-              <Navigation className="mr-2 h-5 w-5" />
-              Territory Map
-            </CardTitle>
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-gray-600">
-              <div className="flex items-center gap-1">
-                <Button
-                  size="sm"
-                  variant={viewMode === 'cluster' ? 'default' : 'outline'}
-                  className={`rounded-full text-xs px-3 h-7 ${viewMode === 'cluster' ? 'bg-[#1d1d1f] text-white hover:bg-[#1d1d1f]/90' : ''}`}
-                  onClick={() => setViewMode('cluster')}
-                >
-                  Cluster View
-                </Button>
-                <Button
-                  size="sm"
-                  variant={viewMode === 'individual' ? 'default' : 'outline'}
-                  className={`rounded-full text-xs px-3 h-7 ${viewMode === 'individual' ? 'bg-[#1d1d1f] text-white hover:bg-[#1d1d1f]/90' : ''}`}
-                  onClick={() => setViewMode('individual')}
-                >
-                  Individual View
-                </Button>
-              </div>
-              <div className="flex items-center gap-1">
-                <Button
-                  size="sm"
-                  variant={lassoActive ? 'default' : 'outline'}
-                  className={`rounded-full text-xs px-3 h-7 ${lassoActive ? 'bg-blue-600 text-white hover:bg-blue-600/90' : ''}`}
-                  onClick={() => setLassoActive(v => !v)}
-                  title="Draw a loop around outlets to select them. Hold Shift to add to the selection; Esc cancels."
-                  data-testid="button-lasso"
-                >
-                  {lassoActive ? 'Lasso on — draw to select' : 'Lasso select'}
-                </Button>
-              </div>
-              <div className="flex items-center">
-                <MapPin className="mr-1 h-4 w-4" />
-                {outlets.length.toLocaleString()} Outlets
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="inline-flex rounded-lg bg-muted p-1" role="tablist" aria-label="Map view">
+                {([['cluster', 'Clusters'], ['individual', 'Outlets']] as const).map(([mode, label]) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    role="tab"
+                    aria-selected={viewMode === mode}
+                    onClick={() => setViewMode(mode)}
+                    className={`rounded-md px-3 py-1 text-[13px] font-medium ${viewMode === mode ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'}`}
+                    data-testid={`button-view-${mode}`}
+                  >
+                    {label}
+                  </button>
+                ))}
               </div>
               <Button
                 size="sm"
+                variant={lassoActive ? 'default' : 'outline'}
+                className="h-9"
+                onClick={() => setLassoActive(v => !v)}
+                title="Draw a loop around outlets to select them. Hold Shift to add to the selection; Esc cancels."
+                aria-pressed={lassoActive}
+                data-testid="button-lasso"
+              >
+                <LassoSelect className="h-4 w-4" />
+                {lassoActive ? 'Lasso on — draw to select' : 'Lasso select'}
+              </Button>
+            </div>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-[13px] text-muted-foreground">
+              <span className="inline-flex items-center gap-1.5"><MapPin className="h-4 w-4" /><span className="font-medium tabular-nums text-foreground">{outlets.length.toLocaleString()}</span> outlets</span>
+              <span className="inline-flex items-center gap-1.5"><Users className="h-4 w-4" /><span className="font-medium tabular-nums text-foreground">{reps.length}</span> reps</span>
+              <span className="inline-flex items-center gap-1.5"><Layers className="h-4 w-4" /><span className="font-medium tabular-nums text-foreground">{Object.keys(territoryGroups).length}</span> territories</span>
+              <Button
+                size="sm"
                 variant="outline"
-                className="rounded-full text-xs px-3 h-7"
+                className="h-9"
                 disabled={isExporting || outlets.length === 0}
                 onClick={() => exportTerritories()}
                 title="Export every territory to Excel, as the map stands now"
                 data-testid="button-export-territory-map"
               >
-                <Download className="mr-1 h-3.5 w-3.5" />
+                <Download className="h-4 w-4" />
                 {isExporting ? 'Exporting…' : 'Export to Excel'}
               </Button>
-              <div className="flex items-center">
-                <Users className="mr-1 h-4 w-4" />
-                {reps.length} Reps
-              </div>
-              <div className="flex items-center">
-                <div className="w-3 h-3 rounded-full bg-blue-500 mr-1"></div>
-                {Object.keys(territoryGroups).length} Territories
-              </div>
             </div>
           </div>
         </CardHeader>
         {(lassoActive || selectedIds.size > 0) && (
-          <div className="mx-6 mb-4 flex flex-wrap items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900 dark:border-blue-900 dark:bg-blue-950 dark:text-blue-100" data-testid="lasso-bar">
+          <div className="mx-3 mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-primary/15 bg-primary/[0.04] px-3 py-2 text-sm text-foreground md:mx-4" data-testid="lasso-bar">
             {selectedIds.size === 0 ? (
               <span className="mr-auto">Drag a loop around the outlets you want. Hold Shift to add to a selection; press Esc to cancel, even mid-loop.</span>
             ) : (
@@ -844,11 +830,11 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                 <span className="mr-auto font-medium" data-testid="text-lasso-count">
                   {selectedIds.size.toLocaleString()} outlet{selectedIds.size === 1 ? '' : 's'} selected
                 </span>
-                <Button size="sm" variant="destructive" className="rounded-full text-xs px-3 h-7" onClick={() => setShowLassoDeleteConfirm(true)} data-testid="button-lasso-delete">
+                <Button size="sm" variant="destructive" className="text-xs px-3 h-7" onClick={() => setShowLassoDeleteConfirm(true)} data-testid="button-lasso-delete">
                   Delete {selectedIds.size.toLocaleString()}
                 </Button>
                 <Select value={reassignTargetId} onValueChange={setReassignTargetId}>
-                  <SelectTrigger className="h-7 w-[220px] rounded-full bg-white text-xs dark:bg-[#1c1c1e]" data-testid="select-lasso-target-rep">
+                  <SelectTrigger className="h-7 w-[220px] bg-white text-xs dark:bg-card" data-testid="select-lasso-target-rep">
                     <SelectValue placeholder="Move to rep…" />
                   </SelectTrigger>
                   <SelectContent>
@@ -864,7 +850,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                 </Select>
                 <Button
                   size="sm"
-                  className="rounded-full text-xs px-3 h-7"
+                  className="text-xs px-3 h-7"
                   disabled={!reassignTargetId || reassignSelectionMutation.isPending}
                   onClick={() => reassignSelectionMutation.mutate({ outletIds: Array.from(selectedIds), toRepId: reassignTargetId })}
                   title="Move the selected outlets to this rep and re-plan the territories involved"
@@ -877,7 +863,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
             <Button
               size="sm"
               variant="outline"
-              className="rounded-full bg-white text-xs px-3 h-7 dark:bg-[#1c1c1e]"
+              className="bg-white text-xs px-3 h-7 dark:bg-card"
               onClick={cancelSelection}
               title="Clear the selection and leave the lasso (Esc)"
               data-testid="button-lasso-cancel"
@@ -959,10 +945,10 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
               <div className="absolute inset-0 bg-white bg-opacity-90 flex items-center justify-center rounded-lg">
                 <div className="text-center">
                   <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
-                  <p className="mt-2 text-sm text-gray-600">
+                  <p className="mt-2 text-sm text-muted-foreground">
                     {viewMode === 'cluster' ? 'Loading territory visualization...' : 'Loading individual outlets...'}
                   </p>
-                  <p className="text-xs text-gray-500">
+                  <p className="text-xs text-muted-foreground">
                     {viewMode === 'cluster'
                       ? `${outlets.length} outlets grouped into ${Object.keys(territoryGroups).length} territories`
                       : `Loading ${outlets.length} individual markers`
@@ -988,23 +974,23 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                 const vf4Count = territoryOutlets.filter(o => o.visitFrequency === 4).length;
 
                 return (
-                  <div key={territory} className="p-3 bg-gray-50 rounded-lg">
+                  <div key={territory} className="p-3 bg-muted/60 rounded-lg">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center space-x-3">
                       <div
-                        className="w-4 h-4 rounded-full border border-gray-300"
+                        className="w-4 h-4 rounded-full border border-input"
                         style={{ backgroundColor: getTerritoryColor(territory) }}
                       ></div>
                       <div>
                         <div className="font-medium text-sm">{territory}</div>
                         {rep && (
-                          <div className="text-xs text-gray-600">{rep.name} ({rep.code})</div>
+                          <div className="text-xs text-muted-foreground">{rep.name} ({rep.code})</div>
                         )}
                       </div>
                     </div>
                     <div className="text-right">
                       <div className="text-sm font-medium">{territoryOutlets.length} outlets</div>
-                      <div className="text-xs text-gray-600">
+                      <div className="text-xs text-muted-foreground">
                         VF2: {vf2Count} | VF4: {vf4Count}
                       </div>
                       {!(territory in UNOWNED_LABELS) && (
@@ -1015,7 +1001,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                     </div>
                   </div>
                   {territory in UNOWNED_LABELS && (
-                    <p className="mt-2 text-xs text-gray-500" data-testid={`text-unowned-${territory === HELD_OUT_LABEL ? 'held-out' : territory === FAR_AWAY_LABEL ? 'far' : 'unassigned'}`}>
+                    <p className="mt-2 text-xs text-muted-foreground" data-testid={`text-unowned-${territory === HELD_OUT_LABEL ? 'held-out' : territory === FAR_AWAY_LABEL ? 'far' : 'unassigned'}`}>
                       {UNOWNED_LABELS[territory]}
                     </p>
                   )}
@@ -1061,24 +1047,24 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                 <div>
                   <div className="font-medium">{selectedOutlet.name}</div>
                   {selectedOutlet.address && (
-                    <div className="text-sm text-gray-600 mt-1">{selectedOutlet.address}</div>
+                    <div className="text-sm text-muted-foreground mt-1">{selectedOutlet.address}</div>
                   )}
                 </div>
 
                 <div className="grid grid-cols-2 gap-3 text-sm">
                   <div>
-                    <span className="text-gray-600">Visit Frequency:</span>
+                    <span className="text-muted-foreground">Visit Frequency:</span>
                     <Badge variant="outline" className="ml-2">
                       VF{selectedOutlet.visitFrequency}
                     </Badge>
                   </div>
                   <div>
-                    <span className="text-gray-600">Territory:</span>
+                    <span className="text-muted-foreground">Territory:</span>
                     <div className="font-medium">{selectedOutlet.territory || 'Unassigned'}</div>
                   </div>
                 </div>
 
-                <div className="text-xs text-gray-500">
+                <div className="text-xs text-muted-foreground">
                   <div>Lat: {selectedOutlet.latitude.toFixed(6)}</div>
                   <div>Lng: {selectedOutlet.longitude.toFixed(6)}</div>
                 </div>

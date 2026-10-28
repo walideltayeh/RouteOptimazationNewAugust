@@ -179,19 +179,19 @@ export default function ScheduleViewModal({ repId, isOpen, onClose, isEditMode }
             <CardContent>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div>
-                  <span className="text-sm text-gray-600">Route Code:</span>
+                  <span className="text-sm text-muted-foreground">Route Code:</span>
                   <div className="font-medium">{rep?.code}</div>
                 </div>
                 <div>
-                  <span className="text-sm text-gray-600">Working Days:</span>
+                  <span className="text-sm text-muted-foreground">Working Days:</span>
                   <div className="font-medium">{rep?.workingDaysPerWeek} days/week</div>
                 </div>
                 <div>
-                  <span className="text-sm text-gray-600">Daily Visits:</span>
+                  <span className="text-sm text-muted-foreground">Daily Visits:</span>
                   <div className="font-medium">{rep?.minDailyVisits}-{rep?.maxDailyVisits}</div>
                 </div>
                 <div>
-                  <span className="text-sm text-gray-600">Status:</span>
+                  <span className="text-sm text-muted-foreground">Status:</span>
                   <Badge variant={rep?.isActive ? "default" : "secondary"}>
                     {rep?.isActive ? "Active" : "Inactive"}
                   </Badge>
@@ -210,7 +210,7 @@ export default function ScheduleViewModal({ repId, isOpen, onClose, isEditMode }
                     <CardTitle>Week {weekNum}</CardTitle>
                   </CardHeader>
                   <CardContent>
-                    <p className="text-gray-500 text-center py-4">No schedule generated for this week</p>
+                    <p className="text-muted-foreground text-center py-4">No schedule generated for this week</p>
                   </CardContent>
                 </Card>
               );
@@ -223,7 +223,7 @@ export default function ScheduleViewModal({ repId, isOpen, onClose, isEditMode }
               <Card key={weekNum}>
                 <CardHeader>
                   <CardTitle className="flex items-center justify-between">
-                    Week {weekNum} {weekNum <= 2 && <span className="text-sm text-gray-500">(repeats as Week {weekNum + 2})</span>}
+                    Week {weekNum} {weekNum <= 2 && <span className="text-sm text-muted-foreground">(repeats as Week {weekNum + 2})</span>}
                     <Badge variant="outline">{sortedSchedules.length} zones scheduled</Badge>
                   </CardTitle>
                 </CardHeader>
@@ -257,11 +257,11 @@ export default function ScheduleViewModal({ repId, isOpen, onClose, isEditMode }
                                     <Badge variant="default" className="text-xs">
                                       {zoneName}
                                     </Badge>
-                                    <span className="text-sm text-gray-600">
+                                    <span className="text-sm text-muted-foreground">
                                       ({Array.isArray(schedule.outletIds) ? (schedule.outletIds as string[]).length : 0} outlets)
                                     </span>
                                   </div>
-                                  <div className="text-xs text-gray-500">
+                                  <div className="text-xs text-muted-foreground">
                                     Complete zone visit - all outlets in this zone
                                   </div>
                                 </div>
@@ -273,8 +273,8 @@ export default function ScheduleViewModal({ repId, isOpen, onClose, isEditMode }
                               </TableCell>
                               <TableCell className="text-center">
                                 <div className="flex items-center justify-center">
-                                  <Clock className="mr-1 h-4 w-4 text-gray-400" />
-                                  <span className="text-sm text-gray-600">
+                                  <Clock className="mr-1 h-4 w-4 text-muted-foreground/70" />
+                                  <span className="text-sm text-muted-foreground">
                                     {schedule.estimatedDuration ? `${Math.round(schedule.estimatedDuration / 60)}h ${schedule.estimatedDuration % 60}m` : "N/A"}
                                   </span>
                                 </div>
@@ -317,7 +317,7 @@ export default function ScheduleViewModal({ repId, isOpen, onClose, isEditMode }
           {schedules.length === 0 && (
             <Card>
               <CardContent className="text-center py-8">
-                <p className="text-gray-500">No schedule found for this rep. Run optimization to generate schedules.</p>
+                <p className="text-muted-foreground">No schedule found for this rep. Run optimization to generate schedules.</p>
               </CardContent>
             </Card>
           )}
