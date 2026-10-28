@@ -2,29 +2,11 @@ import { Link, useLocation } from "wouter";
 import { useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useState } from "react";
-import { 
-  BarChart3, 
-  Upload, 
-  Settings, 
-  Calendar, 
-  Map, 
-  FileText,
-  Route,
-  CalendarDays,
-  FlaskConical,
-  Users,
-  LogIn,
-  LogOut,
-  Shield,
-  KeyRound,
-  Pencil,
-  Eye
-} from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { BarChart3, Map, Route, CalendarDays, FlaskConical, Users, LogIn, LogOut, Shield, KeyRound, Pencil, Eye } from "lucide-react";
 import LoginModal from "@/components/login-modal";
 import ChangePasswordDialog from "@/components/change-password-dialog";
 import { useAuth } from "@/hooks/use-auth";
-import pinLogo from "@assets/image_1769535972472.png";
+import BrandMark from "@/components/brand-mark";
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: BarChart3 },
@@ -45,8 +27,6 @@ export default function Sidebar({ collapsed = false, mobileOpen = false, onMobil
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const { user, isAdmin } = useAuth();
-  // Accounts is an admin's page; nobody else sees the link.
-  const items = isAdmin ? [...navigation, { name: "Accounts", href: "/users", icon: Users }] : navigation;
   const roleLabel = user?.role === "admin" ? "Admin" : user?.role === "planner" ? "Planner" : "Viewer";
   const RoleIcon = user?.role === "admin" ? Shield : user?.role === "planner" ? Pencil : Eye;
 
@@ -64,73 +44,81 @@ export default function Sidebar({ collapsed = false, mobileOpen = false, onMobil
   // and a drawer over the page on a phone (the old fixed 288px column left
   // a phone a third of its width for the actual app).
   const showLabels = !collapsed || mobileOpen;
+  const initials = (user?.name || "").split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]!.toUpperCase()).join("") || "?";
+  const navItem = (item: { name: string; href: string; icon: typeof Users }) => {
+    const Icon = item.icon;
+    const isActive = location === item.href;
+    return (
+      <Link
+        key={item.name}
+        href={item.href}
+        title={item.name}
+        onClick={onMobileClose}
+        className={`group relative flex h-9 items-center ${showLabels ? "gap-3 px-2.5" : "justify-center"} rounded-lg text-[13.5px] font-medium
+          ${isActive ? "bg-sidebar-accent text-white" : "text-sidebar-muted hover:bg-sidebar-accent/60 hover:text-white"}`}
+        aria-current={isActive ? "page" : undefined}
+        data-testid={`nav-${item.href === '/' ? 'dashboard' : item.href.slice(1)}`}
+      >
+        {isActive && <span className={`absolute ${showLabels ? "-left-3" : "-left-2"} top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-sidebar-primary`} aria-hidden />}
+        <Icon className={`h-[18px] w-[18px] shrink-0 ${isActive ? "text-white" : "text-sidebar-muted group-hover:text-white"}`} />
+        {showLabels && <span className="truncate">{item.name}</span>}
+      </Link>
+    );
+  };
   const body = (
     <>
-      <div className={`${showLabels ? "p-5 pb-3" : "p-3 pb-2"}`}>
-        <div className="flex items-center">
-          <img src={pinLogo} alt="RouteOptima" className={`${showLabels ? "h-11 w-11" : "h-9 w-9"} object-contain`} />
-          {showLabels && (
-            <div className="ml-3">
-              <h1 className="text-lg font-semibold text-[#1d1d1f] dark:text-white tracking-tight">RouteOptima</h1>
-              <p className="text-xs text-[#86868b] dark:text-[#98989d]">Route Optimizer</p>
-            </div>
-          )}
-        </div>
+      <div className={`flex h-14 shrink-0 items-center ${showLabels ? "gap-2.5 px-5" : "justify-center px-2"}`}>
+        <BrandMark className="h-8 w-8 shrink-0 drop-shadow-[0_2px_6px_rgba(220,38,38,0.35)]" />
+        {showLabels && (
+          <div className="min-w-0 leading-tight">
+            <p className="truncate text-[15px] font-semibold tracking-tight text-white">RouteOptima</p>
+            <p className="truncate text-[11px] text-sidebar-muted">Route-to-market planner</p>
+          </div>
+        )}
       </div>
 
-      <nav className={`flex-1 ${showLabels ? "px-3" : "px-2"}`}>
-        <div className="space-y-1">
-          {items.map((item) => {
-            const Icon = item.icon;
-            const isActive = location === item.href;
-            return (
-              <Link
-                key={item.name}
-                href={item.href}
-                title={item.name}
-                onClick={onMobileClose}
-                className={`group flex items-center ${showLabels ? "px-4" : "justify-center px-0"} py-2.5 text-sm font-medium rounded-full transition-all duration-200
-                  ${isActive ? 'bg-[#1d1d1f] text-white shadow-sm' : 'text-[#1d1d1f] dark:text-[#f5f5f7] hover:bg-[#e8e8ed] dark:hover:bg-[#2c2c2e]'}`}
-                data-testid={`nav-${item.href === '/' ? 'dashboard' : item.href.slice(1)}`}
-              >
-                <Icon className={`${showLabels ? "mr-3" : ""} h-5 w-5 flex-shrink-0 ${isActive ? 'text-white' : 'text-[#86868b] group-hover:text-[#1d1d1f] dark:group-hover:text-white'}`} />
-                {showLabels && item.name}
-              </Link>
-            );
-          })}
-        </div>
+      <nav className={`flex-1 overflow-y-auto ${showLabels ? "px-3" : "px-2"} pt-3`}>
+        {showLabels && <p className="mb-1.5 px-2.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-sidebar-muted/70">Planning</p>}
+        <div className="space-y-0.5">{navigation.map(navItem)}</div>
+        {isAdmin && (
+          <>
+            {showLabels ? <p className="mb-1.5 mt-6 px-2.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-sidebar-muted/70">Admin</p> : <div className="mx-2 my-3 h-px bg-sidebar-border" />}
+            <div className="space-y-0.5">{navItem({ name: "Accounts", href: "/users", icon: Users })}</div>
+          </>
+        )}
       </nav>
 
-      <div className={`${showLabels ? "p-4 mx-3" : "p-2 mx-2"} mb-3 rounded-2xl bg-white dark:bg-[#2c2c2e] shadow-apple`}>
+      <div className={`border-t border-sidebar-border ${showLabels ? "p-3" : "p-2"}`}>
         {user ? (
-          <div className={`flex items-center ${showLabels ? "justify-between" : "justify-center"}`}>
-            <div className="flex min-w-0 items-center">
-              <div className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center shadow-sm ${user.role === "admin" ? "bg-gradient-to-br from-green-500 to-green-600" : user.role === "planner" ? "bg-gradient-to-br from-blue-500 to-blue-600" : "bg-gradient-to-br from-gray-400 to-gray-500"}`} title={`${user.name} - ${roleLabel}`}>
-                <RoleIcon className="h-4 w-4 text-white" />
+          <div className={`flex items-center ${showLabels ? "gap-2.5 rounded-lg px-1.5 py-1" : "flex-col gap-2"}`}>
+            <div className="relative shrink-0" title={`${user.name} - ${roleLabel}`}>
+              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-white/20 to-white/5 text-xs font-semibold text-white ring-1 ring-white/15">
+                {initials}
               </div>
-              {showLabels && (
-                <div className="ml-3 min-w-0">
-                  <p className="truncate text-sm font-medium text-[#1d1d1f] dark:text-white" data-testid="text-user-name">{user.name}</p>
-                  <p className="text-xs text-[#86868b]" data-testid="text-user-role">{roleLabel}</p>
-                </div>
-              )}
+              <span className="absolute -bottom-0.5 -right-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-sidebar ring-2 ring-sidebar">
+                <RoleIcon className="h-2.5 w-2.5 text-sidebar-muted" />
+              </span>
             </div>
             {showLabels && (
-              <div className="flex shrink-0">
-                <Button variant="ghost" size="icon" className="h-8 w-8 hover:bg-[#f5f5f7] dark:hover:bg-[#3a3a3c]" onClick={() => setShowPassword(true)} title="Change password" data-testid="button-change-password-open">
-                  <KeyRound className="h-4 w-4 text-[#86868b]" />
-                </Button>
-                <Button variant="ghost" size="icon" className="h-8 w-8 hover:bg-[#f5f5f7] dark:hover:bg-[#3a3a3c]" onClick={() => logoutMutation.mutate()} disabled={logoutMutation.isPending} title="Sign out" data-testid="button-logout">
-                  <LogOut className="h-4 w-4 text-[#86868b]" />
-                </Button>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-[13px] font-medium text-white" data-testid="text-user-name">{user.name}</p>
+                <p className="truncate text-[11px] text-sidebar-muted" data-testid="text-user-role">{roleLabel}</p>
               </div>
             )}
+            <div className={`flex shrink-0 ${showLabels ? "" : "flex-col"}`}>
+              <button type="button" className="flex h-8 w-8 items-center justify-center rounded-md text-sidebar-muted hover:bg-sidebar-accent hover:text-white" onClick={() => setShowPassword(true)} title="Change password" data-testid="button-change-password-open">
+                <KeyRound className="h-4 w-4" />
+              </button>
+              <button type="button" className="flex h-8 w-8 items-center justify-center rounded-md text-sidebar-muted hover:bg-sidebar-accent hover:text-white disabled:opacity-50" onClick={() => logoutMutation.mutate()} disabled={logoutMutation.isPending} title="Sign out" data-testid="button-logout">
+                <LogOut className="h-4 w-4" />
+              </button>
+            </div>
           </div>
         ) : (
-          <Button variant="ghost" className={`${showLabels ? "w-full justify-start" : "w-full justify-center px-0"} h-10 text-[#1d1d1f] dark:text-white hover:bg-[#f5f5f7] dark:hover:bg-[#3a3a3c]`} onClick={() => setShowLoginModal(true)} title="Admin login">
-            <LogIn className={`${showLabels ? "mr-2" : ""} h-4 w-4 text-[#86868b]`} />
-            {showLabels && <span className="text-sm font-medium">Admin Login</span>}
-          </Button>
+          <button type="button" className={`flex h-9 w-full items-center ${showLabels ? "gap-2 px-2.5" : "justify-center"} rounded-lg text-sm font-medium text-sidebar-muted hover:bg-sidebar-accent hover:text-white`} onClick={() => setShowLoginModal(true)} title="Sign in">
+            <LogIn className="h-4 w-4" />
+            {showLabels && <span>Sign in</span>}
+          </button>
         )}
       </div>
 
@@ -142,14 +130,14 @@ export default function Sidebar({ collapsed = false, mobileOpen = false, onMobil
   return (
     <>
       {/* Desktop column */}
-      <aside className={`hidden md:flex ${collapsed ? "w-[68px]" : "w-64"} shrink-0 flex-col border-r border-[#e5e5e5] bg-[#fafafa] transition-[width] duration-200 dark:border-[#38383a] dark:bg-[#1c1c1e]`} data-testid="sidebar">
+      <aside className={`hidden md:flex ${collapsed ? "w-[68px]" : "w-64"} shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-[width] duration-200`} data-testid="sidebar">
         {body}
       </aside>
       {/* Phone drawer */}
       {mobileOpen && (
         <div className="fixed inset-0 z-40 md:hidden" role="dialog" aria-modal="true">
-          <div className="absolute inset-0 bg-black/40" onClick={onMobileClose} />
-          <aside className="absolute inset-y-0 left-0 flex w-72 max-w-[85vw] flex-col bg-[#fafafa] shadow-xl dark:bg-[#1c1c1e]">
+          <div className="absolute inset-0 bg-foreground/50 backdrop-blur-[2px]" onClick={onMobileClose} />
+          <aside className="absolute inset-y-0 left-0 flex w-72 max-w-[85vw] flex-col bg-sidebar text-sidebar-foreground shadow-apple-xl">
             {body}
           </aside>
         </div>

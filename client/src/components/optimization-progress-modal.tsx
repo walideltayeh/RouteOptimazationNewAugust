@@ -135,29 +135,29 @@ export default function OptimizationProgressModal({
           {hasError ? (
             <>
               <div className="relative mb-6">
-                <XCircle className="h-16 w-16 text-[#ff3b30]" />
+                <XCircle className="h-16 w-16 text-destructive" />
               </div>
-              <h3 className="text-lg font-semibold text-[#ff3b30] mb-2">Optimization Failed</h3>
-              <p className="text-sm text-[#86868b] text-center">{progress.detail}</p>
+              <h3 className="text-lg font-semibold text-destructive mb-2">Optimization Failed</h3>
+              <p className="text-sm text-muted-foreground text-center">{progress.detail}</p>
             </>
           ) : isComplete ? (
             <>
               <div className="relative mb-6">
                 <div className="absolute inset-0 animate-ping">
-                  <CheckCircle2 className="h-16 w-16 text-[#34c759] opacity-50" />
+                  <CheckCircle2 className="h-16 w-16 text-success opacity-50" />
                 </div>
-                <CheckCircle2 className="h-16 w-16 text-[#34c759] relative z-10" />
+                <CheckCircle2 className="h-16 w-16 text-success relative z-10" />
               </div>
-              <h3 className="text-lg font-semibold text-[#34c759] mb-2">Optimization Complete!</h3>
-              <p className="text-sm text-[#86868b]">Your routes have been optimized successfully.</p>
+              <h3 className="text-lg font-semibold text-success mb-2">Optimization Complete!</h3>
+              <p className="text-sm text-muted-foreground">Your routes have been optimized successfully.</p>
             </>
           ) : (
             <>
               <div className="text-center mb-6">
-                <div className="text-5xl font-bold text-[#1d1d1f] dark:text-white mb-1">
+                <div className="text-5xl font-semibold text-foreground dark:text-white mb-1">
                   {Math.round(progress.percent)}%
                 </div>
-                <p className="text-sm text-[#86868b]">Overall Progress</p>
+                <p className="text-sm text-muted-foreground">Overall Progress</p>
               </div>
               
               <div className="w-full mb-6">
@@ -171,24 +171,24 @@ export default function OptimizationProgressModal({
                     <div 
                       key={stage.key}
                       className={`flex items-center gap-3 p-2 rounded-xl transition-all ${
-                        status === 'active' ? 'bg-[#f5f5f7] dark:bg-[#2c2c2e]' : ''
+                        status === 'active' ? 'bg-muted dark:bg-muted' : ''
                       }`}
                     >
                       {status === 'completed' ? (
-                        <CheckCircle2 className="h-5 w-5 text-[#34c759] flex-shrink-0" />
+                        <CheckCircle2 className="h-5 w-5 text-success flex-shrink-0" />
                       ) : status === 'active' ? (
-                        <Loader2 className="h-5 w-5 text-[#1d1d1f] dark:text-white animate-spin flex-shrink-0" />
+                        <Loader2 className="h-5 w-5 text-foreground dark:text-white animate-spin flex-shrink-0" />
                       ) : (
-                        <Circle className="h-5 w-5 text-[#d2d2d7] dark:text-[#424245] flex-shrink-0" />
+                        <Circle className="h-5 w-5 text-input dark:text-accent flex-shrink-0" />
                       )}
                       <span className={`text-sm font-medium ${
-                        status === 'completed' ? 'text-[#34c759]' :
-                        status === 'active' ? 'text-[#1d1d1f] dark:text-white' : 'text-[#86868b]'
+                        status === 'completed' ? 'text-success' :
+                        status === 'active' ? 'text-foreground dark:text-white' : 'text-muted-foreground'
                       }`}>
                         {stage.label}
                       </span>
                       {status === 'active' && (
-                        <span className="ml-auto text-xs text-[#86868b]">
+                        <span className="ml-auto text-xs text-muted-foreground">
                           {progress.detail}
                         </span>
                       )}

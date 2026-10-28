@@ -229,7 +229,7 @@ export default function RouteOrderEditor({
                   >
                     <div className="flex items-center gap-2">
                       <GripVertical className="h-5 w-5 text-muted-foreground flex-shrink-0" />
-                      <div className="w-8 h-8 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-sm font-bold flex-shrink-0">
+                      <div className="w-8 h-8 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-sm font-semibold flex-shrink-0">
                         {index + 1}
                       </div>
                     </div>

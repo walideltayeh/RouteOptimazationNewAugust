@@ -2,6 +2,7 @@ import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import StepBadge from "@/components/step-badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -489,14 +490,14 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center">
-          <Settings className="mr-2 h-5 w-5 text-[#1d1d1f] dark:text-white" />
-          Step 3: Optimization Settings
+          <StepBadge n={2} />
+          Optimization settings
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-6">
-        <div className="space-y-4 p-4 bg-gray-50 rounded-lg">
-          <h4 className="font-medium text-gray-700">Daily Visit Targets</h4>
-          <p className="text-xs text-gray-500">Actual outlets a rep visits each day - zones are sized automatically from these and each outlet's visit frequency.</p>
+        <div className="space-y-4 p-4 bg-muted/60 rounded-lg">
+          <h4 className="font-medium text-foreground/80">Daily Visit Targets</h4>
+          <p className="text-xs text-muted-foreground">Actual outlets a rep visits each day - zones are sized automatically from these and each outlet's visit frequency.</p>
           <div className="grid grid-cols-2 gap-4">
             <div>
               <Label htmlFor="minVisits">Min Outlets/Day</Label>
@@ -561,7 +562,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
             <div>
               <Label className="text-xs">{daysOffCount === 1 ? 'Which day is off?' : daysOffCount === 0 ? 'Days off' : 'Which days are off?'}</Label>
               {daysOffCount === 0 ? (
-                <p className="mt-2 text-sm text-gray-500">None.</p>
+                <p className="mt-2 text-sm text-muted-foreground">None.</p>
               ) : (
                 <div className="mt-1 flex flex-wrap gap-1.5" data-testid="picker-days-off">
                   {WEEK_PICKER.map(({ iso, label }) => {
@@ -576,8 +577,8 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
                         })}
                         className={cn(
                           "rounded-full border px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50",
-                          off ? "border-transparent bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900"
-                              : "border-gray-300 text-gray-500 hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-800",
+                          off ? "border-transparent bg-foreground text-white dark:bg-muted dark:text-foreground"
+                              : "border-input text-muted-foreground hover:bg-muted dark:border-gray-600 dark:hover:bg-foreground/90",
                         )}>
                         {label}
                       </button>
@@ -589,30 +590,30 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
           </div>
           <p className="text-sm" data-testid="text-week-summary">
             <span className="font-medium">{describeWeek(week)}</span>
-            {' '}<span className="text-gray-500">Week 1 runs {WEEKDAY_LABELS[week[0] - 1]} to {WEEKDAY_LABELS[week[week.length - 1] - 1]}; a whole-week month starts on its first {WEEKDAY_LABELS[week[0] - 1]} and ends on its last {WEEKDAY_LABELS[week[week.length - 1] - 1]}.</span>
+            {' '}<span className="text-muted-foreground">Week 1 runs {WEEKDAY_LABELS[week[0] - 1]} to {WEEKDAY_LABELS[week[week.length - 1] - 1]}; a whole-week month starts on its first {WEEKDAY_LABELS[week[0] - 1]} and ends on its last {WEEKDAY_LABELS[week[week.length - 1] - 1]}.</span>
           </p>
-          <div className="flex flex-wrap gap-2 text-xs text-gray-500">
+          <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
             <span>Quick fill:</span>
-            <button type="button" className="underline hover:text-gray-700" disabled={disabled}
+            <button type="button" className="underline hover:text-foreground/80" disabled={disabled}
               onClick={() => { setWeekStartDay(6); setDaysOffCount(1); setDaysOff([5]); }}>Sat–Thu, Fri off</button>
-            <button type="button" className="underline hover:text-gray-700" disabled={disabled}
+            <button type="button" className="underline hover:text-foreground/80" disabled={disabled}
               onClick={() => { setWeekStartDay(7); setDaysOffCount(2); setDaysOff([5, 6]); }}>Sun–Thu, Fri + Sat off</button>
-            <button type="button" className="underline hover:text-gray-700" disabled={disabled}
+            <button type="button" className="underline hover:text-foreground/80" disabled={disabled}
               onClick={() => { setWeekStartDay(7); setDaysOffCount(1); setDaysOff([5]); }}>Sun–Thu + Sat, Fri off</button>
-            <button type="button" className="underline hover:text-gray-700" disabled={disabled}
+            <button type="button" className="underline hover:text-foreground/80" disabled={disabled}
               onClick={() => { setWeekStartDay(1); setDaysOffCount(2); setDaysOff([6, 7]); }}>Mon–Fri, Sat + Sun off</button>
-            <button type="button" className="underline hover:text-gray-700" disabled={disabled}
+            <button type="button" className="underline hover:text-foreground/80" disabled={disabled}
               onClick={() => { setWeekStartDay(1); setDaysOffCount(1); setDaysOff([7]); }}>Mon–Sat, Sun off</button>
           </div>
         </div>
 
         <div>
           <Label>Plan Month</Label>
-          <p className="text-xs text-gray-500 mt-1 mb-2">
+          <p className="text-xs text-muted-foreground mt-1 mb-2">
             The cycle length is not a setting: it is how many of the days you ticked above fall
             in this month. Pick the month and the app counts them.
           </p>
-          <div className="space-y-2 rounded-lg border border-gray-200 p-3 dark:border-gray-700" data-testid="panel-plan-month">
+          <div className="space-y-2 rounded-lg border border-border p-3 dark:border-gray-700" data-testid="panel-plan-month">
             <div className="flex flex-wrap items-center gap-3">
               <div>
                 <Label htmlFor="planMonth" className="text-xs">Month</Label>
@@ -639,7 +640,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
                   <span className="font-medium">{shortDate(monthSummary.start)} → {shortDate(monthSummary.end)}</span>
                   {' '}— <span className="font-medium">{monthSummary.count} working days</span>
                   {(() => { const p = patternShape(monthSummary.count); return (
-                    <span className="text-gray-500"> · {p.routes} routes × {p.runs} runs{p.bonus > 0 ? `, + ${p.bonus} bonus day (route 1 again)` : ''}</span>
+                    <span className="text-muted-foreground"> · {p.routes} routes × {p.runs} runs{p.bonus > 0 ? `, + ${p.bonus} bonus day (route 1 again)` : ''}</span>
                   ); })()}.
                   {monthSummary.leftOut > 0 && (
                     <span className="text-amber-700 dark:text-amber-300">
@@ -651,13 +652,13 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
                 <p className="text-sm text-red-600">No working days in that month for the selected working week.</p>
               )
             ) : (
-              <p className="text-sm text-gray-600" data-testid="text-fixed-cycle-summary">
+              <p className="text-sm text-muted-foreground" data-testid="text-fixed-cycle-summary">
                 Using a fixed {cycleWorkingDays > 0 ? cycleWorkingDays : workingDaysPerWeek * 4}-day pattern instead of this month.{' '}
                 <button type="button" className="underline" disabled={disabled} onClick={() => setCycleWorkingDays(-1)}>Plan this month</button>
               </p>
             )}
           </div>
-          <button type="button" className="mt-2 text-xs text-gray-500 underline hover:text-gray-700 dark:hover:text-gray-300"
+          <button type="button" className="mt-2 text-xs text-muted-foreground underline hover:text-foreground/80 dark:hover:text-muted-foreground/50"
             disabled={disabled} onClick={() => setShowFixedCycle(v => !v)} data-testid="button-toggle-fixed-cycle">
             {showFixedCycle ? 'Hide' : 'Advanced: use a fixed cycle length instead'}
           </button>
@@ -679,7 +680,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
                   <SelectItem value="26">26 working days (13 routes × 2)</SelectItem>
                 </SelectContent>
               </Select>
-              <p className="text-xs text-gray-500 mt-1">
+              <p className="text-xs text-muted-foreground mt-1">
                 A rolling journey plan of a fixed length, dated from tomorrow, not tied to a
                 calendar month. Most operations should leave this alone.
               </p>
@@ -703,7 +704,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
               <SelectItem value="value">Commercial value (VC/volume column in file)</SelectItem>
             </SelectContent>
           </Select>
-          <p className="text-xs text-gray-500 mt-1">
+          <p className="text-xs text-muted-foreground mt-1">
             Decides how areas are judged when suggesting low-worth pockets to move to indirect coverage. Suggestions never remove anything automatically.
           </p>
         </div>
@@ -724,7 +725,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
               <SelectItem value="road">Road distances (OSRM server) or detour estimate</SelectItem>
             </SelectContent>
           </Select>
-          <p className="text-xs text-gray-500 mt-1">
+          <p className="text-xs text-muted-foreground mt-1">
             Straight-line suits most markets. Street-grid charges diagonal moves at the cost of going round the block, which helps in grid-planned cities and tests worse on organic street layouts. Road distances use a routing server (OSRM_URL) for every pair of outlets a rep holds: the day cuts, the hop limit, the stop order and the kilometres are then by road. Without a server it falls back to a detour estimate plus any barrier listed below (a river with few bridges, a railway, a motorway with no crossings) — a flat detour factor alone rescales every pair equally and so leaves the grouping unchanged.
           </p>
           {distanceMode === 'road' && (
@@ -747,7 +748,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
                 disabled={disabled}
                 data-testid="textarea-barriers"
               />
-              <p className="mt-1 text-xs text-gray-500">{parsedBarriers.length} barrier{parsedBarriers.length === 1 ? '' : 's'} read. Crossing one adds a detour penalty between outlets on either side.</p>
+              <p className="mt-1 text-xs text-muted-foreground">{parsedBarriers.length} barrier{parsedBarriers.length === 1 ? '' : 's'} read. Crossing one adds a detour penalty between outlets on either side.</p>
             </div>
           )}
         </div>
@@ -769,7 +770,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
               <SelectItem value="25">Wide — 25 km</SelectItem>
             </SelectContent>
           </Select>
-          <p className="text-xs text-gray-500 mt-1">
+          <p className="text-xs text-muted-foreground mt-1">
             In dense cities you can keep routes very tight and still fill each day. In sparse markets the two pull against each other: tighter routes mean fewer visits per day and more reps. Loosen this if days come out under target.
           </p>
         </div>
@@ -789,9 +790,9 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
               disabled={disabled}
               data-testid="input-max-hop"
             />
-            <span className="text-sm text-gray-600">km</span>
+            <span className="text-sm text-muted-foreground">km</span>
           </div>
-          <p className="text-xs text-gray-500 mt-1">
+          <p className="text-xs text-muted-foreground mt-1">
             The longest single drive allowed from one stop to the next inside a day. Any hop
             over this is penalised heavily, so the grouping will spend a little total distance to
             avoid one long jump. An outlet with no neighbour at all within this range still has
@@ -809,17 +810,17 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
         )}
 
         {analysis && analysis.outlets > 0 && (
-          <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
-            <h4 className="font-semibold text-blue-900 mb-2">Data Summary</h4>
-            <div className="text-sm text-blue-800 space-y-1">
-              <div>Total Outlets: <span className="font-medium">{analysis.outlets}</span></div>
-              <div>VF1 (Monthly): <span className="font-medium">{analysis.vf1 || 0}</span></div>
-              <div>VF2 (Bi-weekly): <span className="font-medium">{analysis.vf2}</span></div>
-              <div>VF4 (Weekly): <span className="font-medium">{analysis.vf4}</span></div>
-              <div className="pt-2 border-t border-blue-300">
-                <strong>Initial Estimate: ~{estimatedReps} reps</strong>
-                <p className="text-xs mt-1">Final recommendation after optimization</p>
-              </div>
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-3 rounded-xl border bg-muted/40 px-4 py-3.5">
+            <div>
+              <p className="eyebrow">Before you run</p>
+              <p className="mt-1 text-sm text-foreground">
+                <span className="font-semibold tabular-nums">{analysis.outlets.toLocaleString()}</span> outlets
+                <span className="text-muted-foreground"> · VF1 {analysis.vf1 || 0} · VF2 {analysis.vf2} · VF4 {analysis.vf4}</span>
+              </p>
+            </div>
+            <div className="ml-auto text-right">
+              <p className="text-2xl font-semibold leading-none tracking-tight tabular-nums text-foreground">~{estimatedReps} reps</p>
+              <p className="mt-1 text-xs text-muted-foreground">First estimate; the plan decides</p>
             </div>
           </div>
         )}
@@ -827,10 +828,12 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
         <Button
           onClick={() => handleOptimization()}
           disabled={disabled || optimizationMutation.isPending}
+          variant="brand"
+          size="lg"
           className="w-full"
           data-testid="button-run-optimization"
         >
-          <Play className="mr-2 h-4 w-4" />
+          <Play className="h-4 w-4" />
           {optimizationMutation.isPending ? (
             "Running..."
           ) : !feasibilityCheck.feasible ? (
@@ -841,12 +844,12 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
         </Button>
 
         {heldOut && heldOut.count > 0 && (
-          <Alert className="border-gray-300 bg-gray-50" data-testid="held-out-banner">
-            <AlertCircle className="h-4 w-4 text-gray-600" />
-            <AlertDescription className="text-gray-700 flex items-center justify-between gap-2">
+          <Alert className="border-input bg-muted/60" data-testid="held-out-banner">
+            <AlertCircle className="h-4 w-4 text-muted-foreground" />
+            <AlertDescription className="text-foreground/80 flex items-center justify-between gap-2">
               <span>
                 <strong>{heldOut.count}</strong> outlet{heldOut.count === 1 ? '' : 's'} held out of the plan (removed duplicates, outliers, indirect coverage). They stay out of every run until restored.
-                <span className="block text-xs text-gray-500 mt-0.5">
+                <span className="block text-xs text-muted-foreground mt-0.5">
                   {heldOut.outlets.slice(0, 5).map(o => o.name).join(' · ')}{heldOut.count > 5 ? ` · +${heldOut.count - 5} more` : ''}
                 </span>
               </span>
@@ -929,7 +932,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
         {duplicateScan && duplicateScan.clusters.length > 0 && (() => {
           const order = { high: 0, medium: 1, low: 2 } as const;
           const shown = duplicateScan.clusters.filter(c => order[c.confidence] <= order[dupLevel]);
-          const badge = (c: DuplicateCluster['confidence']) => c === 'high' ? 'bg-red-100 text-red-800' : c === 'medium' ? 'bg-amber-100 text-amber-800' : 'bg-gray-100 text-gray-700';
+          const badge = (c: DuplicateCluster['confidence']) => c === 'high' ? 'bg-red-100 text-red-800' : c === 'medium' ? 'bg-amber-100 text-amber-800' : 'bg-muted text-foreground/80';
           return (
             <div className="p-4 bg-amber-50 rounded-lg border border-amber-200 space-y-3" data-testid="duplicate-outlets">
               <h4 className="font-semibold text-amber-900">
@@ -959,15 +962,15 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
                       <span className={`rounded px-1.5 py-0.5 font-medium ${badge(c.confidence)}`}>
                         {c.confidence === 'high' ? 'Likely duplicate' : c.confidence === 'medium' ? 'Possible duplicate' : 'Same spot'}
                       </span>
-                      <span className="text-gray-600">{c.reason}</span>
+                      <span className="text-muted-foreground">{c.reason}</span>
                     </div>
                     {c.members.map(m => (
                       <label key={m.id} className="flex items-start gap-2 py-0.5 cursor-pointer">
                         <input type="checkbox" className="mt-1" checked={selectedDupExclusions.has(m.id)} onChange={() => toggleDupExclusion(m.id)} data-testid={`checkbox-dup-${m.id}`} />
-                        <span className={selectedDupExclusions.has(m.id) ? 'line-through text-gray-500' : ''}>
-                          <strong>{m.name}</strong>{m.code ? <span className="ml-1 font-mono text-xs text-gray-500">{m.code}</span> : null} · VF{m.visitFrequency}
+                        <span className={selectedDupExclusions.has(m.id) ? 'line-through text-muted-foreground' : ''}>
+                          <strong>{m.name}</strong>{m.code ? <span className="ml-1 font-mono text-xs text-muted-foreground">{m.code}</span> : null} · VF{m.visitFrequency}
                           {m.id === c.keepId && !selectedDupExclusions.has(m.id) && <span className="ml-1 text-xs text-green-700">keep</span>}
-                          <span className="block text-xs text-gray-500">{m.address} · ({m.latitude.toFixed(5)}, {m.longitude.toFixed(5)})</span>
+                          <span className="block text-xs text-muted-foreground">{m.address} · ({m.latitude.toFixed(5)}, {m.longitude.toFixed(5)})</span>
                         </span>
                       </label>
                     ))}

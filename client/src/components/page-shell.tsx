@@ -7,11 +7,11 @@ import type { ReactNode } from "react";
  */
 export default function PageShell({ description, actions, children, wide, flush }: { description?: ReactNode; actions?: ReactNode; children: ReactNode; wide?: boolean; flush?: boolean }) {
   return (
-    <div className={flush ? "h-full" : "p-4 md:p-6"}>
+    <div className={flush ? "h-full" : "px-4 py-5 md:px-8 md:py-7"}>
       <div className={`${wide ? "max-w-[1600px]" : "max-w-7xl"} mx-auto ${flush ? "h-full" : ""}`}>
         {(description || actions) && (
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-            {description ? <p className="text-sm text-[#6e6e73] dark:text-[#98989d]">{description}</p> : <span />}
+          <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+            {description ? <p className="max-w-3xl text-sm text-muted-foreground">{description}</p> : <span />}
             {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
           </div>
         )}

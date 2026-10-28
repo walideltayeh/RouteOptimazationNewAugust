@@ -146,11 +146,11 @@ export default function RoleHierarchyPage() {
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900 flex items-center gap-3">
+          <h1 className="text-3xl font-semibold text-foreground flex items-center gap-3">
             <Users className="h-8 w-8 text-primary" />
             Role Hierarchy Configuration
           </h1>
-          <p className="text-gray-600 mt-1">
+          <p className="text-muted-foreground mt-1">
             Configure follow-up roles that visit the same outlets after the Sales Rep
           </p>
         </div>
@@ -166,12 +166,12 @@ export default function RoleHierarchyPage() {
           </CardHeader>
           <CardContent>
             {repsLoading ? (
-              <div className="flex items-center gap-2 text-gray-500">
+              <div className="flex items-center gap-2 text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" />
                 Loading reps...
               </div>
             ) : reps.length === 0 ? (
-              <p className="text-gray-500">No Sales Reps found. Please create reps first from the Territory Map.</p>
+              <p className="text-muted-foreground">No Sales Reps found. Please create reps first from the Territory Map.</p>
             ) : (
               <Select value={selectedRepId} onValueChange={setSelectedRepId}>
                 <SelectTrigger data-testid="select-rep">
@@ -193,7 +193,7 @@ export default function RoleHierarchyPage() {
           <CardHeader>
             <CardTitle>How It Works</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-3 text-sm text-gray-600">
+          <CardContent className="space-y-3 text-sm text-muted-foreground">
             <div className="flex items-start gap-2">
               <Badge variant="outline" className="shrink-0">1</Badge>
               <span>Sales Rep visits outlets on Day X</span>
@@ -206,7 +206,7 @@ export default function RoleHierarchyPage() {
               <Badge variant="outline" className="shrink-0">3</Badge>
               <span>Collection Agent follows on Day X + 2</span>
             </div>
-            <p className="text-xs text-gray-500 mt-4">
+            <p className="text-xs text-muted-foreground mt-4">
               All roles follow the same route order and outlet sequence as the Sales Rep.
             </p>
           </CardContent>
@@ -235,7 +235,7 @@ export default function RoleHierarchyPage() {
           </CardHeader>
           <CardContent>
             {hierarchiesLoading ? (
-              <div className="flex items-center gap-2 text-gray-500 py-8 justify-center">
+              <div className="flex items-center gap-2 text-muted-foreground py-8 justify-center">
                 <Loader2 className="h-5 w-5 animate-spin" />
                 Loading hierarchy...
               </div>
@@ -249,7 +249,7 @@ export default function RoleHierarchyPage() {
                     >
                       <div className="flex-1 grid grid-cols-1 md:grid-cols-4 gap-4">
                         <div>
-                          <Label className="text-xs text-gray-500">Role Name</Label>
+                          <Label className="text-xs text-muted-foreground">Role Name</Label>
                           <Input
                             value={role.roleName}
                             onChange={(e) => handleRoleChange(index, 'roleName', e.target.value)}
@@ -258,7 +258,7 @@ export default function RoleHierarchyPage() {
                           />
                         </div>
                         <div>
-                          <Label className="text-xs text-gray-500">Day Offset</Label>
+                          <Label className="text-xs text-muted-foreground">Day Offset</Label>
                           <div className="flex items-center gap-2">
                             <Input
                               type="number"
@@ -269,13 +269,13 @@ export default function RoleHierarchyPage() {
                               disabled={role.role === 'rep'}
                               data-testid={`input-offset-${index}`}
                             />
-                            <span className="text-sm text-gray-500 whitespace-nowrap">
+                            <span className="text-sm text-muted-foreground whitespace-nowrap">
                               {role.offsetDays === 0 ? '(Same day)' : `(+${role.offsetDays} day${role.offsetDays > 1 ? 's' : ''})`}
                             </span>
                           </div>
                         </div>
                         <div>
-                          <Label className="text-xs text-gray-500">Color</Label>
+                          <Label className="text-xs text-muted-foreground">Color</Label>
                           <div className="flex items-center gap-2">
                             <input
                               type="color"
@@ -284,7 +284,7 @@ export default function RoleHierarchyPage() {
                               className="w-10 h-10 rounded border cursor-pointer"
                               data-testid={`input-color-${index}`}
                             />
-                            <span className="text-sm text-gray-500">{role.colorHex}</span>
+                            <span className="text-sm text-muted-foreground">{role.colorHex}</span>
                           </div>
                         </div>
                         <div className="flex items-end gap-4">
@@ -313,7 +313,7 @@ export default function RoleHierarchyPage() {
                     </div>
                     {index < roles.length - 1 && (
                       <div className="flex justify-center py-2">
-                        <ArrowDown className="h-4 w-4 text-gray-400" />
+                        <ArrowDown className="h-4 w-4 text-muted-foreground/70" />
                       </div>
                     )}
                   </div>
@@ -411,7 +411,7 @@ export default function RoleHierarchyPage() {
               </tbody>
             </table>
           </div>
-          <p className="text-xs text-gray-500 mt-4">
+          <p className="text-xs text-muted-foreground mt-4">
             This preview shows Week 1. If Rep visits outlets on Monday, Merchandiser visits Tuesday, Collection Agent visits Wednesday.
           </p>
         </CardContent>

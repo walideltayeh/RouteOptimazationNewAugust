@@ -6,7 +6,7 @@ import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
 import { runJob, type JobProgress } from "@/lib/jobs";
 import {
-  CloudUpload, CheckCircle2, AlertTriangle, XCircle, Sparkles, MapPinned, Download, RotateCcw,
+  CloudUpload, Check, CheckCircle2, AlertTriangle, XCircle, Sparkles, MapPinned, Download, RotateCcw,
   Users, Store, CalendarDays, Route, Clock, Layers, Scale, ChevronDown, ChevronUp, Loader2, Map as MapIcon,
 } from "lucide-react";
 
@@ -52,24 +52,27 @@ const WEEK = [
 ];
 const fmt = (n: number) => n.toLocaleString("en-US");
 const GRADE_STYLE: Record<Scorecard["grade"], string> = {
-  A: "bg-emerald-600 text-white", B: "bg-lime-600 text-white", C: "bg-amber-500 text-white", D: "bg-red-600 text-white",
+  A: "from-emerald-500 to-emerald-700 shadow-[0_10px_24px_-10px_rgba(5,150,105,0.7)]",
+  B: "from-lime-500 to-green-700 shadow-[0_10px_24px_-10px_rgba(77,124,15,0.7)]",
+  C: "from-amber-400 to-orange-600 shadow-[0_10px_24px_-10px_rgba(217,119,6,0.7)]",
+  D: "from-rose-500 to-red-700 shadow-[0_10px_24px_-10px_rgba(220,38,38,0.7)]",
 };
 
 function StatusIcon({ s }: { s: Status }) {
-  if (s === "pass") return <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" aria-label="OK" />;
-  if (s === "warn") return <AlertTriangle className="h-4 w-4 shrink-0 text-amber-500" aria-label="Review" />;
-  return <XCircle className="h-4 w-4 shrink-0 text-red-600" aria-label="Problem" />;
+  if (s === "pass") return <CheckCircle2 className="mt-px h-4 w-4 shrink-0 text-success" aria-label="OK" />;
+  if (s === "warn") return <AlertTriangle className="mt-px h-4 w-4 shrink-0 text-warning" aria-label="Review" />;
+  return <XCircle className="mt-px h-4 w-4 shrink-0 text-destructive" aria-label="Problem" />;
 }
 
 function CheckList({ checks, testid }: { checks: Check[]; testid: string }) {
   return (
-    <ul className="space-y-2" data-testid={testid}>
+    <ul className="divide-y rounded-xl border bg-card" data-testid={testid}>
       {checks.map(c => (
-        <li key={c.id} className="flex gap-2 text-sm">
+        <li key={c.id} className="flex gap-2.5 px-3.5 py-2.5 text-sm">
           <StatusIcon s={c.status} />
           <div className="min-w-0">
-            <p className="text-[#1d1d1f] dark:text-white">{c.title}</p>
-            {c.detail && <p className="text-xs text-[#6e6e73] dark:text-[#98989d]">{c.detail}</p>}
+            <p className="leading-snug text-foreground">{c.title}</p>
+            {c.detail && <p className="mt-0.5 text-xs leading-snug text-muted-foreground">{c.detail}</p>}
           </div>
         </li>
       ))}
@@ -79,10 +82,10 @@ function CheckList({ checks, testid }: { checks: Check[]; testid: string }) {
 
 function Tile({ icon: Icon, label, value, sub, testid }: { icon: typeof Users; label: string; value: string; sub?: string; testid?: string }) {
   return (
-    <div className="rounded-xl border border-[#e5e5e5] bg-white p-3 dark:border-[#38383a] dark:bg-[#1c1c1e]" data-testid={testid}>
-      <div className="flex items-center gap-1.5 text-xs text-[#6e6e73] dark:text-[#98989d]"><Icon className="h-3.5 w-3.5" />{label}</div>
-      <div className="mt-1 text-xl font-semibold tabular-nums text-[#1d1d1f] dark:text-white">{value}</div>
-      {sub && <div className="mt-0.5 text-xs text-[#6e6e73] dark:text-[#98989d]">{sub}</div>}
+    <div className="rounded-xl border bg-card p-3.5 shadow-xs" data-testid={testid}>
+      <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground"><Icon className="h-3.5 w-3.5" />{label}</div>
+      <div className="mt-2 text-[22px] font-semibold leading-none tracking-tight tabular-nums text-foreground">{value}</div>
+      {sub && <div className="mt-1.5 text-xs leading-snug text-muted-foreground">{sub}</div>}
     </div>
   );
 }
@@ -91,10 +94,10 @@ function StepDot({ n, label, state }: { n: number; label: string; state: "done" 
   return (
     <div className="flex items-center gap-2">
       <span className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold ${
-        state === "done" ? "bg-emerald-600 text-white" : state === "active" ? "bg-primary text-white" : "bg-[#f5f5f7] text-[#86868b] dark:bg-[#2c2c2e]"}`}>
-        {state === "done" ? <CheckCircle2 className="h-4 w-4" /> : n}
+        state === "done" ? "bg-success text-white" : state === "active" ? "bg-primary text-white ring-4 ring-primary/15" : "bg-muted text-muted-foreground ring-1 ring-inset ring-border"}`}>
+        {state === "done" ? <Check className="h-3.5 w-3.5" strokeWidth={3} /> : n}
       </span>
-      <span className={`text-sm ${state === "todo" ? "text-[#86868b]" : "font-medium text-[#1d1d1f] dark:text-white"}`}>{label}</span>
+      <span className={`text-sm ${state === "todo" ? "text-muted-foreground" : "font-medium text-foreground"}`}>{label}</span>
     </div>
   );
 }
@@ -238,18 +241,20 @@ export default function RtmStudio({ canEdit }: { canEdit: boolean }) {
   const stage = !hasOutlets ? 1 : !hasPlan || replan ? 2 : 3;
 
   return (
-    <section className="overflow-hidden rounded-2xl border border-[#e5e5e5] bg-gradient-to-b from-white to-[#fafafa] shadow-apple dark:border-[#38383a] dark:from-[#1c1c1e] dark:to-[#141416]" data-testid="rtm-studio">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#e5e5e5] px-5 py-4 dark:border-[#38383a]">
+    <section className="overflow-hidden rounded-2xl border bg-card shadow-apple" data-testid="rtm-studio">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b bg-gradient-to-r from-primary/[0.04] via-transparent to-transparent px-5 py-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10"><Sparkles className="h-5 w-5 text-primary" /></div>
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-[#8f1220] shadow-[0_6px_16px_-6px_rgba(200,30,45,0.6)]"><Sparkles className="h-5 w-5 text-white" /></div>
           <div>
-            <h2 className="text-lg font-semibold text-[#1d1d1f] dark:text-white">RTM Studio</h2>
-            <p className="text-sm text-[#6e6e73] dark:text-[#98989d]">Your route-to-market plan in two clicks: drop the outlet list, then build.</p>
+            <h2 className="text-[17px] font-semibold tracking-tight text-foreground">RTM Studio</h2>
+            <p className="text-sm text-muted-foreground">Your route-to-market plan in two clicks: drop the outlet list, then build.</p>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-4">
+        <div className="flex flex-wrap items-center gap-3">
           <StepDot n={1} label="Upload" state={stage > 1 ? "done" : "active"} />
+          <span className={`hidden h-px w-6 sm:block ${stage > 1 ? "bg-success/50" : "bg-border"}`} aria-hidden />
           <StepDot n={2} label="Build" state={stage > 2 ? "done" : stage === 2 ? "active" : "todo"} />
+          <span className={`hidden h-px w-6 sm:block ${stage > 2 ? "bg-success/50" : "bg-border"}`} aria-hidden />
           <StepDot n={3} label="Roll out" state={stage === 3 ? "active" : "todo"} />
         </div>
       </div>
@@ -262,8 +267,8 @@ export default function RtmStudio({ canEdit }: { canEdit: boolean }) {
             onDragLeave={() => setDragOver(false)}
             onDrop={onDrop}
             onClick={() => canEdit && !uploading && fileInput.current?.click()}
-            className={`flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed px-6 py-12 text-center transition ${
-              dragOver ? "border-primary bg-primary/5" : "border-[#d2d2d7] hover:border-[#86868b] dark:border-[#424245]"}`}
+            className={`flex cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed px-6 py-14 text-center transition ${
+              dragOver ? "border-primary bg-primary/5" : "border-input bg-muted/40 hover:border-primary/50 hover:bg-primary/[0.03]"}`}
             data-testid="rtm-dropzone"
           >
             {uploading ? (
@@ -274,13 +279,15 @@ export default function RtmStudio({ canEdit }: { canEdit: boolean }) {
               </div>
             ) : (
               <>
-                <CloudUpload className="mb-3 h-10 w-10 text-primary" />
-                <p className="text-base font-semibold text-[#1d1d1f] dark:text-white">Drop your outlet list here</p>
-                <p className="mt-1 max-w-md text-sm text-[#6e6e73] dark:text-[#98989d]">
+                <span className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border bg-card shadow-apple-md">
+                  <CloudUpload className="h-6 w-6 text-primary" />
+                </span>
+                <p className="text-base font-semibold text-foreground">Drop your outlet list here</p>
+                <p className="mt-1 max-w-md text-sm text-muted-foreground">
                   CSV or Excel with outlet name, latitude and longitude. Visit frequency, channel and call time are used when the file has them.
                 </p>
-                {canEdit ? <Button className="mt-4 rounded-full" data-testid="rtm-choose-file">Choose file</Button>
-                  : <p className="mt-3 text-xs text-[#86868b]">Your account can view plans but not upload.</p>}
+                {canEdit ? <Button variant="brand" className="mt-5" data-testid="rtm-choose-file">Choose file</Button>
+                  : <p className="mt-3 text-xs text-muted-foreground">Your account can view plans but not upload.</p>}
               </>
             )}
           </div>
@@ -293,22 +300,22 @@ export default function RtmStudio({ canEdit }: { canEdit: boolean }) {
           <div className="mx-auto max-w-xl py-10 text-center" data-testid="rtm-building">
             <Loader2 className="mx-auto mb-3 h-8 w-8 animate-spin text-primary" />
             <p className="text-base font-semibold">Building your RTM</p>
-            <p className="mt-1 text-sm text-[#6e6e73]">{building.stage}{building.detail ? ` · ${building.detail}` : ""}</p>
+            <p className="mt-1 text-sm text-muted-foreground">{building.stage}{building.detail ? ` · ${building.detail}` : ""}</p>
             <Progress value={building.percent} className="mt-4" />
-            <p className="mt-3 text-xs text-[#86868b]">Territories, days, weeks and the driving order of every route. Large universes take a few minutes.</p>
+            <p className="mt-3 text-xs text-muted-foreground">Territories, days, weeks and the driving order of every route. Large universes take a few minutes.</p>
           </div>
         )}
 
         {/* ---------- blueprint ---------- */}
         {showBlueprint && (
           !blueprint ? (
-            <div className="flex items-center gap-2 py-10 text-sm text-[#6e6e73]"><Loader2 className="h-4 w-4 animate-spin" /> Reading your outlets…</div>
+            <div className="flex items-center gap-2 py-10 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Reading your outlets…</div>
           ) : (
             <div className="grid gap-5 lg:grid-cols-5" data-testid="rtm-blueprint">
               <div className="space-y-4 lg:col-span-2">
                 <div>
-                  <p className="text-xs font-medium uppercase tracking-wide text-[#86868b]">Your market</p>
-                  <p className="mt-1 text-[15px] leading-snug text-[#1d1d1f] dark:text-white" data-testid="rtm-market">
+                  <p className="eyebrow">Your market</p>
+                  <p className="mt-1.5 text-[15px] leading-relaxed text-foreground" data-testid="rtm-market">
                     <strong>{fmt(blueprint.market.active)} outlets</strong>
                     {blueprint.market.country ? ` in ${blueprint.market.country}` : ""}, a {blueprint.market.character} market
                     {` reaching about ${Math.round(blueprint.market.radiusKm)} km from its centre`}. {fmt(blueprint.frequency.monthlyVisits)} visits a month.
@@ -316,7 +323,7 @@ export default function RtmStudio({ canEdit }: { canEdit: boolean }) {
                   {blueprint.channels.length > 0 && (
                     <div className="mt-2 flex flex-wrap gap-1.5">
                       {blueprint.channels.slice(0, 6).map(c => (
-                        <span key={c.key} className="rounded-full bg-[#f5f5f7] px-2 py-0.5 text-xs text-[#1d1d1f] dark:bg-[#2c2c2e] dark:text-white">
+                        <span key={c.key} className="rounded-md border bg-card px-2 py-0.5 text-xs text-foreground shadow-xs">
                           {c.label} {fmt(c.count)} · {c.callMinutes} min
                         </span>
                       ))}
@@ -324,34 +331,34 @@ export default function RtmStudio({ canEdit }: { canEdit: boolean }) {
                   )}
                 </div>
                 <div>
-                  <p className="mb-2 text-xs font-medium uppercase tracking-wide text-[#86868b]">Data checks</p>
+                  <p className="eyebrow mb-2">Data checks</p>
                   <CheckList checks={blueprint.checks} testid="rtm-blueprint-checks" />
                 </div>
               </div>
 
               <div className="space-y-4 lg:col-span-3">
-                <p className="text-xs font-medium uppercase tracking-wide text-[#86868b]">Recommended setup <span className="normal-case tracking-normal text-[#86868b]">· change anything before you build</span></p>
+                <p className="eyebrow">Recommended setup <span className="font-normal normal-case tracking-normal">· change anything before you build</span></p>
 
                 {/* team size */}
-                <div className="rounded-xl border border-[#e5e5e5] p-3 dark:border-[#38383a]">
-                  <div className="flex items-center gap-2 text-sm font-medium"><Users className="h-4 w-4 text-primary" /> Team size</div>
+                <div className="rounded-xl border bg-card p-3.5 shadow-xs">
+                  <div className="flex items-center gap-2 text-sm font-medium"><Users className="h-4 w-4 text-muted-foreground" /> Team size</div>
                   <div className="mt-2 flex flex-wrap gap-2" data-testid="rtm-headcount-options">
                     {blueprint.headcount.options.map(o => (
                       <button key={o.reps} type="button" onClick={() => setEdits(e => ({ ...e, reps: o.reps }))}
-                        className={`rounded-lg border px-3 py-1.5 text-left text-sm transition ${setup!.reps === o.reps ? "border-primary bg-primary/5 font-semibold" : "border-[#e5e5e5] hover:border-[#86868b] dark:border-[#38383a]"}`}
+                        className={`rounded-lg border px-3 py-1.5 text-left text-sm transition ${setup!.reps === o.reps ? "border-primary bg-primary/[0.06] font-semibold text-foreground ring-2 ring-primary/15" : "border-border bg-card hover:border-input hover:bg-muted/50"}`}
                         data-testid={`rtm-reps-${o.reps}`}>
                         {o.reps} rep{o.reps === 1 ? "" : "s"}
-                        <span className="block text-xs font-normal text-[#6e6e73]">{o.visitsPerDay} visits a day{o.reps === blueprint.headcount.reps ? " · recommended" : ""}</span>
+                        <span className="block text-xs font-normal text-muted-foreground">{o.visitsPerDay} visits a day{o.reps === blueprint.headcount.reps ? " · recommended" : ""}</span>
                       </button>
                     ))}
                   </div>
-                  <p className="mt-2 text-xs text-[#6e6e73]">{blueprint.headcount.reason}</p>
+                  <p className="mt-2 text-xs text-muted-foreground">{blueprint.headcount.reason}</p>
                 </div>
 
                 <div className="grid gap-3 sm:grid-cols-2">
                   {/* working week */}
-                  <div className="rounded-xl border border-[#e5e5e5] p-3 dark:border-[#38383a]">
-                    <div className="flex items-center gap-2 text-sm font-medium"><CalendarDays className="h-4 w-4 text-primary" /> Working week</div>
+                  <div className="rounded-xl border bg-card p-3.5 shadow-xs">
+                    <div className="flex items-center gap-2 text-sm font-medium"><CalendarDays className="h-4 w-4 text-muted-foreground" /> Working week</div>
                     <div className="mt-2 flex flex-wrap gap-1" data-testid="rtm-week">
                       {WEEK.map(d => {
                         const on = setup!.workingDays.includes(d.iso);
@@ -363,28 +370,28 @@ export default function RtmStudio({ canEdit }: { canEdit: boolean }) {
                               const ordered = WEEK.map(w => w.iso).filter(x => next.includes(x));
                               return ordered.length ? { ...e, workingDays: ordered } : e;
                             })}
-                            className={`h-7 w-9 rounded-md text-xs ${on ? "bg-[#1d1d1f] text-white dark:bg-white dark:text-black" : "bg-[#f5f5f7] text-[#86868b] dark:bg-[#2c2c2e]"}`}>
+                            className={`h-7 w-9 rounded-md text-xs font-medium ${on ? "bg-foreground text-card shadow-xs" : "bg-muted text-muted-foreground hover:text-foreground"}`}>
                             {d.short}
                           </button>
                         );
                       })}
                     </div>
-                    <p className="mt-2 text-xs text-[#6e6e73]">{blueprint.setup.weekLabel}, {blueprint.setup.weekSource}.</p>
+                    <p className="mt-2 text-xs text-muted-foreground">{blueprint.setup.weekLabel}, {blueprint.setup.weekSource}.</p>
                   </div>
 
                   {/* visits band */}
-                  <div className="rounded-xl border border-[#e5e5e5] p-3 dark:border-[#38383a]">
-                    <div className="flex items-center gap-2 text-sm font-medium"><Store className="h-4 w-4 text-primary" /> Visits a day</div>
+                  <div className="rounded-xl border bg-card p-3.5 shadow-xs">
+                    <div className="flex items-center gap-2 text-sm font-medium"><Store className="h-4 w-4 text-muted-foreground" /> Visits a day</div>
                     <div className="mt-2 flex items-center gap-2 text-sm">
                       <input type="number" min={1} max={80} value={setup!.minVisitsPerDay} aria-label="Minimum visits a day"
                         onChange={e => setEdits(x => ({ ...x, minVisitsPerDay: Math.max(1, Number(e.target.value) || 1) }))}
-                        className="h-8 w-16 rounded-md border border-[#d2d2d7] bg-transparent px-2 dark:border-[#424245]" data-testid="rtm-min-visits" />
+                        className="h-9 w-16 rounded-lg border border-input bg-card px-2.5 tabular-nums shadow-xs focus:border-primary/60 focus:outline-none focus:ring-4 focus:ring-primary/10" data-testid="rtm-min-visits" />
                       <span>to</span>
                       <input type="number" min={1} max={80} value={setup!.maxVisitsPerDay} aria-label="Maximum visits a day"
                         onChange={e => setEdits(x => ({ ...x, maxVisitsPerDay: Math.max(1, Number(e.target.value) || 1) }))}
-                        className="h-8 w-16 rounded-md border border-[#d2d2d7] bg-transparent px-2 dark:border-[#424245]" data-testid="rtm-max-visits" />
+                        className="h-9 w-16 rounded-lg border border-input bg-card px-2.5 tabular-nums shadow-xs focus:border-primary/60 focus:outline-none focus:ring-4 focus:ring-primary/10" data-testid="rtm-max-visits" />
                     </div>
-                    <p className="mt-2 text-xs text-[#6e6e73]">
+                    <p className="mt-2 text-xs text-muted-foreground">
                       {blueprint.setup.bandSource === "workload"
                         ? `From the workload: about ${blueprint.workload.sustainableCallsPerDay} calls fit an ${blueprint.workload.shiftHours}-hour day.`
                         : "As in your last plan."}
@@ -392,21 +399,21 @@ export default function RtmStudio({ canEdit }: { canEdit: boolean }) {
                   </div>
 
                   {/* balance */}
-                  <div className="rounded-xl border border-[#e5e5e5] p-3 dark:border-[#38383a] sm:col-span-2">
-                    <div className="flex items-center gap-2 text-sm font-medium"><Scale className="h-4 w-4 text-primary" /> Balance days by</div>
-                    <div className="mt-2 inline-flex rounded-lg bg-[#f5f5f7] p-0.5 dark:bg-[#2c2c2e]" data-testid="rtm-balance">
+                  <div className="rounded-xl border bg-card p-3.5 shadow-xs sm:col-span-2">
+                    <div className="flex items-center gap-2 text-sm font-medium"><Scale className="h-4 w-4 text-muted-foreground" /> Balance days by</div>
+                    <div className="mt-2 inline-flex rounded-lg bg-muted p-1" data-testid="rtm-balance">
                       {(["time", "visits"] as const).map(b => (
                         <button key={b} type="button" onClick={() => setEdits(e => ({ ...e, balanceBy: b }))}
-                          className={`rounded-md px-3 py-1 text-sm ${setup!.balanceBy === b ? "bg-white font-medium shadow-sm dark:bg-[#1c1c1e]" : "text-[#6e6e73]"}`}>
+                          className={`rounded-md px-3 py-1 text-sm ${setup!.balanceBy === b ? "bg-card font-medium text-foreground shadow-xs" : "text-muted-foreground hover:text-foreground"}`}>
                           {b === "time" ? "Working time" : "Visit count"}
                         </button>
                       ))}
                     </div>
-                    <p className="mt-2 text-xs text-[#6e6e73]">{blueprint.setup.balanceReason}</p>
+                    <p className="mt-2 text-xs text-muted-foreground">{blueprint.setup.balanceReason}</p>
                   </div>
                 </div>
 
-                <div className="flex items-start gap-3 rounded-xl bg-[#f5f5f7] px-4 py-3 text-sm dark:bg-[#2c2c2e]" data-testid="rtm-workday">
+                <div className="flex items-start gap-3 rounded-xl border border-primary/15 bg-primary/[0.04] px-4 py-3 text-sm leading-relaxed" data-testid="rtm-workday">
                   <Clock className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
                   <span>
                     A typical day: <strong>{blueprint.headcount.visitsPerDay}</strong> calls of about {Math.round(blueprint.workload.callMinutes)} min, plus driving,
@@ -416,11 +423,11 @@ export default function RtmStudio({ canEdit }: { canEdit: boolean }) {
                 </div>
 
                 <div className="flex flex-wrap items-center gap-3">
-                  <Button size="lg" className="rounded-full px-6" onClick={build} disabled={!canEdit || bpLoading || choiceQs !== debouncedQs} data-testid="rtm-build">
-                    <Sparkles className="mr-2 h-4 w-4" /> Build my RTM
+                  <Button variant="brand" size="lg" className="px-6" onClick={build} disabled={!canEdit || bpLoading || choiceQs !== debouncedQs} data-testid="rtm-build">
+                    <Sparkles className="h-4 w-4" /> Build my RTM
                   </Button>
-                  {hasPlan && <Button variant="ghost" className="rounded-full" onClick={() => setReplan(false)}>Back to the current plan</Button>}
-                  {canEdit && <Button variant="ghost" className="rounded-full" onClick={() => fileInput.current?.click()}>Upload a different file</Button>}
+                  {hasPlan && <Button variant="ghost" className="" onClick={() => setReplan(false)}>Back to the current plan</Button>}
+                  {canEdit && <Button variant="ghost" className="" onClick={() => fileInput.current?.click()}>Upload a different file</Button>}
                 </div>
               </div>
             </div>
@@ -431,22 +438,22 @@ export default function RtmStudio({ canEdit }: { canEdit: boolean }) {
         {showResult && scorecard && (
           <div className="space-y-5" data-testid="rtm-result">
             <div className="flex flex-wrap items-center gap-4">
-              <div className={`flex h-16 w-16 flex-col items-center justify-center rounded-2xl ${GRADE_STYLE[scorecard.grade]}`} data-testid="rtm-grade">
-                <span className="text-3xl font-bold leading-none">{scorecard.grade}</span>
-                <span className="text-[10px] opacity-90">{scorecard.score}/100</span>
+              <div className={`flex h-16 w-16 flex-col items-center justify-center rounded-2xl bg-gradient-to-br text-white ring-1 ring-inset ring-white/20 ${GRADE_STYLE[scorecard.grade]}`} data-testid="rtm-grade">
+                <span className="text-3xl font-semibold leading-none tracking-tight">{scorecard.grade}</span>
+                <span className="mt-1 text-[10px] font-medium tabular-nums opacity-90">{scorecard.score}/100</span>
               </div>
               <div className="min-w-0 flex-1">
-                <p className="text-xs font-medium uppercase tracking-wide text-[#86868b]">Your RTM</p>
-                <p className="text-[15px] font-medium text-[#1d1d1f] dark:text-white" data-testid="rtm-headline">{scorecard.headline}</p>
+                <p className="eyebrow">Your RTM</p>
+                <p className="mt-1 text-[15px] font-medium leading-snug text-foreground" data-testid="rtm-headline">{scorecard.headline}</p>
               </div>
               <div className="flex flex-wrap gap-2">
-                <Button className="rounded-full" data-testid="rtm-download-pjp"
+                <Button variant="brand" data-testid="rtm-download-pjp"
                   onClick={() => downloadFile("/api/export/pjp", "journey_plan.xlsx").catch(e => toast({ title: "Download failed", description: (e as Error).message, variant: "destructive" }))}>
-                  <Download className="mr-2 h-4 w-4" /> Download journey plan
+                  <Download className="h-4 w-4" /> Download journey plan
                 </Button>
-                <Link href="/rep-map"><Button variant="outline" className="rounded-full"><MapPinned className="mr-2 h-4 w-4" /> Rep Map</Button></Link>
-                <Link href="/territories"><Button variant="outline" className="rounded-full"><MapIcon className="mr-2 h-4 w-4" /> Territory Map</Button></Link>
-                {canEdit && <Button variant="ghost" className="rounded-full" onClick={() => setReplan(true)} data-testid="rtm-replan"><RotateCcw className="mr-2 h-4 w-4" /> Re-plan</Button>}
+                <Link href="/rep-map"><Button variant="outline" className=""><MapPinned className="h-4 w-4" /> Rep Map</Button></Link>
+                <Link href="/territories"><Button variant="outline" className=""><MapIcon className="h-4 w-4" /> Territory Map</Button></Link>
+                {canEdit && <Button variant="ghost" className="" onClick={() => setReplan(true)} data-testid="rtm-replan"><RotateCcw className="h-4 w-4" /> Re-plan</Button>}
               </div>
             </div>
 
@@ -462,34 +469,34 @@ export default function RtmStudio({ canEdit }: { canEdit: boolean }) {
 
             <div className="grid gap-5 lg:grid-cols-2">
               <div>
-                <p className="mb-2 text-xs font-medium uppercase tracking-wide text-[#86868b]">Checks before roll-out</p>
+                <p className="eyebrow mb-2">Checks before roll-out</p>
                 <CheckList checks={scorecard.checks} testid="rtm-checks" />
               </div>
               <div>
-                <button type="button" className="mb-2 flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-[#86868b]" onClick={() => setShowReps(v => !v)} data-testid="rtm-toggle-reps">
+                <button type="button" className="eyebrow mb-2 flex items-center gap-1 hover:text-foreground" onClick={() => setShowReps(v => !v)} data-testid="rtm-toggle-reps">
                   Reps ({scorecard.perRep.length}) {showReps ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
                 </button>
-                <div className={`overflow-auto rounded-xl border border-[#e5e5e5] dark:border-[#38383a] ${showReps ? "max-h-[420px]" : "max-h-[220px]"}`}>
+                <div className={`overflow-auto rounded-xl border bg-card ${showReps ? "max-h-[420px]" : "max-h-[248px]"}`}>
                   <table className="w-full text-sm" data-testid="rtm-rep-table">
-                    <thead className="sticky top-0 bg-[#f5f5f7] text-xs text-[#6e6e73] dark:bg-[#2c2c2e]">
+                    <thead className="sticky top-0 z-10 bg-muted/90 text-[11px] uppercase tracking-[0.05em] text-muted-foreground backdrop-blur">
                       <tr>
-                        <th className="px-3 py-2 text-left font-medium">Rep</th>
-                        <th className="px-2 py-2 text-right font-medium">Outlets</th>
-                        <th className="px-2 py-2 text-right font-medium">Visits/day</th>
-                        <th className="px-2 py-2 text-right font-medium">Km/day</th>
-                        <th className="px-2 py-2 text-right font-medium">Hours/day</th>
-                        <th className="px-3 py-2 text-right font-medium">Long drives</th>
+                        <th className="px-3 py-2.5 text-left font-semibold">Rep</th>
+                        <th className="px-2 py-2.5 text-right font-semibold">Outlets</th>
+                        <th className="px-2 py-2.5 text-right font-semibold">Visits/day</th>
+                        <th className="px-2 py-2.5 text-right font-semibold">Km/day</th>
+                        <th className="px-2 py-2.5 text-right font-semibold">Hours/day</th>
+                        <th className="px-3 py-2.5 text-right font-semibold">Long drives</th>
                       </tr>
                     </thead>
                     <tbody>
                       {scorecard.perRep.map(r => (
-                        <tr key={r.repId} className="border-t border-[#e5e5e5] dark:border-[#38383a]">
-                          <td className="px-3 py-1.5">{r.name}</td>
-                          <td className="px-2 py-1.5 text-right tabular-nums">{fmt(r.outlets)}</td>
-                          <td className="px-2 py-1.5 text-right tabular-nums">{r.visitsPerDay.avg} <span className="text-xs text-[#86868b]">({r.visitsPerDay.min}-{r.visitsPerDay.max})</span></td>
-                          <td className="px-2 py-1.5 text-right tabular-nums">{r.kmPerDay}</td>
-                          <td className={`px-2 py-1.5 text-right tabular-nums ${r.maxHoursPerDay > scorecard.kpis.shiftHours + 0.25 ? "text-amber-600" : ""}`}>{r.hoursPerDay} <span className="text-xs text-[#86868b]">(max {r.maxHoursPerDay})</span></td>
-                          <td className="px-3 py-1.5 text-right tabular-nums">{r.longHops}</td>
+                        <tr key={r.repId} className="border-t hover:bg-muted/40">
+                          <td className="px-3 py-2 font-medium">{r.name}</td>
+                          <td className="px-2 py-2 text-right tabular-nums">{fmt(r.outlets)}</td>
+                          <td className="px-2 py-2 text-right tabular-nums">{r.visitsPerDay.avg} <span className="text-xs text-muted-foreground">({r.visitsPerDay.min}-{r.visitsPerDay.max})</span></td>
+                          <td className="px-2 py-2 text-right tabular-nums">{r.kmPerDay}</td>
+                          <td className={`px-2 py-2 text-right tabular-nums ${r.maxHoursPerDay > scorecard.kpis.shiftHours + 0.25 ? "text-warning" : ""}`}>{r.hoursPerDay} <span className="text-xs text-muted-foreground">(max {r.maxHoursPerDay})</span></td>
+                          <td className="px-3 py-2 text-right tabular-nums">{r.longHops}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -501,7 +508,7 @@ export default function RtmStudio({ canEdit }: { canEdit: boolean }) {
         )}
 
         {hasPlan && !replan && !building && !scorecard && (
-          <div className="flex items-center gap-2 py-6 text-sm text-[#6e6e73]"><Loader2 className="h-4 w-4 animate-spin" /> Scoring the plan…</div>
+          <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Scoring the plan…</div>
         )}
       </div>
     </section>
