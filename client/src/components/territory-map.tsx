@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { MapPin, Users, Navigation, Trash2, RefreshCw, Download, X, LassoSelect, Layers } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { useTheme } from '@/lib/theme';
 import { apiRequest } from '@/lib/queryClient';
 import { runJob } from '@/lib/jobs';
 import type { Outlet, Rep } from '@shared/schema';
@@ -44,7 +45,14 @@ const TERRITORY_COLORS = [
   '#DDA0DD', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E9'
 ];
 
-export default function TerritoryMap({ className }: TerritoryMapProps) {
+// Mapbox cannot swap a base style under layers already drawn, so a theme
+// switch remounts the map on the matching base map.
+export default function TerritoryMap(props: TerritoryMapProps) {
+  const theme = useTheme();
+  return <TerritoryMapView key={theme} {...props} />;
+}
+
+function TerritoryMapView({ className }: TerritoryMapProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
   const markersRef = useRef<mapboxgl.Marker[]>([]);
@@ -426,7 +434,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
       // country.
       map.current = new mapboxgl.Map({
         container: mapContainer.current,
-        style: 'mapbox://styles/mapbox/light-v11',
+        style: document.documentElement.classList.contains('dark') ? 'mapbox://styles/mapbox/dark-v11' : 'mapbox://styles/mapbox/light-v11',
         center: [20, 20],
         zoom: 1.5
       });

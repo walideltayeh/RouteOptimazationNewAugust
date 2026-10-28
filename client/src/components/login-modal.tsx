@@ -60,7 +60,7 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }: LoginMod
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent className="gap-0 p-0 sm:max-w-[420px]">
         <div className="px-7 pb-2 pt-8 text-center">
-          <BrandMark className="mx-auto mb-5 h-11 w-11 drop-shadow-[0_8px_16px_rgba(200,30,45,0.3)]" />
+          <BrandMark className="mx-auto mb-5 h-11 w-11 drop-shadow-[0_8px_16px_hsl(var(--primary)/0.35)]" />
           <DialogHeader className="space-y-1.5 sm:text-center">
             <DialogTitle className="text-xl">{setup ? "Create the first admin account" : "Welcome back"}</DialogTitle>
             <DialogDescription>

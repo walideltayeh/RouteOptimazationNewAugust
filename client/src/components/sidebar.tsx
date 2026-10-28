@@ -68,7 +68,7 @@ export default function Sidebar({ collapsed = false, mobileOpen = false, onMobil
   const body = (
     <>
       <div className={`flex h-14 shrink-0 items-center ${showLabels ? "gap-2.5 px-5" : "justify-center px-2"}`}>
-        <BrandMark className="h-8 w-8 shrink-0 drop-shadow-[0_2px_6px_rgba(220,38,38,0.35)]" />
+        <BrandMark className="h-8 w-8 shrink-0 drop-shadow-[0_2px_6px_hsl(var(--primary)/0.4)]" />
         {showLabels && (
           <div className="min-w-0 leading-tight">
             <p className="truncate text-[15px] font-semibold tracking-tight text-white">RouteOptima</p>
@@ -136,7 +136,7 @@ export default function Sidebar({ collapsed = false, mobileOpen = false, onMobil
       {/* Phone drawer */}
       {mobileOpen && (
         <div className="fixed inset-0 z-40 md:hidden" role="dialog" aria-modal="true">
-          <div className="absolute inset-0 bg-foreground/50 backdrop-blur-[2px]" onClick={onMobileClose} />
+          <div className="absolute inset-0 bg-foreground/50 backdrop-blur-[2px] dark:bg-black/70" onClick={onMobileClose} />
           <aside className="absolute inset-y-0 left-0 flex w-72 max-w-[85vw] flex-col bg-sidebar text-sidebar-foreground shadow-apple-xl">
             {body}
           </aside>

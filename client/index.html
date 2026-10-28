@@ -7,6 +7,10 @@
     <link rel="alternate icon" type="image/png" href="/logo.png" />
     <meta name="theme-color" content="#0B0F1A" />
     <title>RouteOptima · Route-to-market planner</title>
+    <script>
+      // The saved theme, before the first paint (see client/src/lib/theme.ts).
+      try { if (localStorage.getItem("routeoptima:theme") === "dark") { document.documentElement.classList.add("dark"); document.documentElement.style.colorScheme = "dark"; } } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>
