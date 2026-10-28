@@ -5,7 +5,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
-import StepBadge from "@/components/step-badge";
 import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
 import { Upload, CloudUpload, AlertTriangle, Download, FileText, X, CheckCircle2, BarChart3 } from "lucide-react";
@@ -260,8 +259,8 @@ export default function FileUpload() {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center">
-            <StepBadge n={1} />
-            Upload and check the outlet list
+            <Upload className="mr-2.5 h-4 w-4 text-muted-foreground" />
+            Upload an outlet list
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-6">

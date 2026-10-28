@@ -275,3 +275,42 @@ describe("RTM Studio: upload, blueprint, one-click build, scorecard, journey pla
     expect(stops[0]["Date"]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 });
+
+describe("edited universe: lasso edits, then save as '<file> Universe Edited v.N'", () => {
+  it("counts deletes and moves, saves a re-uploadable file and carries the version on", async () => {
+    const XLSX = await import("xlsx");
+    const u0 = (await call("planner", "GET", "/api/universe")).data;
+    expect(u0).toMatchObject({ fileName: "universe.csv", baseName: "universe", editsSinceSave: 0, nextVersion: 1, nextFileName: "universe Universe Edited v.1.xlsx" });
+
+    // What the lasso does: delete two outlets, move three to a rep.
+    const outlets = (await call("planner", "GET", "/api/outlets")).data as any[];
+    const reps = (await call("planner", "GET", "/api/reps")).data as any[];
+    expect((await call("planner", "POST", "/api/outlets/delete-many", { outletIds: [outlets[0].id, outlets[1].id] })).status).toBe(200);
+    const moving = outlets.slice(2, 5).map(o => o.id);
+    const target = reps[reps.length - 1];
+    expect((await call("planner", "POST", "/api/reps/reassign-outlets", { outletIds: moving, toRepId: target.id })).status).toBe(200);
+    expect((await call("viewer", "GET", "/api/universe")).data.editsSinceSave).toBe(5);
+
+    // A viewer cannot save; a planner gets the file under the versioned name.
+    expect((await call("viewer", "POST", "/api/universe/save")).status).toBe(403);
+    const res = await fetch(base + "/api/universe/save", { method: "POST", headers: { cookie: jars.get("planner")! } });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-disposition")).toContain("filename*=UTF-8''universe%20Universe%20Edited%20v.1.xlsx");
+    const saved = new Uint8Array(await res.arrayBuffer());
+    const rows = XLSX.utils.sheet_to_json<any>(XLSX.read(saved, { type: "array" }).Sheets["Universe"]);
+    expect(rows).toHaveLength(148);
+    expect(rows.filter(r => r["Assigned Rep"] === target.name).map(r => r["Outlet Code"])).toEqual(expect.arrayContaining(outlets.slice(2, 5).map(o => o.code)));
+
+    const u1 = (await call("planner", "GET", "/api/universe")).data;
+    expect(u1).toMatchObject({ editsSinceSave: 0, nextVersion: 2, nextFileName: "universe Universe Edited v.2.xlsx" });
+    expect(u1.lastSaved).toMatchObject({ fileName: "universe Universe Edited v.1.xlsx", version: 1, outlets: 148 });
+
+    // Uploading the saved file plans from it and the next save is v.2.
+    const form = new FormData();
+    form.append("file", new Blob([saved], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), "universe Universe Edited v.1.xlsx");
+    const up = await call("planner", "POST", "/api/upload", undefined, form);
+    expect(up.status).toBe(200);
+    expect(up.data.report.validOutlets).toBe(148);
+    expect((await call("planner", "GET", "/api/universe")).data).toMatchObject({ baseName: "universe", editsSinceSave: 0, nextFileName: "universe Universe Edited v.2.xlsx" });
+  });
+});

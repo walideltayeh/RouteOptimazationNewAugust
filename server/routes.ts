@@ -12,7 +12,22 @@ import { classifyChannel, callMinutesFor, chooseHeadcount, kthNeighbourKm, DEFAU
 import { buildBlueprint } from "./blueprint";
 import { scorePlan } from "./scorecard";
 import { buildPjpWorkbook } from "./pjp-export";
+import { buildUniverseWorkbook, editedBaseName, editedVersionOf, editedFileName } from "./universe-export";
 const UPLOAD_META_KEY = "upload-meta";
+
+// Outlets deleted or moved to another rep since the universe was last saved,
+// counted with the upload facts so the "Save edited universe" button can say
+// what is unsaved.
+async function noteUniverseEdit(count: number) {
+  if (!(count > 0)) return;
+  try {
+    const meta = JSON.parse((await loadBlob(UPLOAD_META_KEY)) || "null") ?? { fileName: null };
+    meta.editsSinceSave = (meta.editsSinceSave ?? 0) + count;
+    await saveBlob(UPLOAD_META_KEY, JSON.stringify(meta));
+  } catch (err) {
+    console.error("[universe] could not count the edit:", (err as Error).message);
+  }
+}
 import { totalWeeklyLoad, growBalancedRegions, partitionByHilbert, repairLoads, swapForCompactness, polishByCohesion, polishByTourLength, recutPairs, routeCost, longestHop, swapStranded, reachabilityComponents, gapBetween, weeklyLoadOf, type Band, improveByRouteCost, exchangePockets, tourLength, handOverStrays, collapseBlocks, unitLoad, lineSplit, roughTour, sequenceDays } from "./day-balancer";
 import { 
   insertOptimizationRunSchema, 
@@ -4053,6 +4068,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     for (const id of ids) if (await storage.deleteOutlet(id)) deleted++;
     const after = (await storage.getOutlets()).length;
     await storage.flush();
+    await noteUniverseEdit(deleted);
     console.log(`[outlets] deleted ${deleted} of ${ids.length} requested; ${before} -> ${after}`);
     res.json({ before, deleted, after });
   });
@@ -4482,6 +4498,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       await saveBlob(UPLOAD_META_KEY, JSON.stringify({
         fileName: originalname, sheetUsed, otherSheets, rowsUsingDefaultVf, defaultVisitFrequency,
         callTimeSources, skippedRows: skippedRows.length, uploadedAt: new Date().toISOString(),
+        // An edited universe uploaded again carries on from its own version.
+        editVersion: editedVersionOf(originalname), editsSinceSave: 0,
       })).catch(err => console.error('[upload] could not save upload facts:', (err as Error).message));
       let recommendedReps = Math.ceil(outlets.length / 250);
       let blueprint: Awaited<ReturnType<typeof currentBlueprint>> | null = null;
@@ -4716,6 +4734,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!deleted) {
         return res.status(404).json({ message: "Outlet not found" });
       }
+      await noteUniverseEdit(1);
 
       res.json({
         success: true,
@@ -4749,6 +4768,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const deleted = await storage.deleteOutlet(outlet.id);
         if (deleted) deletedCount++;
       }
+      await noteUniverseEdit(deletedCount);
       
       res.json({ 
         success: true, 
@@ -6356,6 +6376,53 @@ export async function registerRoutes(app: Express): Promise<Server> {
     return runOptimize(req, res);
   }));
 
+  // The edited universe: what the next "Save edited universe" will be called
+  // and how many lasso edits it would keep.
+  async function universeState() {
+    const meta = await loadBlob(UPLOAD_META_KEY).then(t => (t ? JSON.parse(t) : null)).catch(() => null);
+    const baseName = editedBaseName(meta?.fileName);
+    const nextVersion = Math.max(0, meta?.editVersion ?? editedVersionOf(meta?.fileName)) + 1;
+    return { meta, baseName, nextVersion, nextFileName: editedFileName(baseName, nextVersion) };
+  }
+  app.get("/api/universe", async (_req, res) => {
+    try {
+      const { meta, baseName, nextVersion, nextFileName } = await universeState();
+      res.json({
+        fileName: meta?.fileName ?? null, baseName, outlets: (await storage.getOutlets()).length,
+        editsSinceSave: meta?.editsSinceSave ?? 0, nextVersion, nextFileName, lastSaved: meta?.lastSaved ?? null,
+      });
+    } catch (error) {
+      console.error("Universe state error:", error);
+      res.status(500).json({ message: "Failed to read the universe" });
+    }
+  });
+  // Save the universe as it stands now: a re-uploadable workbook named
+  // "<file> Universe Edited v.N"; the version moves on and the edit count resets.
+  app.post("/api/universe/save", async (_req, res) => {
+    try {
+      const outlets = await storage.getOutlets();
+      if (outlets.length === 0) return res.status(400).json({ message: "There are no outlets to save." });
+      const { meta, nextVersion, nextFileName } = await universeState();
+      const savedAt = new Date();
+      const buffer = buildUniverseWorkbook({
+        outlets, reps: await storage.getReps(), sourceFile: meta?.fileName ?? null,
+        fileName: nextFileName, version: nextVersion, editsSinceSave: meta?.editsSinceSave ?? 0, savedAt,
+      });
+      await saveBlob(UPLOAD_META_KEY, JSON.stringify({
+        ...(meta ?? { fileName: null }), editVersion: nextVersion, editsSinceSave: 0,
+        lastSaved: { fileName: nextFileName, version: nextVersion, at: savedAt.toISOString(), outlets: outlets.length },
+      }));
+      console.log(`[universe] saved ${nextFileName}: ${outlets.length} outlets`);
+      const ascii = nextFileName.replace(/[^\x20-\x7e]/g, "_").replace(/"/g, "'");
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(nextFileName)}`);
+      res.send(buffer);
+    } catch (error) {
+      console.error("Universe save error:", error);
+      res.status(500).json({ message: "Failed to save the universe" });
+    }
+  });
+
   app.get("/api/plan/scorecard", async (_req, res) => {
     try {
       const sc = await currentScorecard();
@@ -7424,6 +7491,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const outlet = await storage.updateOutlet(id, { repId: toRepId });
         if (outlet) moved++;
       }
+      await noteUniverseEdit(moved);
       if (moved === 0) {
         return res.status(404).json({ message: "No matching outlets found" });
       }

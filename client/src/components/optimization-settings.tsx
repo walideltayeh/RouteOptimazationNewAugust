@@ -490,7 +490,7 @@ export default function OptimizationSettings({ disabled = false }: OptimizationS
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center">
-          <StepBadge n={2} />
+          <StepBadge n={1} />
           Optimization settings
         </CardTitle>
       </CardHeader>
