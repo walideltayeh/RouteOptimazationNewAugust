@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { MapPin, Users, Navigation, Trash2, RefreshCw, Download } from 'lucide-react';
+import { MapPin, Users, Navigation, Trash2, RefreshCw, Download, X } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { apiRequest } from '@/lib/queryClient';
 import { runJob } from '@/lib/jobs';
@@ -64,6 +64,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   const [lassoActive, setLassoActive] = useState(false);
   const lassoActiveRef = useRef(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const selectedCountRef = useRef(0);
   const outletsRef = useRef<Outlet[]>([]);
   const [deleteSummary, setDeleteSummary] = useState<{ before: number; deleted: number; after: number } | null>(null);
   const [showLassoDeleteConfirm, setShowLassoDeleteConfirm] = useState(false);
@@ -92,6 +93,14 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
   });
   useEffect(() => { outletsRef.current = outlets; }, [outlets]);
   useEffect(() => { lassoActiveRef.current = lassoActive; }, [lassoActive]);
+  useEffect(() => { selectedCountRef.current = selectedIds.size; }, [selectedIds]);
+
+  // Changed your mind: drop the selection, any pending delete, and the tool.
+  const cancelSelection = () => {
+    setSelectedIds(prev => (prev.size ? new Set() : prev));
+    setShowLassoDeleteConfirm(false);
+    setLassoActive(false);
+  };
 
   // The settings the last plan ran with; "optimize from scratch" reuses them.
   const { data: planSettings } = useQuery<any>({ queryKey: ['/api/plan-settings'] });
@@ -287,7 +296,9 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
 
   // Lasso: while the tool is on, dragging on the map draws a loop instead of
   // panning; releasing selects every outlet inside it. Shift adds to the
-  // current selection. Works with touch as well as the mouse.
+  // current selection. Works with touch as well as the mouse. Esc while
+  // drawing drops the loop and keeps the selection as it was; Esc otherwise
+  // cancels the selection and leaves the tool.
   useEffect(() => {
     const m = map.current;
     if (!m || !isMapLoaded) return;
@@ -321,6 +332,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
     };
     const start = (e: MouseEvent | TouchEvent) => {
       if (!lassoActiveRef.current) return;
+      if ('button' in e && e.button !== 0) return;
       e.preventDefault(); e.stopPropagation();
       drawing = true; ring = [pointOf(e)]; draw();
     };
@@ -343,12 +355,25 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
       }
       ring = []; draw();
     };
+    const onKey = (e: KeyboardEvent) => {
+      // An open dropdown or dialog takes Esc for itself first.
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+      if (drawing) { drawing = false; ring = []; draw(); e.preventDefault(); return; }
+      if (!lassoActiveRef.current && selectedCountRef.current === 0) return;
+      e.preventDefault();
+      setSelectedIds(prev => (prev.size ? new Set() : prev));
+      setShowLassoDeleteConfirm(false);
+      setLassoActive(false);
+    };
     canvas.addEventListener('mousedown', start, true);
     canvas.addEventListener('mousemove', move, true);
     window.addEventListener('mouseup', end, true);
     canvas.addEventListener('touchstart', start, { passive: false, capture: true });
     canvas.addEventListener('touchmove', move, { passive: false, capture: true });
     window.addEventListener('touchend', end, true);
+    window.addEventListener('keydown', onKey);
     return () => {
       canvas.removeEventListener('mousedown', start, true);
       canvas.removeEventListener('mousemove', move, true);
@@ -356,6 +381,7 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
       canvas.removeEventListener('touchstart', start, true);
       canvas.removeEventListener('touchmove', move, true);
       window.removeEventListener('touchend', end, true);
+      window.removeEventListener('keydown', onKey);
     };
   }, [isMapLoaded]);
 
@@ -746,12 +772,12 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
       {/* Map Header */}
       <Card className="mb-4">
         <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <CardTitle className="flex items-center">
               <Navigation className="mr-2 h-5 w-5" />
               Territory Map
             </CardTitle>
-            <div className="flex items-center space-x-4 text-sm text-gray-600">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-gray-600">
               <div className="flex items-center gap-1">
                 <Button
                   size="sm"
@@ -776,47 +802,11 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
                   variant={lassoActive ? 'default' : 'outline'}
                   className={`rounded-full text-xs px-3 h-7 ${lassoActive ? 'bg-blue-600 text-white hover:bg-blue-600/90' : ''}`}
                   onClick={() => setLassoActive(v => !v)}
-                  title="Draw a loop around outlets to select them. Hold Shift to add to the selection."
+                  title="Draw a loop around outlets to select them. Hold Shift to add to the selection; Esc cancels."
                   data-testid="button-lasso"
                 >
                   {lassoActive ? 'Lasso on — draw to select' : 'Lasso select'}
                 </Button>
-                {selectedIds.size > 0 && (
-                  <>
-                    <span className="text-xs font-medium text-red-700" data-testid="text-lasso-count">{selectedIds.size} selected</span>
-                    <Button size="sm" variant="destructive" className="rounded-full text-xs px-3 h-7" onClick={() => setShowLassoDeleteConfirm(true)} data-testid="button-lasso-delete">
-                      Delete {selectedIds.size}
-                    </Button>
-                    <Select value={reassignTargetId} onValueChange={setReassignTargetId}>
-                      <SelectTrigger className="h-7 w-[220px] rounded-full text-xs" data-testid="select-lasso-target-rep">
-                        <SelectValue placeholder="Move to rep…" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {rankedTargetReps.map(({ rep, distKm, owns }, idx) => (
-                          <SelectItem key={rep.id} value={rep.id}>
-                            {rep.territory || rep.name} · {rep.name}
-                            {Number.isFinite(distKm) ? ` — ${distKm < 1 ? `${Math.round(distKm * 1000)} m` : `${distKm.toFixed(1)} km`}` : ''}
-                            {idx === 0 ? ' · closest' : ''}
-                            {owns > 0 ? ` · owns ${owns}` : ''}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <Button
-                      size="sm"
-                      className="rounded-full text-xs px-3 h-7"
-                      disabled={!reassignTargetId || reassignSelectionMutation.isPending}
-                      onClick={() => reassignSelectionMutation.mutate({ outletIds: Array.from(selectedIds), toRepId: reassignTargetId })}
-                      title="Move the selected outlets to this rep and re-plan the territories involved"
-                      data-testid="button-lasso-move"
-                    >
-                      {reassignSelectionMutation.isPending ? 'Moving…' : `Move ${selectedIds.size}`}
-                    </Button>
-                    <Button size="sm" variant="ghost" className="rounded-full text-xs px-2 h-7" onClick={() => setSelectedIds(new Set())} data-testid="button-lasso-clear">
-                      Clear
-                    </Button>
-                  </>
-                )}
               </div>
               <div className="flex items-center">
                 <MapPin className="mr-1 h-4 w-4" />
@@ -845,6 +835,58 @@ export default function TerritoryMap({ className }: TerritoryMapProps) {
             </div>
           </div>
         </CardHeader>
+        {(lassoActive || selectedIds.size > 0) && (
+          <div className="mx-6 mb-4 flex flex-wrap items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900 dark:border-blue-900 dark:bg-blue-950 dark:text-blue-100" data-testid="lasso-bar">
+            {selectedIds.size === 0 ? (
+              <span className="mr-auto">Drag a loop around the outlets you want. Hold Shift to add to a selection; press Esc to cancel, even mid-loop.</span>
+            ) : (
+              <>
+                <span className="mr-auto font-medium" data-testid="text-lasso-count">
+                  {selectedIds.size.toLocaleString()} outlet{selectedIds.size === 1 ? '' : 's'} selected
+                </span>
+                <Button size="sm" variant="destructive" className="rounded-full text-xs px-3 h-7" onClick={() => setShowLassoDeleteConfirm(true)} data-testid="button-lasso-delete">
+                  Delete {selectedIds.size.toLocaleString()}
+                </Button>
+                <Select value={reassignTargetId} onValueChange={setReassignTargetId}>
+                  <SelectTrigger className="h-7 w-[220px] rounded-full bg-white text-xs dark:bg-[#1c1c1e]" data-testid="select-lasso-target-rep">
+                    <SelectValue placeholder="Move to rep…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {rankedTargetReps.map(({ rep, distKm, owns }, idx) => (
+                      <SelectItem key={rep.id} value={rep.id}>
+                        {rep.territory || rep.name} · {rep.name}
+                        {Number.isFinite(distKm) ? ` — ${distKm < 1 ? `${Math.round(distKm * 1000)} m` : `${distKm.toFixed(1)} km`}` : ''}
+                        {idx === 0 ? ' · closest' : ''}
+                        {owns > 0 ? ` · owns ${owns}` : ''}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  size="sm"
+                  className="rounded-full text-xs px-3 h-7"
+                  disabled={!reassignTargetId || reassignSelectionMutation.isPending}
+                  onClick={() => reassignSelectionMutation.mutate({ outletIds: Array.from(selectedIds), toRepId: reassignTargetId })}
+                  title="Move the selected outlets to this rep and re-plan the territories involved"
+                  data-testid="button-lasso-move"
+                >
+                  {reassignSelectionMutation.isPending ? 'Moving…' : `Move ${selectedIds.size.toLocaleString()}`}
+                </Button>
+              </>
+            )}
+            <Button
+              size="sm"
+              variant="outline"
+              className="rounded-full bg-white text-xs px-3 h-7 dark:bg-[#1c1c1e]"
+              onClick={cancelSelection}
+              title="Clear the selection and leave the lasso (Esc)"
+              data-testid="button-lasso-cancel"
+            >
+              <X className="mr-1 h-3.5 w-3.5" />
+              {selectedIds.size === 0 ? 'Cancel' : 'Cancel selection'}
+            </Button>
+          </div>
+        )}
       </Card>
 
       {showLassoDeleteConfirm && selectedIds.size > 0 && (
