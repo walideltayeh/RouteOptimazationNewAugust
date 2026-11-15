@@ -1,24 +1,36 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { Switch, Route, Router } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import Sidebar from "@/components/sidebar";
-import Dashboard from "@/pages/dashboard";
-import TerritoriesPage from "@/pages/territories";
-import RepMapPage from "@/pages/rep-map";
-import SchedulesPage from "@/pages/schedules";
-import ScenariosPage from "@/pages/scenarios";
 import NotFound from "@/pages/not-found";
-import UsersPage from "@/pages/users";
 import ChangePasswordDialog from "@/components/change-password-dialog";
-import LandingPage from "@/components/landing-page";
 import LoginModal from "@/components/login-modal";
 import PersistenceBanner from "@/components/persistence-banner";
 import AppHeader from "@/components/app-header";
 import BrandMark from "@/components/brand-mark";
 import { useAuth } from "@/hooks/use-auth";
+
+// Each screen loads when it is opened. The maps bring the map library with
+// them (most of the app's weight), so signing in and the dashboard no longer
+// wait for it, and the landing page is not shipped to someone signed in.
+const Dashboard = lazy(() => import("@/pages/dashboard"));
+const TerritoriesPage = lazy(() => import("@/pages/territories"));
+const RepMapPage = lazy(() => import("@/pages/rep-map"));
+const SchedulesPage = lazy(() => import("@/pages/schedules"));
+const ScenariosPage = lazy(() => import("@/pages/scenarios"));
+const UsersPage = lazy(() => import("@/pages/users"));
+const LandingPage = lazy(() => import("@/components/landing-page"));
+
+function ScreenLoading() {
+  return (
+    <div className="flex h-full min-h-[50vh] items-center justify-center" data-testid="screen-loading">
+      <BrandMark className="h-9 w-9 animate-pulse" />
+    </div>
+  );
+}
 
 function AppContent() {
   const { isAuthenticated, isLoading, refetch, user } = useAuth();
@@ -38,7 +50,9 @@ function AppContent() {
   if (!isAuthenticated) {
     return (
       <>
-        <LandingPage onAdminLogin={() => setShowLogin(true)} />
+        <Suspense fallback={<div className="min-h-screen bg-background"><ScreenLoading /></div>}>
+          <LandingPage onAdminLogin={() => setShowLogin(true)} />
+        </Suspense>
         <LoginModal
           isOpen={showLogin}
           onClose={() => setShowLogin(false)}
@@ -55,6 +69,7 @@ function AppContent() {
         <AppHeader collapsed={collapsed} onToggleCollapsed={() => setCollapsed(v => !v)} onOpenMobile={() => setMobileOpen(true)} />
         <PersistenceBanner />
         <main className="min-h-0 flex-1 overflow-auto">
+        <Suspense fallback={<ScreenLoading />}>
         <Switch>
           <Route path="/" component={Dashboard} />
           <Route path="/territories" component={TerritoriesPage} />
@@ -64,6 +79,7 @@ function AppContent() {
           <Route path="/users" component={UsersPage} />
           <Route component={NotFound} />
         </Switch>
+        </Suspense>
         </main>
         {/* A password an admin set has to be replaced before anything else. */}
         <ChangePasswordDialog isOpen={!!user?.mustChangePassword} onClose={() => {}} required />

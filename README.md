@@ -192,6 +192,10 @@ npm test        # vitest: unit tests plus an end-to-end API test on a temp data 
 npm run build   # client bundle + server bundle into dist/
 ```
 
+The client is split by screen: signing in loads about 160 kB (gzipped) of
+script, and the map library (the larger part of the app) only when a map
+is opened.
+
 The tests cover the cycle math (`server/cycle.ts`), the day balancer, the
 accounts store, background jobs, the blob store, and the app end to end:
 first-run setup, roles, upload, a background optimization, exports, and a

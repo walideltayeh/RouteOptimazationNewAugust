@@ -1,13 +1,9 @@
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import FileUpload from "@/components/file-upload";
 import RepScheduleTable from "@/components/rep-schedule-table";
 import OptimizationSettings from "@/components/optimization-settings";
-import AnalyticsCharts from "@/components/analytics-charts";
-import MLInsights from "@/components/ml-insights";
-import TerritoryMap from "@/components/territory-map";
-import TerritoryCustomization from "@/components/territory-customization";
 import RtmStudio from "@/components/rtm-studio";
 import SaveUniverseButton from "@/components/save-universe-button";
 import { useUniverse } from "@/hooks/use-universe";
@@ -25,6 +21,14 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import type { DashboardMetrics, Rep, Outlet, Schedule, RoleHierarchy } from "@shared/schema";
+
+// The results tabs load when they are opened: the map and the charts are
+// most of the dashboard's weight and neither is on screen at first.
+const AnalyticsCharts = lazy(() => import("@/components/analytics-charts"));
+const MLInsights = lazy(() => import("@/components/ml-insights"));
+const TerritoryMap = lazy(() => import("@/components/territory-map"));
+const TerritoryCustomization = lazy(() => import("@/components/territory-customization"));
+const TabLoading = () => <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">Loading…</div>;
 
 interface AuthStatus {
   isAuthenticated: boolean;
@@ -726,10 +730,10 @@ export default function Dashboard() {
                 </CardHeader>
                 <CardContent className="p-0">
                   {showTerritoryCustomization ? (
-                    <TerritoryCustomization onClose={() => setShowTerritoryCustomization(false)} />
+                    <Suspense fallback={<TabLoading />}><TerritoryCustomization onClose={() => setShowTerritoryCustomization(false)} /></Suspense>
                   ) : (
                     <div className="h-[600px] w-full">
-                      <TerritoryMap className="h-full w-full" />
+                      <Suspense fallback={<TabLoading />}><TerritoryMap className="h-full w-full" /></Suspense>
                     </div>
                   )}
                 </CardContent>
@@ -744,11 +748,11 @@ export default function Dashboard() {
             </TabsContent>
 
             <TabsContent value="analytics">
-              <AnalyticsCharts />
+              <Suspense fallback={<TabLoading />}><AnalyticsCharts /></Suspense>
             </TabsContent>
 
             <TabsContent value="ml-insights">
-              <MLInsights outlets={outlets} reps={reps} schedules={schedules} />
+              <Suspense fallback={<TabLoading />}><MLInsights outlets={outlets} reps={reps} schedules={schedules} /></Suspense>
             </TabsContent>
                   </Tabs>
                 </CardContent>
