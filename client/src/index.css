@@ -387,3 +387,19 @@ a, button, input, select, textarea, label, summary,
 :where(.dark) .bg-white\/90 { background-color: hsl(var(--card) / 0.9); }
 :where(.dark) .bg-white\/80 { background-color: hsl(var(--card) / 0.8); }
 :where(.dark) .text-black { color: hsl(var(--foreground)); }
+
+/* Printing: the page itself, without the app's frame. The shell is a fixed-
+   height flex box on screen; on paper it has to flow, or only the first
+   screenful prints. Route sheets go one to a page. */
+@media print {
+  html, body { background: #fff !important; }
+  .app-shell { display: block !important; height: auto !important; }
+  .app-shell [data-testid="sidebar"], .app-shell [data-testid="app-header"], .no-print { display: none !important; }
+  .app-main { overflow: visible !important; height: auto !important; }
+  .route-sheets { padding: 0 !important; }
+  .route-sheet { break-after: page; break-inside: auto; border: 0 !important; box-shadow: none !important; border-radius: 0 !important; margin: 0 !important; }
+  .route-sheet:last-child { break-after: auto; }
+  .route-sheet thead { display: table-header-group; }
+  .route-sheet tr { break-inside: avoid; }
+  @page { margin: 14mm 12mm; }
+}

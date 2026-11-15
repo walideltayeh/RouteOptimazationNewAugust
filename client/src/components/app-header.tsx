@@ -11,6 +11,7 @@ const TITLES: Record<string, { title: string; blurb: string }> = {
   "/territories": { title: "Territory Map", blurb: "Who covers what, and where" },
   "/rep-map": { title: "Rep Map", blurb: "Day routes, one rep at a time" },
   "/schedules": { title: "Schedules", blurb: "Each rep's month, day by day" },
+  "/route-sheets": { title: "Route sheets", blurb: "Each route, stop by stop, ready to print" },
   "/scenarios": { title: "Scenarios", blurb: "Compare plans before you commit" },
   "/users": { title: "Accounts", blurb: "Who can sign in, and what they may do" },
 };
