@@ -39,7 +39,7 @@ interface Scorecard {
     reps: number; dayRoutes: number; outlets: number; planned: number; heldForReview: number; unplanned: number; coveragePct: number;
     visitsPerDay: { min: number; avg: number; max: number }; daysInBandPct: number; kmPerDay: number; kmPerMonth: number;
     drivingHoursPerDay: number; callHoursPerDay: number; workdayHours: number; maxWorkdayHours: number; overloadedDays: number; shiftHours: number;
-    routeOverlapPct: number; territoryOverlapPct: number; repBalancePct: number; longHops: number; longestHopKm: number;
+    routeOverlapPct: number; territoryOverlapPct: number; repBalancePct: number; longHops: number; longestHopKm: number; avoidableLongHops: number;
     kmBasis: string; driveTimeBasis?: "road-time" | "average-speed"; evenDaysPct: number; balanceBy: "visits" | "time";
   };
   checks: Check[];
@@ -77,6 +77,60 @@ function CheckList({ checks, testid }: { checks: Check[]; testid: string }) {
         </li>
       ))}
     </ul>
+  );
+}
+
+interface PreviousPlan {
+  id: string; name: string; createdAt: string; grade: string; score: number; reps: number; kmPerDay: number;
+  workdayHours: number; maxWorkdayHours: number; overloadedDays: number; dayRoutes: number;
+  routeOverlapPct: number; territoryOverlapPct: number; avoidableLongHops: number; visitsPerDay: number;
+}
+
+/**
+ * This plan against the one before it: the same handful of figures, each
+ * with where it came from and whether the change is for the better. Shown
+ * once there are two plans to compare.
+ */
+function AgainstPrevious({ now, before }: { now: Scorecard; before: PreviousPlan }) {
+  const k = now.kpis;
+  const round = (n: number) => Math.round(n * 10) / 10;
+  // label, before, now, unit, lower is better
+  const rows: [string, number, number, string, boolean][] = [
+    ["Score", before.score, now.score, "", false],
+    ["Reps", before.reps, k.reps, "", true],
+    ["Km a day", before.kmPerDay, k.kmPerDay, "", true],
+    ["Days over the shift", before.overloadedDays, k.overloadedDays, "", true],
+    ["Longest day", before.maxWorkdayHours, k.maxWorkdayHours, " h", true],
+    ["Route overlap", before.routeOverlapPct, k.routeOverlapPct, "%", true],
+    ["Avoidable long drives", before.avoidableLongHops, k.avoidableLongHops, "", true],
+  ];
+  const when = new Date(before.createdAt).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  return (
+    <div className="rounded-xl border bg-muted/30 px-4 py-3" data-testid="rtm-against-previous">
+      <p className="mb-2 text-xs text-muted-foreground">
+        <span className="font-semibold uppercase tracking-[0.08em]">Against the plan before</span>
+        <span className="ml-2">{before.name} · {when} · grade {before.grade}</span>
+      </p>
+      <div className="flex flex-wrap gap-x-6 gap-y-2">
+        {rows.map(([label, was, is, unit, lowerIsBetter]) => {
+          const d = round(is - was);
+          const better = d !== 0 && (d < 0) === lowerIsBetter;
+          // More or fewer reps is a choice, not a result: it is shown without a verdict.
+          const tone = d === 0 || label === "Reps" ? "text-muted-foreground" : better ? "text-success" : "text-destructive";
+          return (
+            <div key={label} className="min-w-[7.5rem]">
+              <p className="text-[11px] text-muted-foreground">{label}</p>
+              <p className="text-sm tabular-nums">
+                <span className="text-muted-foreground">{was}{unit}</span>
+                <span className="mx-1 text-muted-foreground">→</span>
+                <span className="font-semibold text-foreground">{is}{unit}</span>
+                <span className={`ml-1.5 text-xs font-medium ${tone}`}>{d === 0 ? "same" : `${d > 0 ? "+" : "−"}${Math.abs(d)}`}</span>
+              </p>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -159,6 +213,7 @@ export default function RtmStudio({ canEdit }: { canEdit: boolean }) {
     enabled: hasOutlets, staleTime: 0, placeholderData: keepPreviousData,
   });
   const { data: scorecard } = useQuery<Scorecard>({ queryKey: ["/api/plan/scorecard"], enabled: hasPlan, staleTime: 0 });
+  const { data: previous } = useQuery<PreviousPlan | null>({ queryKey: ["/api/plan/previous"], enabled: hasPlan, staleTime: 0 });
 
   const setup = useMemo(() => blueprint ? {
     reps: edits.reps ?? blueprint.headcount.reps,
@@ -171,7 +226,7 @@ export default function RtmStudio({ canEdit }: { canEdit: boolean }) {
 
   const refreshAll = () => {
     for (const key of ["/api/outlets", "/api/schedules", "/api/reps", "/api/dashboard/metrics", "/api/analysis", "/api/rtm/blueprint",
-      "/api/plan/scorecard", "/api/plan/kpis", "/api/scenarios", "/api/outlets/excluded", "/api/outlets/duplicates", "/api/role-hierarchies", "/api/role-schedules"]) {
+      "/api/plan/scorecard", "/api/plan/previous", "/api/plan/calendar", "/api/plan/kpis", "/api/scenarios", "/api/outlets/excluded", "/api/outlets/duplicates", "/api/role-hierarchies", "/api/role-schedules"]) {
       queryClient.invalidateQueries({ queryKey: [key] });
     }
   };
@@ -456,6 +511,8 @@ export default function RtmStudio({ canEdit }: { canEdit: boolean }) {
                 {canEdit && <Button variant="ghost" className="" onClick={() => setReplan(true)} data-testid="rtm-replan"><RotateCcw className="h-4 w-4" /> Re-plan</Button>}
               </div>
             </div>
+
+            {previous && <AgainstPrevious now={scorecard} before={previous} />}
 
             <div className="grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-7">
               <Tile icon={Users} label="Reps" value={fmt(scorecard.kpis.reps)} sub={`${fmt(scorecard.kpis.dayRoutes)} day routes`} testid="rtm-kpi-reps" />

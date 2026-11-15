@@ -42,6 +42,11 @@ The dashboard opens on **RTM Studio**.
    workbook (summary, every stop with date and map link, a sheet per rep, each
    rep-day's load, the outlet master).
 
+Build again - another team size, another band - and the result opens with
+*Against the plan before*: score, reps, km a day, days over the shift, the
+longest day, overlap and avoidable long drives, each with what it was and
+what it is now. Only plans of the same outlet file are compared.
+
 The detailed, step-by-step controls are still on the dashboard under
 *Detailed planning controls*: plan settings on the file already loaded (no
 second upload), duplicate and outlier exclusions, the role hierarchy, and
@@ -74,6 +79,7 @@ and uploading an edited file carries on from its version.
 | `POST /api/rtm/autopilot` | Plan with the blueprint's setup (background job); `{ overrides: {...} }` replaces any field, `reps` fixes the team size |
 | `GET /api/plan/scorecard` | Grade, KPIs, checks and per-rep figures of the plan loaded |
 | `GET /api/export/pjp` | The journey-plan workbook |
+| `GET /api/plan/previous` | The plan built before the current one on the same outlet file, as it scored then (`null` if there is none) |
 | `GET /api/plan/calendar` | Every rep's routes by week and weekday: date, calls, km, minutes in outlets and driving, and the day's length |
 | `GET /api/plan/route-sheet?repId=` | One rep's routes stop by stop, for the printed route sheets |
 | `GET /api/universe` | The working file, edits since the last save, and the next "Universe Edited" file name |

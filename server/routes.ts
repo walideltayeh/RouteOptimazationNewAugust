@@ -6566,8 +6566,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
     createdAt: string;
     params: Record<string, any>;
     kpis: Record<string, number>;
+    /** The scorecard's grade and headline figures at capture, for "this plan against the one before". */
+    score?: PlanScore;
+    /** The scenario the plan in storage came from: the last one built, or the one applied since. */
+    live?: boolean;
+    /** When the outlet file it was planned on was uploaded: plans of different files are not compared. */
+    upload?: string | null;
     snapshot: ScenarioSnapshot;
   }
+  type PlanScore = { grade: string; score: number; reps: number; kmPerDay: number; workdayHours: number; maxWorkdayHours: number; overloadedDays: number; dayRoutes: number; routeOverlapPct: number; territoryOverlapPct: number; avoidableLongHops: number; visitsPerDay: number };
+  const planScoreOf = (sc: Awaited<ReturnType<typeof currentScorecard>>): PlanScore | undefined => sc ? {
+    grade: sc.grade, score: sc.score, reps: sc.kpis.reps, kmPerDay: sc.kpis.kmPerDay,
+    workdayHours: sc.kpis.workdayHours, maxWorkdayHours: sc.kpis.maxWorkdayHours, overloadedDays: sc.kpis.overloadedDays, dayRoutes: sc.kpis.dayRoutes,
+    routeOverlapPct: sc.kpis.routeOverlapPct, territoryOverlapPct: sc.kpis.territoryOverlapPct, avoidableLongHops: sc.kpis.avoidableLongHops, visitsPerDay: sc.kpis.visitsPerDay.avg,
+  } : undefined;
   // Scenarios persist across restarts, but NOT inside the main storage
   // snapshot: that file is rewritten in full on every change, and a single
   // scenario snapshot of a 7,878-outlet plan is ~2.5MB - ten of them would
@@ -6646,12 +6658,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       createdAt: new Date().toISOString(),
       params,
       kpis: await computePlanKPIs(),
+      score: planScoreOf(await currentScorecard().catch(() => null)),
+      live: true,
+      upload: await uploadStamp(),
     };
     writeScenarioSnapshot(id, {
       outlets: allOutlets.map(o => ({ id: o.id, repId: o.repId, territory: o.territory, cluster: o.cluster })),
       reps: await storage.getReps(),
       schedules: allSchedules,
     });
+    for (const sc of scenarioIndex) delete sc.live;
     scenarioIndex.push(summary);
     while (scenarioIndex.length > 10) {
       const dropped = scenarioIndex.shift();
@@ -6660,6 +6676,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
     saveScenarioIndex();
     return id;
   }
+
+  const uploadStamp = async (): Promise<string | null> =>
+    loadBlob(UPLOAD_META_KEY).then(t => (t ? (JSON.parse(t).uploadedAt as string | undefined) ?? null : null)).catch(() => null);
+
+  // The plan before this one, as it scored when it was built: the most
+  // recent kept plan of the same outlet file other than the one in storage.
+  app.get("/api/plan/previous", async (_req, res) => {
+    const live = scenarioIndex.find(sc => sc.live) ?? scenarioIndex[scenarioIndex.length - 1];
+    const upload = await uploadStamp();
+    const others = scenarioIndex.filter(sc => sc !== live && sc.score && !!upload && sc.upload === upload);
+    const prev = others.length > 0 ? others.reduce((a, b) => (a.createdAt > b.createdAt ? a : b)) : null;
+    res.json(prev ? { id: prev.id, name: prev.name, createdAt: prev.createdAt, ...prev.score } : null);
+  });
 
   // The RTM scorecard of the plan in storage, judged against the settings it
   // was built with. Kept until the plan or its settings change: on a
@@ -6832,6 +6861,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         driveMinutes: s.driveMinutes ?? undefined,
       })));
 
+      for (const sc of scenarioIndex) delete sc.live;
+      scenario.live = true;
+      saveScenarioIndex();
       res.json({ success: true, applied: scenario.name, kpis: scenario.kpis });
     } catch (error) {
       console.error("Scenario apply error:", error);
