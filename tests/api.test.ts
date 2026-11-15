@@ -285,10 +285,37 @@ describe("edited universe: lasso edits, then save as '<file> Universe Edited v.N
     // What the lasso does: delete two outlets, move three to a rep.
     const outlets = (await call("planner", "GET", "/api/outlets")).data as any[];
     const reps = (await call("planner", "GET", "/api/reps")).data as any[];
-    expect((await call("planner", "POST", "/api/outlets/delete-many", { outletIds: [outlets[0].id, outlets[1].id] })).status).toBe(200);
+    // The days each outlet is driven on, before and after an edit.
+    const daysOf = async () => {
+      const m = new Map<string, string>();
+      for (const c of (await call("planner", "GET", "/api/schedules")).data as any[]) for (const id of c.outletIds) m.set(id, [...(m.get(id)?.split(" ") ?? []), `${c.repId}:${c.week}:${c.dayOfWeek}`].filter(Boolean).sort().join(" "));
+      return m;
+    };
+    const before = await daysOf();
+    const del = await call("planner", "POST", "/api/outlets/delete-many", { outletIds: [outlets[0].id, outlets[1].id] });
+    expect(del.status).toBe(200);
+    // The plan follows the edit and keeps its days: the reps that lost an
+    // outlet are re-planned in place, and everything else is where it was.
+    expect(del.data.repsReworked.length).toBeGreaterThan(0);
+    expect(del.data.repsReworked.every((r: any) => r.plan === "kept")).toBe(true);
+    const afterDelete = await daysOf();
+    expect(afterDelete.has(outlets[0].id)).toBe(false);
+    const stillThere = outlets.slice(2).filter(o => before.has(o.id));
+    const changed = stillThere.filter(o => afterDelete.get(o.id) !== before.get(o.id)).length;
+    expect(changed).toBe(del.data.repsReworked.reduce((n: number, r: any) => n + r.changedDay, 0));
+    expect(changed).toBeLessThanOrEqual(4);
+    expect((await call("planner", "GET", "/api/schedules")).data.every((c: any) => c.totalDistance !== null)).toBe(true);
+
     const moving = outlets.slice(2, 5).map(o => o.id);
     const target = reps[reps.length - 1];
-    expect((await call("planner", "POST", "/api/reps/reassign-outlets", { outletIds: moving, toRepId: target.id })).status).toBe(200);
+    const moved = await call("planner", "POST", "/api/reps/reassign-outlets", { outletIds: moving, toRepId: target.id });
+    expect(moved.status).toBe(200);
+    // The three are on the target rep's routes now, as often as they are due,
+    // and no outlet that was not moved has changed rep.
+    const afterMove = await daysOf();
+    for (const id of moving) expect(afterMove.get(id)!.split(" ").every(d => d.startsWith(target.id + ":"))).toBe(true);
+    for (const o of stillThere) if (!moving.includes(o.id)) expect(afterMove.get(o.id)!.split(":")[0]).toBe(afterDelete.get(o.id)!.split(":")[0]);
+    for (const o of stillThere) expect(afterMove.get(o.id)!.split(" ")).toHaveLength(afterDelete.get(o.id)!.split(" ").length);
     expect((await call("viewer", "GET", "/api/universe")).data.editsSinceSave).toBe(5);
 
     // A viewer cannot save; a planner gets the file under the versioned name.
