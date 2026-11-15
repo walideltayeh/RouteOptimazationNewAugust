@@ -173,13 +173,27 @@ export interface WorkdayModel {
   speedKmh: number;
   /** Straight-line to road distance. */
   detourFactor: number;
+  /**
+   * What a road server's free-flow driving time is multiplied by: traffic,
+   * parking and the walk to the door. 1.6 turns its 40 km/h in a city
+   * centre into the 25 km/h above, and still lets a highway leg between
+   * two towns count as the fast leg it is.
+   */
+  roadTimeFactor: number;
 }
-export const DEFAULT_WORKDAY: WorkdayModel = { shiftMinutes: 480, breakMinutes: 30, commuteMinutes: 40, speedKmh: 25, detourFactor: 1.3 };
+export const DEFAULT_WORKDAY: WorkdayModel = { shiftMinutes: 480, breakMinutes: 30, commuteMinutes: 40, speedKmh: 25, detourFactor: 1.3, roadTimeFactor: 1.6 };
 
-/** Minutes a day of `calls` calls takes, given its call minutes and straight-line km between calls. */
-export function dayMinutes(callMinutesTotal: number, straightKm: number, wd: WorkdayModel = DEFAULT_WORKDAY, roadKm?: number): { drive: number; total: number } {
+/**
+ * Minutes a day of `calls` calls takes, given its call minutes and the
+ * driving between calls: the road server's own driving time when it gave
+ * one (`roadFreeFlowMinutes`), else road km at the average speed, else
+ * straight-line km stretched to road km.
+ */
+export function dayMinutes(callMinutesTotal: number, straightKm: number, wd: WorkdayModel = DEFAULT_WORKDAY, roadKm?: number, roadFreeFlowMinutes?: number | null): { drive: number; total: number } {
   const km = roadKm ?? straightKm * wd.detourFactor;
-  const drive = (km / Math.max(1, wd.speedKmh)) * 60;
+  const drive = roadFreeFlowMinutes != null && Number.isFinite(roadFreeFlowMinutes)
+    ? roadFreeFlowMinutes * wd.roadTimeFactor
+    : (km / Math.max(1, wd.speedKmh)) * 60;
   return { drive, total: callMinutesTotal + drive + wd.commuteMinutes + wd.breakMinutes };
 }
 

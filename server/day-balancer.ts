@@ -783,6 +783,14 @@ export function recutPairs(
   const target = total / working.length;
   const { lo, hi } = bandOf(target, tolerance);
 
+  // A pair that was re-cut and turned down gives the same answer until one
+  // of its two groups changes, so it is not tried again before then. Every
+  // round after the first used to repeat all of that work, and the last
+  // round - the one that finds nothing - repeated it for every pair.
+  const version = working.map(() => 0);
+  const turnedDown = new Map<number, number>();
+  const stamp = (i: number, j: number) => version[i] * 1e6 + version[j];
+
   for (let round = 0; round < rounds; round++) {
     let improved = false;
     const centroids = working.map(centroidOf);
@@ -800,6 +808,9 @@ export function recutPairs(
         .slice(0, neighbours);
 
       for (const j of near) {
+        const pair = i * working.length + j;
+        if (turnedDown.get(pair) === stamp(i, j)) continue;
+        turnedDown.set(pair, stamp(i, j));
         const before = routeCost(working[i], maxHopKm) + routeCost(working[j], maxHopKm);
         if (before === 0) continue;
 
@@ -822,6 +833,8 @@ export function recutPairs(
 
         working[i] = cut[0];
         working[j] = cut[1];
+        version[i]++;
+        version[j]++;
         centroids[i] = centroidOf(working[i]);
         centroids[j] = centroidOf(working[j]);
         improved = true;
@@ -1063,19 +1076,25 @@ export function gapBetween(a: Outlet[], b: Outlet[]): number {
  * with the hop penalty so a move never introduces a long jump to save a
  * short one.
  */
+/** Priced moves the route-cost search may spend on one rep before it stops. */
+export const ROUTE_COST_WORK_BUDGET = 12_000_000;
+
 export function improveByRouteCost(
   groups: Outlet[][],
   weightFn: (o: Outlet) => number,
   tolerance: Band = 0.08,
   maxHopKm: number = 0,
   maxPasses: number = 12,
-  timeBudgetMs: number = 4000,
+  workBudget: number = ROUTE_COST_WORK_BUDGET,
   maxSegment: number = 6,
 ): Outlet[][] {
   const working = groups.map(g => [...g]);
   if (working.length < 2) return working;
-  const started = Date.now();
-  const outOfTime = () => Date.now() - started > timeBudgetMs;
+  // The search stops after a fixed amount of work, counted in priced moves,
+  // not after a time on the clock: a clock made the same file plan
+  // differently on a slower machine.
+  let work = 0;
+  const outOfTime = () => work > workBudget;
   const loadOf = (g: Outlet[]) => g.reduce((s, o) => s + weightFn(o), 0);
   const total = working.reduce((s, g) => s + loadOf(g), 0);
   const { lo, hi } = bandOf(total / working.length, tolerance);
@@ -1136,6 +1155,7 @@ export function improveByRouteCost(
           if (loads[gi] - w < lo) continue;
           const gain = removalGain(tours[gi], a, l);
           if (gain <= 0.01) continue;
+          work += 8;
           const seg = tours[gi].slice(a, a + l);
           let bestG = -1, bestAt = 0, bestRev = false, bestCost = Infinity;
           const cands = new Set([...nearGroups(seg[0], tours, gi), ...nearGroups(seg[seg.length - 1], tours, gi)]);
@@ -1177,6 +1197,7 @@ export function improveByRouteCost(
                   const wb = segWeight(B, b, lb);
                   const la_ = loads[gi] - wa + wb, lb_ = loads[gj] - wb + wa;
                   if (la_ < lo || la_ > hi || lb_ < lo || lb_ > hi) continue;
+                  work++;
                   const gainB = removalGain(B, b, lb);
                   const prevB = b > 0 ? B[b - 1] : null, nextB = b + lb < B.length ? B[b + lb] : null;
                   const segB = B.slice(b, b + lb);

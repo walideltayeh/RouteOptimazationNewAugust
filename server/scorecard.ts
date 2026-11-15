@@ -15,6 +15,8 @@ export interface ScoreOutlet {
 export interface ScoreCell {
   repId: string; week: number; dayOfWeek: number;
   outletIds: string[]; routeOrder?: string[] | null; totalDistance?: number | null;
+  /** Free-flow driving minutes between the calls, from the road server. */
+  driveMinutes?: number | null;
 }
 export interface ScoreInputs {
   outlets: ScoreOutlet[];
@@ -53,6 +55,8 @@ export interface Scorecard {
     /** Long drives beyond the ones a route needs to reach villages more than the hop limit apart. */
     avoidableLongHops: number; routesWithAvoidableHop: number;
     kmBasis: "road" | "straight-line";
+    /** Driving time: the road server's own times, or distance at the average speed. */
+    driveTimeBasis: "road-time" | "average-speed";
     /** Share of days within 12% of the median workday. */
     evenDaysPct: number;
     balanceBy: "visits" | "time";
@@ -61,8 +65,10 @@ export interface Scorecard {
   perRep: RepScore[];
 }
 
-// --- geometry: convex hulls on (lng, lat) and point-in-polygon
-type P = [number, number];
+// --- geometry: convex hulls on (lng, lat) and point-in-polygon. A point may
+// carry the outlet's id as a third element; overlapShare tells members apart
+// by it, so two shops in one building are two members, not one.
+type P = [number, number] | [number, number, string];
 function hull(points: P[]): P[] {
   const pts = Array.from(new Map(points.map(p => [`${p[0]},${p[1]}`, p])).values()).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
   if (pts.length < 3) return pts;
@@ -90,14 +96,20 @@ function inside(pg: Poly, q: P): boolean {
  * is the hull of its own outlets only: a weekly outlet sits on both weeks'
  * routes, and both routes must drive to it, so it neither intrudes nor
  * stretches either route's area over the other.
+ *
+ * "The same outlet" is by id when the points carry one. By coordinates
+ * alone, two shops in one building on two different routes passed for one
+ * shared outlet, and a route reaching across another to the second shop
+ * was not seen.
  */
 export function overlapShare(groups: P[][]): number {
-  const keys = groups.map(g => new Set(g.map(q => `${q[0]},${q[1]}`)));
+  const keyOf = (q: P) => q[2] ?? `${q[0]},${q[1]}`;
+  const keys = groups.map(g => new Set(g.map(keyOf)));
   const sharedCache = new Map<number, boolean>();
   const shared = (a: number, b: number) => {
     const k = a * 100003 + b;
     let v = sharedCache.get(k);
-    if (v === undefined) { v = groups[a].some(q => keys[b].has(`${q[0]},${q[1]}`)); sharedCache.set(k, v); }
+    if (v === undefined) { v = groups[a].some(q => keys[b].has(keyOf(q))); sharedCache.set(k, v); }
     return v;
   };
   const whole = groups.map(poly);
@@ -106,14 +118,14 @@ export function overlapShare(groups: P[][]): number {
     if (!shared(a, b)) return whole[b];
     const k = `${b}|${a}`;
     let pg = own.get(k);
-    if (!pg) { pg = poly(groups[b].filter(q => !keys[a].has(`${q[0]},${q[1]}`))); own.set(k, pg); }
+    if (!pg) { pg = poly(groups[b].filter(q => !keys[a].has(keyOf(q)))); own.set(k, pg); }
     return pg;
   };
   let n = 0, tot = 0;
   groups.forEach((g, a) => {
     for (const q of g) {
       tot++;
-      const k = `${q[0]},${q[1]}`;
+      const k = keyOf(q);
       for (let b = 0; b < groups.length; b++) {
         if (b === a) continue;
         // The bounding box of the whole group rules most groups out before any key or hull work.
@@ -155,8 +167,8 @@ export function scorePlan(inp: ScoreInputs): Scorecard {
     const straight = legs.reduce((a, b) => a + b, 0);
     const roadKm = inp.roadKm && c.totalDistance != null ? c.totalDistance : undefined;
     const callMin = order.reduce((s, o) => s + callMinutesFor(o, 15, inp.callTimeIsReal !== false), 0);
-    const t = dayMinutes(callMin, straight, wd, roadKm);
-    return { cell: c, visits: c.outletIds.length, legs, km: roadKm ?? straight, drive: t.drive, total: t.total, callMin };
+    const t = dayMinutes(callMin, straight, wd, roadKm, inp.roadKm ? c.driveMinutes : undefined);
+    return { cell: c, visits: c.outletIds.length, legs, km: roadKm ?? straight, drive: t.drive, total: t.total, callMin, timed: inp.roadKm === true && c.driveMinutes != null };
   });
   const visits = days.map(d => d.visits);
   const inBand = days.filter(d => d.visits >= inp.band.min && d.visits <= inp.band.max).length;
@@ -197,7 +209,7 @@ export function scorePlan(inp: ScoreInputs): Scorecard {
     }
     for (const l of r.legs) if (l > longest) longest = l;
   }
-  const pt = (id: string): P | null => { const o = byId.get(id); return o ? [o.longitude, o.latitude] : null; };
+  const pt = (id: string): P | null => { const o = byId.get(id); return o ? [o.longitude, o.latitude, id] : null; };
   const routesByRep = new Map<string, P[][]>();
   for (const r of routes) {
     const list = routesByRep.get(r.cell.repId) ?? [];
@@ -253,6 +265,7 @@ export function scorePlan(inp: ScoreInputs): Scorecard {
     repBalancePct: pct(balance), longHops, routesWithLongHop: routesWithLong, longestHopKm: r1(longest),
     avoidableLongHops: avoidable, routesWithAvoidableHop: routesWithAvoidable,
     kmBasis: inp.roadKm ? "road" : "straight-line",
+    driveTimeBasis: days.length > 0 && days.every(d => d.timed || d.legs.length === 0) && days.some(d => d.timed) ? "road-time" : "average-speed",
     evenDaysPct: pct(days.length ? even / days.length : 0),
     balanceBy: byTime ? "time" : "visits",
   };
@@ -298,7 +311,7 @@ export function scorePlan(inp: ScoreInputs): Scorecard {
       ? { id: "hops", status: "pass", title: `Every drive over ${inp.maxHopKm} km is the only way to the next village.`, detail: `${routesWithLong} of ${routes.length} routes cross such a gap; the longest is ${kpis.longestHopKm} km.` }
       : { id: "hops", status: longShare <= 0.1 ? "warn" : "fail", title: `${routesWithAvoidable} of ${routes.length} routes have a drive over ${inp.maxHopKm} km that a better order or cut would avoid.`, detail: `${routesWithLong} routes cross a gap over ${inp.maxHopKm} km in all; the longest is ${kpis.longestHopKm} km.` });
   checks.push(overloaded === 0
-    ? { id: "workday", status: "pass", title: `Every day fits a ${kpis.shiftHours}-hour shift.`, detail: `An average day is ${kpis.callHoursPerDay} h of calls and ${kpis.drivingHoursPerDay} h of driving.` }
+    ? { id: "workday", status: "pass", title: `Every day fits a ${kpis.shiftHours}-hour shift.`, detail: `An average day is ${kpis.callHoursPerDay} h of calls and ${kpis.drivingHoursPerDay} h of driving${kpis.driveTimeBasis === "road-time" ? ", on the road server's driving times" : ""}.` }
     : { id: "workday", status: overloadShare <= 0.05 ? "warn" : "fail", title: `${overloaded} day${overloaded === 1 ? " runs" : "s run"} over the ${kpis.shiftHours}-hour shift.`, detail: `The longest is ${kpis.maxWorkdayHours} h. Shorter calls, fewer visits a day, or one more rep would fix it.` });
 
   const summary = `${kpis.reps} rep${kpis.reps === 1 ? "" : "s"}, ${fmt(plannedCount)} outlets, ${kpis.visitsPerDay.avg} visits and ${kpis.kmPerDay} km a day.`;

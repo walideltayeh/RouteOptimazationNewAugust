@@ -71,14 +71,44 @@ export function getDistanceMode(): DistanceMode {
   return currentMode;
 }
 
-export function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+const DEG = Math.PI / 180;
+
+/** Great-circle distance by the haversine formula, exactly as written. */
+export function haversineExactKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6371;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const dLat = (lat2 - lat1) * DEG;
+  const dLng = (lng2 - lng1) * DEG;
   const a =
     Math.sin(dLat / 2) ** 2 +
-    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+    Math.cos(lat1 * DEG) * Math.cos(lat2 * DEG) * Math.sin(dLng / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+/**
+ * Great-circle distance in km. A plan asks for this hundreds of millions of
+ * times - it was over half of a run's time - and nearly always for two
+ * points in one market. Within 1.7 degrees each way (about 190 km) the
+ * same formula is evaluated by series: the half-angle sines, the cosine
+ * of the latitude difference and the arcsine converge to better than one
+ * part in a hundred billion there, which leaves a single cosine to
+ * compute instead of two sines, two cosines and an arcsine. Further apart,
+ * the formula as written.
+ */
+export function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const dLat = (lat2 - lat1) * DEG;
+  const dLng = (lng2 - lng1) * DEG;
+  if (dLat < 0.03 && dLat > -0.03 && dLng < 0.03 && dLng > -0.03) {
+    const h2 = dLat * dLat * 0.25, k2 = dLng * dLng * 0.25;
+    const sinH2 = h2 * (1 - h2 * (1 / 3 - h2 * (2 / 45)));
+    const sinK2 = k2 * (1 - k2 * (1 / 3 - k2 * (2 / 45)));
+    // cos(lat1) cos(lat2) = (cos(lat1 - lat2) + cos(lat1 + lat2)) / 2
+    const d2 = dLat * dLat;
+    const cosDiff = 1 - d2 * (0.5 - d2 * (1 / 24 - d2 / 720));
+    const a = sinH2 + 0.5 * (cosDiff + Math.cos((lat1 + lat2) * DEG)) * sinK2;
+    // asin(s) = s (1 + s^2/6 + 3 s^4/40 + 15 s^6/336), s = sqrt(a)
+    return 12742 * Math.sqrt(a) * (1 + a * (1 / 6 + a * (3 / 40 + a * (15 / 336))));
+  }
+  return haversineExactKm(lat1, lng1, lat2, lng2);
 }
 
 // Planar segment-intersection test - adequate at city scale.
@@ -123,6 +153,7 @@ function countBarrierCrossings(lat1: number, lng1: number, lat2: number, lng2: n
 const latRows = new Map<number, Map<number, number>>(); // latI -> (lngI -> point id)
 let pointCount = 0;
 const pairRows: Map<number, number>[] = [];               // lower id -> (higher id -> km)
+const pairMinutes: Map<number, number>[] = [];            // lower id -> (higher id -> free-flow driving minutes)
 let pairCount = 0;
 
 function pointIdOf(lat: number, lng: number, create: boolean): number {
@@ -139,12 +170,13 @@ function pointIdOf(lat: number, lng: number, create: boolean): number {
     id = pointCount++;
     row.set(lngI, id);
     pairRows.push(new Map<number, number>());
+    pairMinutes.push(new Map<number, number>());
   }
   return id;
 }
 
-/** Stores a pair's road distance; true when the pair was not known before. */
-function setPairKm(lat1: number, lng1: number, lat2: number, lng2: number, km: number): boolean {
+/** Stores a pair's road distance, and its driving minutes when the server gave them; true when the pair was not known before. */
+function setPairKm(lat1: number, lng1: number, lat2: number, lng2: number, km: number, minutes?: number): boolean {
   const a = pointIdOf(lat1, lng1, true), b = pointIdOf(lat2, lng2, true);
   if (a === b) return false;
   const lo = a < b ? a : b, hi = a < b ? b : a;
@@ -152,7 +184,22 @@ function setPairKm(lat1: number, lng1: number, lat2: number, lng2: number, km: n
   const isNew = !row.has(hi);
   if (isNew) pairCount++;
   row.set(hi, km);
+  if (minutes !== undefined && Number.isFinite(minutes)) pairMinutes[lo].set(hi, minutes);
   return isNew;
+}
+
+/**
+ * Free-flow driving minutes between two points as the road server gave
+ * them, or undefined when that pair was never asked. Free-flow: no traffic,
+ * no parking; the workday model scales it (WorkdayModel.roadTimeFactor).
+ */
+export function roadMinutes(lat1: number, lng1: number, lat2: number, lng2: number): number | undefined {
+  const a = pointIdOf(lat1, lng1, false);
+  if (a < 0) return undefined;
+  const b = pointIdOf(lat2, lng2, false);
+  if (b < 0) return undefined;
+  if (a === b) return 0;
+  return a < b ? pairMinutes[a].get(b) : pairMinutes[b].get(a);
 }
 
 function getPairKm(lat1: number, lng1: number, lat2: number, lng2: number): number | undefined {
@@ -176,13 +223,14 @@ export async function prefetchRoadMatrix(points: { lat: number; lng: number }[])
   try {
     for (let i = 0; i < points.length; i += BATCH) {
       const batch = points.slice(i, i + BATCH);
-      const m = await fetchTable(batch);
-      if (!m) continue;
+      const t = await fetchTable(batch);
+      if (!t) continue;
       for (let a = 0; a < batch.length; a++) {
         for (let b = a + 1; b < batch.length; b++) {
-          const meters = m[a]?.[b];
+          const meters = t.distances[a]?.[b];
           if (typeof meters === 'number' && isFinite(meters)) {
-            if (setPairKm(batch[a].lat, batch[a].lng, batch[b].lat, batch[b].lng, meters / 1000)) filled++;
+            const secs = t.durations?.[a]?.[b];
+            if (setPairKm(batch[a].lat, batch[a].lng, batch[b].lat, batch[b].lng, meters / 1000, Number.isFinite(secs) ? secs! / 60 : undefined)) filled++;
           }
         }
       }
@@ -196,6 +244,7 @@ export async function prefetchRoadMatrix(points: { lat: number; lng: number }[])
 export function clearRoadMatrix(): void {
   latRows.clear();
   pairRows.length = 0;
+  pairMinutes.length = 0;
   pointCount = 0;
   pairCount = 0;
 }
@@ -219,19 +268,21 @@ export function roadPairKnown(lat1: number, lng1: number, lat2: number, lng2: nu
   return getPairKm(lat1, lng1, lat2, lng2) !== undefined;
 }
 
-async function fetchTable(points: { lat: number; lng: number }[]): Promise<number[][] | null> {
+interface RoadTable { distances: number[][]; durations: number[][] | null }
+async function fetchTable(points: { lat: number; lng: number }[]): Promise<RoadTable | null> {
   const osrmUrl = process.env.OSRM_URL;
   if (!osrmUrl) return null;
   const coords = points.map(p => `${p.lng.toFixed(6)},${p.lat.toFixed(6)}`).join(';');
-  const url = `${osrmUrl.replace(/\/$/, '')}/table/v1/driving/${coords}?annotations=distance`;
+  const url = `${osrmUrl.replace(/\/$/, '')}/table/v1/driving/${coords}?annotations=distance,duration`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 20000);
   try {
     const resp = await fetch(url, { signal: controller.signal });
     if (!resp.ok) throw new Error(`OSRM ${resp.status}`);
-    const data = await resp.json() as { code?: string; distances?: (number | null)[][]; message?: string };
+    const data = await resp.json() as { code?: string; distances?: (number | null)[][]; durations?: (number | null)[][]; message?: string };
     if (data.code !== 'Ok' || !data.distances) throw new Error(data.message || data.code || 'no distances');
-    return data.distances.map(row => row.map(v => (typeof v === 'number' && isFinite(v) ? v : NaN)));
+    const clean = (m: (number | null)[][]) => m.map(row => row.map(v => (typeof v === 'number' && isFinite(v) ? v : NaN)));
+    return { distances: clean(data.distances), durations: data.durations ? clean(data.durations) : null };
   } finally {
     clearTimeout(timer);
   }
@@ -246,12 +297,15 @@ export async function prefetchOutletMatrix(points: { lat: number; lng: number }[
   const chunks: { lat: number; lng: number }[][] = [];
   for (let i = 0; i < need.length; i += half) chunks.push(need.slice(i, i + half));
   let filled = 0, requests = 0;
-  const store = (pts: { lat: number; lng: number }[], m: number[][]) => {
+  const store = (pts: { lat: number; lng: number }[], t: RoadTable) => {
+    const m = t.distances, s = t.durations;
     for (let a = 0; a < pts.length; a++) for (let b = a + 1; b < pts.length; b++) {
-      // Roads are one-way here and there; take the shorter direction as the pair's distance.
+      // Roads are one-way here and there; take the shorter direction as the pair's distance, and its time with it.
       const ab = m[a]?.[b], ba = m[b]?.[a];
-      const meters = Number.isFinite(ab) && Number.isFinite(ba) ? Math.min(ab, ba) : Number.isFinite(ab) ? ab : ba;
-      if (Number.isFinite(meters) && setPairKm(pts[a].lat, pts[a].lng, pts[b].lat, pts[b].lng, meters / 1000)) filled++;
+      const useAb = Number.isFinite(ab) && (!Number.isFinite(ba) || ab <= ba);
+      const meters = useAb ? ab : ba;
+      const secs = s ? (useAb ? s[a]?.[b] : s[b]?.[a]) : NaN;
+      if (Number.isFinite(meters) && setPairKm(pts[a].lat, pts[a].lng, pts[b].lat, pts[b].lng, meters / 1000, Number.isFinite(secs) ? secs / 60 : undefined)) filled++;
     }
   };
   try {

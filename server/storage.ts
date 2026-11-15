@@ -288,6 +288,7 @@ export class MemStorage implements IStorage {
             routeOrder: updatedRouteOrder,
             totalDistance: null,
             estimatedDuration: null,
+            driveMinutes: null,
           });
         }
       }
@@ -363,7 +364,8 @@ export class MemStorage implements IStorage {
       id, 
       createdAt: new Date(),
       totalDistance: insertSchedule.totalDistance || null,
-      estimatedDuration: insertSchedule.estimatedDuration || null
+      estimatedDuration: insertSchedule.estimatedDuration || null,
+      driveMinutes: insertSchedule.driveMinutes ?? null,
     };
     this.schedules.set(id, schedule);
     return schedule;
