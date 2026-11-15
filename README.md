@@ -42,10 +42,30 @@ The dashboard opens on **RTM Studio**.
    workbook (summary, every stop with date and map link, a sheet per rep, each
    rep-day's load, the outlet master).
 
+Build again - another team size, another band - and the result opens with
+*Against the plan before*: score, reps, km a day, days over the shift, the
+longest day, overlap and avoidable long drives, each with what it was and
+what it is now. Only plans of the same outlet file are compared.
+
 The detailed, step-by-step controls are still on the dashboard under
 *Detailed planning controls*: plan settings on the file already loaded (no
 second upload), duplicate and outlier exclusions, the role hierarchy, and
 the results tabs.
+
+**Edits keep the plan.** Deleting outlets with the lasso, or moving them to
+another rep, no longer re-cuts the months of the reps involved. Every outlet
+that can stay on the days it had stays there: outlets that left are taken
+off their routes, outlets that arrived join the route that already passes
+them, and only the days the edit left short, over the visits band or over
+the shift are repaired, by handing outlets across the border with the day
+next to them. The Territory Map reports how many outlets kept their days and
+how many changed. If the repair cannot put right what the edit broke, that
+rep's month is cut again from scratch, and is used only if its days sit
+nearer the band and the shift (a rep handed more than its days can hold is
+better re-cut evenly than left with four overfull days). A day left short because no
+neighbouring day could hand an outlet over without a long drive (a village
+that was most of a day, deleted) is reported, with a button to re-cut that
+rep's days; *Optimize from scratch* is still there for a full re-plan.
 
 **Edited universe.** After deleting or moving outlets with the lasso on the
 Territory Map, *Save edited universe* downloads the list as it stands now as
@@ -59,8 +79,13 @@ and uploading an edited file carries on from its version.
 | `POST /api/rtm/autopilot` | Plan with the blueprint's setup (background job); `{ overrides: {...} }` replaces any field, `reps` fixes the team size |
 | `GET /api/plan/scorecard` | Grade, KPIs, checks and per-rep figures of the plan loaded |
 | `GET /api/export/pjp` | The journey-plan workbook |
+| `GET /api/plan/previous` | The plan built before the current one on the same outlet file, as it scored then (`null` if there is none) |
+| `GET /api/plan/calendar` | Every rep's routes by week and weekday: date, calls, km, minutes in outlets and driving, and the day's length |
+| `GET /api/plan/route-sheet?repId=` | One rep's routes stop by stop, for the printed route sheets |
 | `GET /api/universe` | The working file, edits since the last save, and the next "Universe Edited" file name |
 | `POST /api/universe/save` | Save the edited universe as `<file> Universe Edited v.N.xlsx` (planners and admins) |
+| `POST /api/reps/recut-days` | `{ repIds }`: cut these reps' days again from scratch on the plan's settings |
+| `POST /api/outlets/delete-many`, `POST /api/reps/reassign-outlets` | The lasso's delete and move. Each re-plans the reps it touches keeping their days and returns, per rep, `plan` (`kept` or `recut`), `keptOnDay`, `changedDay` and `placed`; `plan: "recut"` in the body cuts their months from scratch instead |
 
 ## How the engine plans
 
@@ -102,6 +127,11 @@ kilometre.
   lowers the overtime, leaves every day inside the visits band, adds no leg
   over the hop limit and puts no more stops inside another route's area; a
   rep whose days already fit is not touched.
+- **After an edit.** A rep's month is read back from its stored routes
+  (`server/keep-days.ts`), edited, and repaired by the same pass, which then
+  measures each day against what it was before the edit: a day the plan
+  already had outside the band is left as it was, so only what the edit
+  broke is mended.
 - **Route order.** Nearest neighbour, 2-opt, Or-opt and 3-opt, then a pass
   that treats the route as the open path it is: either end may move, and a
   leg over the hop limit costs half as much again, so the order drives a
@@ -149,8 +179,16 @@ kilometre.
    indirect coverage, and flagged geographic outliers — tick what to exclude
    and re-run; nothing is removed without your choice.
 5. **Manage**: move outlets between reps (`POST /api/reps/reassign-outlets`
-   or the map UI) — schedules for the affected reps rework automatically,
-   with over-capacity warnings and suggested cascade moves.
+   or the map UI) — the affected reps are re-planned keeping their days
+   wherever they can be, with over-capacity warnings and suggested cascade
+   moves.
+6. **Read and hand out**: the Territory Map shades each rep's ground and
+   names it (the *Areas* button), following where the outlets are, so a
+   pocket across the valley shows as its own patch. *Schedules* opens on
+   the rep's month as a calendar: one cell per route with its calls, its
+   length against the shift and its kilometres; days over the shift are
+   red. *Route sheets* prints a rep's routes one to a page, every stop in
+   driving order with a box to tick and room for a note.
 
 ## Key API endpoints
 

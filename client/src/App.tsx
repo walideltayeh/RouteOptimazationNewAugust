@@ -22,6 +22,7 @@ const RepMapPage = lazy(() => import("@/pages/rep-map"));
 const SchedulesPage = lazy(() => import("@/pages/schedules"));
 const ScenariosPage = lazy(() => import("@/pages/scenarios"));
 const UsersPage = lazy(() => import("@/pages/users"));
+const RouteSheetsPage = lazy(() => import("@/pages/route-sheets"));
 const LandingPage = lazy(() => import("@/components/landing-page"));
 
 function ScreenLoading() {
@@ -63,18 +64,19 @@ function AppContent() {
   }
 
   return (
-    <div className="flex h-screen bg-background">
+    <div className="app-shell flex h-screen bg-background">
       <Sidebar collapsed={collapsed} mobileOpen={mobileOpen} onMobileClose={() => setMobileOpen(false)} />
       <div className="flex min-w-0 flex-1 flex-col">
         <AppHeader collapsed={collapsed} onToggleCollapsed={() => setCollapsed(v => !v)} onOpenMobile={() => setMobileOpen(true)} />
         <PersistenceBanner />
-        <main className="min-h-0 flex-1 overflow-auto">
+        <main className="app-main min-h-0 flex-1 overflow-auto">
         <Suspense fallback={<ScreenLoading />}>
         <Switch>
           <Route path="/" component={Dashboard} />
           <Route path="/territories" component={TerritoriesPage} />
           <Route path="/rep-map" component={RepMapPage} />
           <Route path="/schedules" component={SchedulesPage} />
+          <Route path="/route-sheets" component={RouteSheetsPage} />
           <Route path="/scenarios" component={ScenariosPage} />
           <Route path="/users" component={UsersPage} />
           <Route component={NotFound} />

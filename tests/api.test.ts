@@ -273,6 +273,37 @@ describe("RTM Studio: upload, blueprint, one-click build, scorecard, journey pla
     // Every planned visit in the cycle is a row: 150 outlets twice a month.
     expect(stops.length).toBe(300);
     expect(stops[0]["Date"]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+
+    // The same plan as a calendar: every route a cell, and the cells add up.
+    const cal = (await call("viewer", "GET", "/api/plan/calendar")).data;
+    expect(cal.reps).toHaveLength(sc.kpis.reps);
+    const cells = cal.reps.flatMap((r: any) => r.days);
+    expect(cells).toHaveLength(sc.kpis.dayRoutes);
+    expect(cells.reduce((n: number, d: any) => n + d.calls, 0)).toBe(300);
+    expect(cells.every((d: any) => d.minutes === d.callMinutes + d.driveMinutes + 70 || Math.abs(d.minutes - d.callMinutes - d.driveMinutes - 70) <= 1)).toBe(true);
+    expect(Math.max(...cells.map((d: any) => d.minutes)) / 60).toBeCloseTo(sc.kpis.maxWorkdayHours, 0);
+
+    // And as route sheets: one rep's routes stop by stop, in driving order.
+    const sheet = (await call("viewer", "GET", `/api/plan/route-sheet?repId=${cal.reps[0].repId}`)).data;
+    expect(sheet.rep.name).toBe(cal.reps[0].name);
+    expect(sheet.days).toHaveLength(cal.reps[0].days.length);
+    expect(sheet.days[0].stops.map((x: any) => x.seq)).toEqual(sheet.days[0].stops.map((_: any, i: number) => i + 1));
+    expect(sheet.days[0].stops[0].legKm).toBe(0);
+    expect((await call("viewer", "GET", "/api/plan/route-sheet?repId=nobody")).status).toBe(404);
+
+    // The first plan of a file has nothing before it. Built again with a
+    // wider band, it is compared with the first - not with the plan of the
+    // file that was loaded before this one.
+    expect((await call("viewer", "GET", "/api/plan/previous")).data).toBeNull();
+    const again = await call("planner", "POST", "/api/rtm/autopilot", { overrides: { minVisitsPerDay: 10, maxVisitsPerDay: 16 } });
+    for (let i = 0; i < 600; i++) {
+      job = (await call("planner", "GET", `/api/jobs/${again.data.jobId}`)).data;
+      if (job.status === "done" || job.status === "failed") break;
+      await new Promise(r => setTimeout(r, 100));
+    }
+    expect(job.status).toBe("done");
+    const prev = (await call("viewer", "GET", "/api/plan/previous")).data;
+    expect(prev).toMatchObject({ grade: sc.grade, score: sc.score, reps: sc.kpis.reps, kmPerDay: sc.kpis.kmPerDay, overloadedDays: sc.kpis.overloadedDays });
   });
 });
 
@@ -285,10 +316,37 @@ describe("edited universe: lasso edits, then save as '<file> Universe Edited v.N
     // What the lasso does: delete two outlets, move three to a rep.
     const outlets = (await call("planner", "GET", "/api/outlets")).data as any[];
     const reps = (await call("planner", "GET", "/api/reps")).data as any[];
-    expect((await call("planner", "POST", "/api/outlets/delete-many", { outletIds: [outlets[0].id, outlets[1].id] })).status).toBe(200);
+    // The days each outlet is driven on, before and after an edit.
+    const daysOf = async () => {
+      const m = new Map<string, string>();
+      for (const c of (await call("planner", "GET", "/api/schedules")).data as any[]) for (const id of c.outletIds) m.set(id, [...(m.get(id)?.split(" ") ?? []), `${c.repId}:${c.week}:${c.dayOfWeek}`].filter(Boolean).sort().join(" "));
+      return m;
+    };
+    const before = await daysOf();
+    const del = await call("planner", "POST", "/api/outlets/delete-many", { outletIds: [outlets[0].id, outlets[1].id] });
+    expect(del.status).toBe(200);
+    // The plan follows the edit and keeps its days: the reps that lost an
+    // outlet are re-planned in place, and everything else is where it was.
+    expect(del.data.repsReworked.length).toBeGreaterThan(0);
+    expect(del.data.repsReworked.every((r: any) => r.plan === "kept")).toBe(true);
+    const afterDelete = await daysOf();
+    expect(afterDelete.has(outlets[0].id)).toBe(false);
+    const stillThere = outlets.slice(2).filter(o => before.has(o.id));
+    const changed = stillThere.filter(o => afterDelete.get(o.id) !== before.get(o.id)).length;
+    expect(changed).toBe(del.data.repsReworked.reduce((n: number, r: any) => n + r.changedDay, 0));
+    expect(changed).toBeLessThanOrEqual(4);
+    expect((await call("planner", "GET", "/api/schedules")).data.every((c: any) => c.totalDistance !== null)).toBe(true);
+
     const moving = outlets.slice(2, 5).map(o => o.id);
     const target = reps[reps.length - 1];
-    expect((await call("planner", "POST", "/api/reps/reassign-outlets", { outletIds: moving, toRepId: target.id })).status).toBe(200);
+    const moved = await call("planner", "POST", "/api/reps/reassign-outlets", { outletIds: moving, toRepId: target.id });
+    expect(moved.status).toBe(200);
+    // The three are on the target rep's routes now, as often as they are due,
+    // and no outlet that was not moved has changed rep.
+    const afterMove = await daysOf();
+    for (const id of moving) expect(afterMove.get(id)!.split(" ").every(d => d.startsWith(target.id + ":"))).toBe(true);
+    for (const o of stillThere) if (!moving.includes(o.id)) expect(afterMove.get(o.id)!.split(":")[0]).toBe(afterDelete.get(o.id)!.split(":")[0]);
+    for (const o of stillThere) expect(afterMove.get(o.id)!.split(" ")).toHaveLength(afterDelete.get(o.id)!.split(" ").length);
     expect((await call("viewer", "GET", "/api/universe")).data.editsSinceSave).toBe(5);
 
     // A viewer cannot save; a planner gets the file under the versioned name.

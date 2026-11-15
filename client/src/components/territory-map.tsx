@@ -12,6 +12,7 @@ import { useTheme } from '@/lib/theme';
 import SaveUniverseButton from '@/components/save-universe-button';
 import { apiRequest } from '@/lib/queryClient';
 import { runJob } from '@/lib/jobs';
+import { footprint, polygonCentroid, type Pt } from '@/lib/hull';
 import type { Outlet, Rep } from '@shared/schema';
 
 // Set a default token or use environment variable
@@ -48,6 +49,33 @@ const TERRITORY_COLORS = [
 
 // Mapbox cannot swap a base style under layers already drawn, so a theme
 // switch remounts the map on the matching base map.
+/** One rep after an edit, as the server re-planned it. */
+interface ReworkedRep {
+  repId: string; name: string; outlets: number; monthlyVisits: number; schedules: number; overCapacity: boolean;
+  plan?: 'kept' | 'recut' | 'cleared'; keptOnDay?: number; changedDay?: number; placed?: number; daysNotRepaired?: number;
+}
+
+/** "1,204 outlets keep the days they had, 6 changed day." - what an edit did to the plan. */
+function daysKeptLine(reps: ReworkedRep[]): string {
+  const kept = reps.filter(r => r.plan === 'kept');
+  const recut = reps.filter(r => r.plan === 'recut').length;
+  const same = kept.reduce((n, r) => n + (r.keptOnDay ?? 0), 0);
+  const changed = kept.reduce((n, r) => n + (r.changedDay ?? 0), 0);
+  const parts: string[] = [];
+  if (kept.length > 0) parts.push(`${same.toLocaleString()} outlet${same === 1 ? ' keeps' : 's keep'} the days they had, ${changed === 0 ? 'none' : changed.toLocaleString()} changed day.`);
+  if (recut > 0) parts.push(`${recut} rep${recut === 1 ? "'s days were" : "s' days were"} cut again from scratch, because keeping them left days outside the band or over the shift.`);
+  const open = kept.reduce((n, r) => n + (r.daysNotRepaired ?? 0), 0);
+  if (open > 0) parts.push(`${open} day${open === 1 ? ' is' : 's are'} left short or long: no neighbouring day could hand over an outlet without a long drive.`);
+  return parts.join(' ');
+}
+
+/** Reps whose days were kept but could not all be repaired. */
+const shortRepIds = (reps: ReworkedRep[] | undefined) => (reps ?? []).filter(r => r.plan === 'kept' && (r.daysNotRepaired ?? 0) > 0).map(r => r.repId);
+const recutLabel = (reps: ReworkedRep[]) => {
+  const names = reps.filter(r => r.plan === 'kept' && (r.daysNotRepaired ?? 0) > 0).map(r => r.name);
+  return names.length === 1 ? `${names[0]}'s` : `${names.length} reps'`;
+};
+
 export default function TerritoryMap(props: TerritoryMapProps) {
   const theme = useTheme();
   return <TerritoryMapView key={theme} {...props} />;
@@ -64,6 +92,8 @@ function TerritoryMapView({ className }: TerritoryMapProps) {
   const [isMapLoaded, setIsMapLoaded] = useState(false);
   const [isRenderingMarkers, setIsRenderingMarkers] = useState(false);
   const [viewMode, setViewMode] = useState<'cluster' | 'individual'>('cluster');
+  const [showAreas, setShowAreas] = useState<boolean>(() => { try { return localStorage.getItem('territory-map:areas') !== '0'; } catch { return true; } });
+  useEffect(() => { try { localStorage.setItem('territory-map:areas', showAreas ? '1' : '0'); } catch {} }, [showAreas]);
   const [selectedZone, setSelectedZone] = useState<string | null>(null);
   const [needsReoptimization, setNeedsReoptimization] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -75,14 +105,14 @@ function TerritoryMapView({ className }: TerritoryMapProps) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const selectedCountRef = useRef(0);
   const outletsRef = useRef<Outlet[]>([]);
-  const [deleteSummary, setDeleteSummary] = useState<{ before: number; deleted: number; after: number } | null>(null);
+  const [deleteSummary, setDeleteSummary] = useState<{ before: number; deleted: number; after: number; repsReworked?: ReworkedRep[] } | null>(null);
   const [showLassoDeleteConfirm, setShowLassoDeleteConfirm] = useState(false);
   // Move the selection to another rep; the touched territories are re-planned
   // on the spot by the server, and the result is shown here.
   const [reassignTargetId, setReassignTargetId] = useState<string>('');
   const [reworkSummary, setReworkSummary] = useState<{
     movedOutlets: number; toRep: { id: string; name: string };
-    repsReworked: { repId: string; name: string; outlets: number; monthlyVisits: number; schedules: number; overCapacity: boolean }[];
+    repsReworked: ReworkedRep[];
     warnings: string[];
   } | null>(null);
   const { toast } = useToast();
@@ -117,10 +147,14 @@ function TerritoryMapView({ className }: TerritoryMapProps) {
   const deleteManyMutation = useMutation({
     mutationFn: async (outletIds: string[]) => {
       const res = await apiRequest("POST", "/api/outlets/delete-many", { outletIds });
-      return res.json() as Promise<{ before: number; deleted: number; after: number }>;
+      return res.json() as Promise<{ before: number; deleted: number; after: number; repsReworked?: ReworkedRep[] }>;
     },
     onSuccess: (r) => {
-      setDeleteSummary(prev => prev ? { before: prev.before, deleted: prev.deleted + r.deleted, after: r.after } : r);
+      // Several deletes in a row add up; a rep re-planned twice shows its latest state.
+      setDeleteSummary(prev => prev ? {
+        before: prev.before, deleted: prev.deleted + r.deleted, after: r.after,
+        repsReworked: [...(prev.repsReworked ?? []).filter(x => !(r.repsReworked ?? []).some(y => y.repId === x.repId)), ...(r.repsReworked ?? [])],
+      } : r);
       setSelectedIds(new Set());
       setShowLassoDeleteConfirm(false);
       queryClient.invalidateQueries({ queryKey: ['/api/outlets'] });
@@ -168,7 +202,7 @@ function TerritoryMapView({ className }: TerritoryMapProps) {
       const res = await apiRequest("POST", "/api/reps/reassign-outlets", { outletIds, toRepId });
       return res.json() as Promise<{
         movedOutlets: number; toRep: { id: string; name: string };
-        repsReworked: { repId: string; name: string; outlets: number; monthlyVisits: number; schedules: number; overCapacity: boolean }[];
+        repsReworked: ReworkedRep[];
         warnings: string[]; message: string;
       }>;
     },
@@ -180,9 +214,26 @@ function TerritoryMapView({ className }: TerritoryMapProps) {
       queryClient.invalidateQueries({ queryKey: ['/api/schedules'] });
       queryClient.invalidateQueries({ queryKey: ['/api/reps'] });
       const n = (r.repsReworked || []).length;
-      toast({ title: `${r.movedOutlets} outlet${r.movedOutlets === 1 ? '' : 's'} moved to ${r.toRep.name}`, description: `${n} territor${n === 1 ? 'y' : 'ies'} re-planned.` });
+      toast({ title: `${r.movedOutlets} outlet${r.movedOutlets === 1 ? '' : 's'} moved to ${r.toRep.name}`, description: `${n} territor${n === 1 ? 'y' : 'ies'} updated. ${daysKeptLine(r.repsReworked || [])}` });
     },
     onError: (e: Error) => toast({ title: "Move failed", description: e.message, variant: "destructive" }),
+  });
+
+  // Keeping the days can leave a day short where no neighbour can hand an
+  // outlet over; those reps' days can be cut again, on their own.
+  const recutDaysMutation = useMutation({
+    mutationFn: async (repIds: string[]) => {
+      const res = await apiRequest("POST", "/api/reps/recut-days", { repIds });
+      return res.json() as Promise<{ repsReworked: ReworkedRep[] }>;
+    },
+    onSuccess: (r) => {
+      const swap = (list: ReworkedRep[] | undefined) => (list ?? []).map(x => r.repsReworked.find(y => y.repId === x.repId) ?? x);
+      setDeleteSummary(prev => prev ? { ...prev, repsReworked: swap(prev.repsReworked) } : prev);
+      setReworkSummary(prev => prev ? { ...prev, repsReworked: swap(prev.repsReworked) } : prev);
+      queryClient.invalidateQueries({ queryKey: ['/api/schedules'] });
+      toast({ title: `Days re-cut for ${r.repsReworked.length} rep${r.repsReworked.length === 1 ? '' : 's'}` });
+    },
+    onError: (e: Error) => toast({ title: "Re-cut failed", description: e.message, variant: "destructive" }),
   });
 
   // A fresh optimization on the outlets that remain, with the settings the
@@ -754,6 +805,46 @@ function TerritoryMapView({ className }: TerritoryMapProps) {
     return reps.find(rep => (rep.territory || rep.name) === territory);
   };
 
+  // Each rep's ground as a shaded area with its border and name, under the
+  // outlets: the map then shows who owns what, and where two territories
+  // run into each other, before a single dot is read. The area follows the
+  // rep's outlets (see footprint): a pocket away from the rest is its own
+  // patch, and the name sits on the largest one.
+  useEffect(() => {
+    const m = map.current;
+    if (!m || !isMapLoaded) return;
+    const areas: GeoJSON.Feature[] = [], names: GeoJSON.Feature[] = [];
+    if (showAreas) {
+      for (const [territory, list] of Object.entries(territoryGroups)) {
+        if (territory in UNOWNED_LABELS) continue;
+        const rings = footprint(list.map(o => [o.longitude, o.latitude] as Pt));
+        if (rings.length === 0) continue;
+        const color = getTerritoryColor(territory);
+        areas.push({ type: 'Feature', geometry: { type: 'MultiPolygon', coordinates: rings.map(r => [[...r, r[0]]]) }, properties: { color } });
+        names.push({ type: 'Feature', geometry: { type: 'Point', coordinates: polygonCentroid(rings[0]) }, properties: { color, name: getRepForTerritory(territory)?.name ?? territory } });
+      }
+    }
+    const set = (id: string, features: GeoJSON.Feature[]) => {
+      const data: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features };
+      const src = m.getSource(id) as mapboxgl.GeoJSONSource | undefined;
+      if (src) src.setData(data); else m.addSource(id, { type: 'geojson', data });
+    };
+    set('rep-areas', areas);
+    set('rep-area-names', names);
+    if (!m.getLayer('rep-area-fill')) {
+      // Below any outlet layer already drawn.
+      const above = m.getStyle()?.layers?.find(l => l.id.startsWith('individual-circles-') || l.id.startsWith('drilldown-circles-') || l.id === 'lasso-fill')?.id;
+      const dark = document.documentElement.classList.contains('dark');
+      m.addLayer({ id: 'rep-area-fill', type: 'fill', source: 'rep-areas', paint: { 'fill-color': ['get', 'color'], 'fill-opacity': dark ? 0.16 : 0.1 } }, above);
+      m.addLayer({ id: 'rep-area-line', type: 'line', source: 'rep-areas', paint: { 'line-color': ['get', 'color'], 'line-width': 1.5, 'line-opacity': 0.75 } }, above);
+      m.addLayer({
+        id: 'rep-area-name', type: 'symbol', source: 'rep-area-names',
+        layout: { 'text-field': ['get', 'name'], 'text-size': 12, 'text-font': ['DIN Pro Medium', 'Arial Unicode MS Regular'], 'text-allow-overlap': false, 'text-offset': [0, 1.8] },
+        paint: { 'text-color': dark ? '#f4f4f5' : '#18181b', 'text-halo-color': dark ? '#09090b' : '#ffffff', 'text-halo-width': 1.4 },
+      });
+    }
+  }, [territoryGroups, showAreas, isMapLoaded]);
+
   if (!isMapboxConfigLoading && (!resolvedMapboxToken || resolvedMapboxToken.includes('demo_token'))) {
     return (
       <div className="flex flex-col h-full ${className}">
@@ -800,6 +891,18 @@ function TerritoryMapView({ className }: TerritoryMapProps) {
                   </button>
                 ))}
               </div>
+              <Button
+                size="sm"
+                variant={showAreas ? 'secondary' : 'outline'}
+                className="h-9"
+                onClick={() => setShowAreas(v => !v)}
+                title="Shade each rep's territory, with its border and name"
+                aria-pressed={showAreas}
+                data-testid="button-areas"
+              >
+                <Layers className="h-4 w-4" />
+                Areas
+              </Button>
               <Button
                 size="sm"
                 variant={lassoActive ? 'default' : 'outline'}
@@ -911,6 +1014,7 @@ function TerritoryMapView({ className }: TerritoryMapProps) {
                 {r.name}: {r.outlets} outlets, {r.monthlyVisits} visits over {r.schedules} route day{r.schedules === 1 ? '' : 's'}
                 {r.schedules > 0 ? ` (${(r.monthlyVisits / r.schedules).toFixed(1)}/day)` : ''}
                 {r.overCapacity ? ' — over capacity' : ''}
+                {r.plan === 'kept' ? ` · days kept${r.changedDay ? `, ${r.changedDay} outlet${r.changedDay === 1 ? '' : 's'} changed day` : ''}` : r.plan === 'recut' ? ' · days re-cut from scratch' : ''}
               </li>
             ))}
           </ul>
@@ -918,6 +1022,11 @@ function TerritoryMapView({ className }: TerritoryMapProps) {
             <p className="mb-2 text-amber-800">{reworkSummary.warnings.join(' ')}</p>
           )}
           <div className="flex flex-wrap items-center gap-2">
+            {shortRepIds(reworkSummary.repsReworked).length > 0 && (
+              <Button size="sm" variant="outline" disabled={recutDaysMutation.isPending} onClick={() => recutDaysMutation.mutate(shortRepIds(reworkSummary.repsReworked))} data-testid="button-recut-days">
+                {recutDaysMutation.isPending ? 'Re-cutting…' : `Re-cut ${recutLabel(reworkSummary.repsReworked)} days`}
+              </Button>
+            )}
             <Button size="sm" variant="outline" disabled={isOptimizing} onClick={() => { setIsOptimizing(true); reoptimizeMutation.mutate(); }} data-testid="button-reoptimize-after-move">
               {isOptimizing ? 'Rebuilding…' : "Rebuild every rep's routes"}
             </Button>
@@ -930,9 +1039,16 @@ function TerritoryMapView({ className }: TerritoryMapProps) {
         <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900" data-testid="lasso-summary">
           <p className="mb-2">
             You had <strong>{deleteSummary.before.toLocaleString()}</strong> outlets, deleted <strong>{deleteSummary.deleted.toLocaleString()}</strong>, and now have <strong>{deleteSummary.after.toLocaleString()}</strong>.
-            The current plan still counts the deleted ones' days; re-plan to rebuild territories and routes on what remains.
+            {' '}{(deleteSummary.repsReworked?.length ?? 0) > 0
+              ? <span data-testid="lasso-days-kept">The plan was updated around them. {daysKeptLine(deleteSummary.repsReworked!)} To rebuild territories and routes on what remains instead, optimize from scratch.</span>
+              : <>Re-plan to build territories and routes on what remains.</>}
           </p>
           <div className="flex flex-wrap items-center gap-2">
+            {shortRepIds(deleteSummary.repsReworked).length > 0 && (
+              <Button size="sm" variant="outline" disabled={recutDaysMutation.isPending} onClick={() => recutDaysMutation.mutate(shortRepIds(deleteSummary.repsReworked))} data-testid="button-recut-days">
+                {recutDaysMutation.isPending ? 'Re-cutting…' : `Re-cut ${recutLabel(deleteSummary.repsReworked ?? [])} days`}
+              </Button>
+            )}
             <Button size="sm" disabled={freshOptimizeMutation.isPending || !planSettings?.configured} onClick={() => freshOptimizeMutation.mutate()} data-testid="button-optimize-fresh">
               {freshOptimizeMutation.isPending ? 'Optimizing… (about half a minute)' : 'Optimize from scratch with the saved settings'}
             </Button>

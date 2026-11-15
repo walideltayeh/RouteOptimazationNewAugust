@@ -11,7 +11,8 @@ import { detectGeoOutliers, type GeoOutlier } from "./geo-outliers";
 import { classifyChannel, callMinutesFor, chooseHeadcount, kthNeighbourKm, DEFAULT_WORKDAY, dayMinutes, guessWorkingWeek, median } from "./rtm";
 import { buildBlueprint } from "./blueprint";
 import { scorePlan, overlapShare } from "./scorecard";
-import { relieveOverloadedDays } from "./month-polish";
+import { relieveOverloadedDays, type RelieveResult } from "./month-polish";
+import { bandsFromCells, cycleCellOf, placeArrivals, removeOutlet, type StoredCell } from "./keep-days";
 import { buildPjpWorkbook } from "./pjp-export";
 import { orderStops } from "./route-order";
 import { buildUniverseWorkbook, editedBaseName, editedVersionOf, editedFileName } from "./universe-export";
@@ -3241,10 +3242,7 @@ let pocketGroups = new Set<number>();
 const pocketCellsByRep = new Map<string, Set<string>>();
 
 function scheduleFromDailyClusters(rep: Rep, dailyClusters: Outlet[][], repOutlets: Outlet[]): InsertSchedule[] {
-  const { repeats, dayGroups, cycleDays, planDays } = cycleShape(workingWeek.length || rep.workingDaysPerWeek || 5);
-  const bonusCells = new Set<string>();
-  const pocketCells = new Set<string>();
-  pocketCellsByRep.set(rep.id, pocketCells);
+  const { repeats, dayGroups } = cycleShape(workingWeek.length || rep.workingDaysPerWeek || 5);
 
   const subCluster = (outlets: Outlet[], k: number): Outlet[][] => {
     const buckets: Outlet[][] = Array.from({ length: k }, () => []);
@@ -3338,9 +3336,6 @@ function scheduleFromDailyClusters(rep: Rep, dailyClusters: Outlet[][], repOutle
     runLoad[pick] += share / repeats;
   }
 
-  const schedules: InsertSchedule[] = [];
-  const groupByOutlet = new Map<string, Set<number>>();
-
   // Split each frequency band into buckets, one per week it can fall on.
   //
   // These must be equal-sized AND geographically tight. Dealing them along a
@@ -3417,6 +3412,35 @@ function scheduleFromDailyClusters(rep: Rep, dailyClusters: Outlet[][], repOutle
     }
     bandedByGroup.push(banded);
   }
+  return emitMonth(rep, bandedByGroup, repOutlets, { isPocket: d => pocketGroups.has(d) });
+}
+
+/**
+ * A rep's month from its day-groups: `bandedByGroup[d]` holds day-group d's
+ * outlets by how often they are due there, each band split into the weeks it
+ * falls on. Days over the shift are relieved, every (repeat, day-group) run
+ * is ordered and laid on the calendar. Used by a plan built from scratch and
+ * by a re-plan that keeps the days of the plan it starts from.
+ */
+function emitMonth(
+  rep: Rep,
+  bandedByGroup: { visits: number; buckets: Outlet[][] }[][],
+  repOutlets: Outlet[],
+  opts: {
+    isPocket?: (dayGroup: number) => boolean;
+    /** Repair what an edit did to a month that keeps its days, against what each day was before it. */
+    restoreBand?: boolean;
+    before?: (dayGroup: number, run: number) => DayWas | null;
+    /** Filled with what the repair found and did. */
+    out?: { relief?: RelieveResult };
+  } = {},
+): InsertSchedule[] {
+  const { repeats, dayGroups, cycleDays, planDays } = cycleShape(workingWeek.length || rep.workingDaysPerWeek || 5);
+  const bonusCells = new Set<string>();
+  const pocketCells = new Set<string>();
+  pocketCellsByRep.set(rep.id, pocketCells);
+  const schedules: InsertSchedule[] = [];
+  const groupByOutlet = new Map<string, Set<number>>();
 
   // The days exist now, so their real length is known: calls, the driving of
   // the stop order, commute and break. Days over the shift hand an outlet on
@@ -3436,12 +3460,17 @@ function scheduleFromDailyClusters(rep: Rep, dailyClusters: Outlet[][], repOutle
       visitsBand: balanceBy === 'visits' && dayVisitsMin > 0 && dayVisitsMax > 0 ? { min: dayVisitsMin, max: dayVisitsMax } : null,
       maxHopKm,
       movable: o => !o.pinnedRoute && !inTwoGroups.has(o.id),
+      restoreBand: opts.restoreBand,
+      before: opts.before,
       intruders: routes => {
         const areas = routes.map(r => r.map(o => [o.longitude, o.latitude, o.id] as [number, number, string]));
         return Math.round(overlapShare(areas) * areas.reduce((n, r) => n + r.length, 0));
       },
     });
-    if (relief.moves > 0) {
+    if (opts.out) opts.out.relief = relief;
+    if (opts.restoreBand && (relief.moves > 0 || relief.outOfBandBefore > 0)) {
+      console.log(`[keep-days] ${rep.name}: ${relief.moves} outlet${relief.moves === 1 ? '' : 's'} changed day to repair the month (${relief.outOfBandBefore} -> ${relief.outOfBandAfter} days left short or outside the band by the edit, ${relief.overBefore} -> ${relief.overAfter} over the shift)`);
+    } else if (relief.moves > 0) {
       console.log(`[shift] ${rep.name}: ${relief.moves} outlet${relief.moves === 1 ? '' : 's'} moved off days over the shift (${relief.overBefore} -> ${relief.overAfter} days over, longest ${(relief.longestBefore / 60).toFixed(2)}h -> ${(relief.longestAfter / 60).toFixed(2)}h)`);
     } else if (relief.overBefore > 0) {
       console.log(`[shift] ${rep.name}: ${relief.overBefore} day${relief.overBefore === 1 ? '' : 's'} over the shift and no neighbouring day can take an outlet (longest ${(relief.longestBefore / 60).toFixed(2)}h)`);
@@ -3483,7 +3512,7 @@ function scheduleFromDailyClusters(rep: Rep, dailyClusters: Outlet[][], repOutle
         estimatedDuration: optimized.length * 15,
         driveMinutes,
       });
-      if (pocketGroups.has(d)) pocketCells.add(`${cell.week}:${cell.dayOfWeek}`);
+      if (opts.isPocket?.(d)) pocketCells.add(`${cell.week}:${cell.dayOfWeek}`);
 
       // The bonus day(s): a month one day longer than its pattern continues
       // into the next cycle's first day, driving pattern day 1 again. The rep
@@ -3535,6 +3564,147 @@ function scheduleFromDailyClusters(rep: Rep, dailyClusters: Outlet[][], repOutle
   }
 
   return schedules;
+}
+
+/** What one day of a rep's month was before an edit. */
+interface DayWas { visits: number; minutes: number }
+
+/**
+ * Each day of a rep's month as it stands - visits and length, keyed by
+ * "dayGroup:run" (0-based) - taken before an edit is applied, so the repair
+ * afterwards can tell what the edit broke from what was already so.
+ */
+function monthBaseline(rep: Rep, stored: Schedule[], byId: Map<string, Outlet>): Map<string, DayWas> {
+  const { dayGroups, cycleDays } = cycleShape(workingWeek.length || rep.workingDaysPerWeek || 5);
+  const road = getDistanceMode() === 'road';
+  const out = new Map<string, DayWas>();
+  for (const s of stored) {
+    const at = cycleCellOf(s.week, s.dayOfWeek, workingWeek, dayGroups, cycleDays, cycleStartSlot);
+    if (!at) continue;
+    const order = ((s.routeOrder as string[]) || []).length > 0 ? (s.routeOrder as string[]) : ((s.outletIds as string[]) || []);
+    const stops = order.map(id => byId.get(id)).filter((o): o is Outlet => !!o);
+    if (stops.length === 0) continue;
+    const call = stops.reduce((t, o) => t + callMinutesFor(o, 15, true), 0);
+    const km = s.totalDistance ?? calculateTotalDistance(stops);
+    out.set(`${at.group}:${at.repeat - 1}`, { visits: stops.length, minutes: dayMinutes(call, km, DEFAULT_WORKDAY, road ? km : undefined, s.driveMinutes ?? undefined).total });
+  }
+  return out;
+}
+
+/**
+ * How far a month is from one that holds: for every day, the visits it is
+ * outside the band and the time it runs past the shift (beyond the
+ * scorecard's quarter-hour of grace, counted in quarter-hours, about a
+ * call), each squared. Squared, so twenty-four days one visit over weigh
+ * less than four days seven over: when a rep is given more than its days
+ * can hold, spreading it is the better month.
+ */
+function monthIssues(cells: { outletIds: unknown; totalDistance?: number | null; driveMinutes?: number | null }[], byId: Map<string, Outlet>): number {
+  const road = getDistanceMode() === 'road';
+  const banded = balanceBy === 'visits' && dayVisitsMin > 0 && dayVisitsMax > 0;
+  let issues = 0;
+  for (const c of cells) {
+    const stops = ((c.outletIds as string[]) || []).map(id => byId.get(id)).filter((o): o is Outlet => !!o);
+    if (stops.length === 0) continue;
+    const call = stops.reduce((s, o) => s + callMinutesFor(o, 15, true), 0);
+    const km = c.totalDistance ?? calculateTotalDistance(stops);
+    const minutes = dayMinutes(call, km, DEFAULT_WORKDAY, road ? km : undefined, c.driveMinutes ?? undefined).total;
+    const over = Math.max(0, minutes - DEFAULT_WORKDAY.shiftMinutes - 15) / 15;
+    const gap = banded ? Math.max(0, dayVisitsMin - stops.length, stops.length - dayVisitsMax) : 0;
+    issues += over * over + gap * gap;
+  }
+  return issues;
+}
+
+export interface KeptMonth {
+  schedules: InsertSchedule[];
+  /** Outlets of the rep that were in the plan before and still are. */
+  kept: number;
+  /** Of those, how many are now driven on different days. */
+  changedDay: number;
+  /** Outlets added to the month (moved in from another rep, new, or put back after a hand edit). */
+  placed: number;
+  /** Outlets that left it (deleted, or moved to another rep). */
+  left: number;
+  /** Days the edit left outside the band, short, over the shift or empty, that the repair could not put right. */
+  unrepaired: number;
+}
+
+/**
+ * A rep's month after an edit, keeping the days of the plan in `stored`: see
+ * server/keep-days.ts. Null when there is nothing to keep (no plan, or the
+ * plan was made for another working week or cycle), so the caller cuts the
+ * month from scratch.
+ */
+async function replanKeepingDays(rep: Rep, repOutlets: Outlet[], stored: Schedule[], baseline?: Map<string, DayWas>): Promise<KeptMonth | null> {
+  if (stored.length === 0 || repOutlets.length === 0) return null;
+  const { repeats, dayGroups, cycleDays } = cycleShape(workingWeek.length || rep.workingDaysPerWeek || 5);
+  const cells: StoredCell[] = [];
+  const daysBefore = new Map<string, string[]>();
+  for (const s of stored) {
+    const at = cycleCellOf(s.week, s.dayOfWeek, workingWeek, dayGroups, cycleDays, cycleStartSlot);
+    for (const id of (s.outletIds as string[]) || []) daysBefore.set(id, [...(daysBefore.get(id) ?? []), `${s.week}:${s.dayOfWeek}`]);
+    if (!at) {
+      // A day off, or past the end of the pattern: a bonus day repeats a
+      // route that is read from its own cell; anything else is another plan.
+      const days = workingWeek.length > 0 ? workingWeek : [1, 2, 3, 4, 5];
+      if (!days.includes(s.dayOfWeek)) return null;
+      continue;
+    }
+    cells.push({ group: at.group, repeat: at.repeat, ids: (s.outletIds as string[]) || [] });
+  }
+  const byId = new Map(repOutlets.map(o => [o.id, o]));
+  const back = bandsFromCells(cells, byId, dayGroups, repeats);
+
+  // An outlet keeps its days when the plan still gives it the visits it is
+  // due; one whose frequency was changed, or that was moved by hand onto
+  // runs no week pattern has, is placed again.
+  const arrivals: { outlet: Outlet; shares: number[] }[] = [];
+  let kept = 0;
+  for (const o of repOutlets) {
+    const due = membershipsFor(o.visitFrequency ?? 1, repeats);
+    const has = [...(back.shares.get(o.id) ?? [])].sort((a, b) => b - a);
+    if (!back.irregular.has(o.id) && has.length === due.length && has.every((v, i) => v === due[i])) { kept++; continue; }
+    removeOutlet(back.groups, o.id);
+    arrivals.push({ outlet: o, shares: due });
+  }
+  if (kept === 0) return null;
+  const left = Array.from(daysBefore.keys()).filter(id => !byId.has(id)).length;
+
+  ensureWorkloadWeights(repOutlets);
+  if (getDistanceMode() === 'road' && osrmConfigured()) {
+    await prefetchOutletMatrix(repOutlets.map(o => ({ lat: o.latitude, lng: o.longitude })));
+  }
+  const placed = placeArrivals<Outlet>({
+    groups: back.groups, repeats, arrivals,
+    dist: (a, b) => geoDist(a.latitude, a.longitude, b.latitude, b.longitude),
+    visitsMax: balanceBy === 'visits' && dayVisitsMax > 0 ? dayVisitsMax : undefined,
+  });
+  if (placed.unplaced.length > 0) return null;
+
+  const pocketsBefore = pocketCellsByRep.get(rep.id) ?? new Set<string>();
+  const out: { relief?: RelieveResult } = {};
+  const schedules = emitMonth(rep, back.groups, repOutlets, {
+    restoreBand: true,
+    before: baseline ? (d, r) => baseline.get(`${d}:${r}`) ?? { visits: 0, minutes: 0 } : undefined,
+    out,
+    isPocket: d => { const c = calendarCell(1, d + 1, dayGroups, workingWeek); return pocketsBefore.has(`${c.week}:${c.dayOfWeek}`); },
+  });
+
+  const daysAfter = new Map<string, string[]>();
+  for (const s of schedules) for (const id of (s.outletIds as string[]) || []) daysAfter.set(id, [...(daysAfter.get(id) ?? []), `${s.week}:${s.dayOfWeek}`]);
+  const arrived = new Set(arrivals.map(a => a.outlet.id));
+  let changedDay = 0;
+  for (const o of repOutlets) {
+    if (arrived.has(o.id)) continue;
+    const a = [...(daysBefore.get(o.id) ?? [])].sort().join(','), b = [...(daysAfter.get(o.id) ?? [])].sort().join(',');
+    if (a !== b) changedDay++;
+  }
+  // A route the edit emptied leaves the rep a working day with no calls.
+  const routesNow = new Set(schedules.map(c => `${c.week}:${c.dayOfWeek}`));
+  const emptied = baseline ? stored.filter(c => cycleCellOf(c.week, c.dayOfWeek, workingWeek, dayGroups, cycleDays, cycleStartSlot) && !routesNow.has(`${c.week}:${c.dayOfWeek}`)).length : 0;
+  const unrepaired = (out.relief?.outOfBandAfter ?? 0) + (out.relief?.newlyOver ?? 0) + emptied;
+  return { schedules, kept, changedDay, placed: arrivals.length, left, unrepaired };
 }
 
 // Helper function to generate weekly schedules for a route
@@ -3912,13 +4082,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const ids: string[] = Array.isArray(req.body?.outletIds) ? req.body.outletIds.filter((x: unknown) => typeof x === 'string') : [];
     if (ids.length === 0) return res.status(400).json({ message: "outletIds must be a non-empty array" });
     const before = (await storage.getOutlets()).length;
+    const hadPlan = (await storage.getSchedules()).length > 0;
+    const affected = hadPlan ? await repsAffectedByOutlets(ids) : [];
+    const baselines = affected.length > 0 ? await monthBaselines(affected) : undefined;
     let deleted = 0;
     for (const id of ids) if (await storage.deleteOutlet(id)) deleted++;
     const after = (await storage.getOutlets()).length;
-    await storage.flush();
     await noteUniverseEdit(deleted);
     console.log(`[outlets] deleted ${deleted} of ${ids.length} requested; ${before} -> ${after}`);
-    res.json({ before, deleted, after });
+    // The plan follows the edit: the reps who lost outlets keep their days,
+    // and a day left short of visits takes outlets from the day next to it.
+    let repsReworked: Awaited<ReturnType<typeof regenerateSchedulesForReps>> = [];
+    if (deleted > 0 && affected.length > 0) {
+      try { repsReworked = await regenerateSchedulesForReps(affected, req.body?.plan === 'recut' ? 'recut' : 'keep', baselines); }
+      catch (err) { console.error("[outlets] re-plan after delete failed:", err); }
+    }
+    await storage.flush();
+    res.json({ before, deleted, after, repsReworked });
   });
 
   app.get("/api/outlets/duplicates", async (req, res) => {
@@ -6291,6 +6471,81 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // One route as it is driven: the date, the calls, the kilometres and the
+  // length of the day against the shift - and, for a route sheet, every stop.
+  async function planDays(repId?: string, withStops = false) {
+    applyPlanSettings();
+    const schedules = repId ? await storage.getSchedulesByRepId(repId) : await storage.getSchedules();
+    const cycleDates = upcomingWorkingDates(400, workingWeek);
+    const dateOf = (week: number, dayOfWeek: number): string | null => {
+      const slot = workingWeek.indexOf(dayOfWeek);
+      if (slot < 0) return null;
+      const d = cycleDates[(week - 1) * workingWeek.length + slot - cycleStartSlot];
+      return d ? ymd(d) : null;
+    };
+    const byId = new Map((await storage.getOutlets()).map(o => [o.id, o]));
+    const road = planSettings?.distanceMode === 'road' && osrmConfigured();
+    const days = schedules.map(s => {
+      const order = ((s.routeOrder as string[]) || []).length > 0 ? (s.routeOrder as string[]) : ((s.outletIds as string[]) || []);
+      const stops = order.map(id => byId.get(id)).filter((o): o is Outlet => !!o);
+      const call = stops.reduce((t, o) => t + callMinutesFor(o, 15, true), 0);
+      const legs = stops.map((o, i) => (i === 0 ? 0 : haversineDistance(stops[i - 1].latitude, stops[i - 1].longitude, o.latitude, o.longitude)));
+      const straight = legs.reduce((a, b) => a + b, 0);
+      const roadKm = road && s.totalDistance != null ? s.totalDistance : undefined;
+      const t = dayMinutes(call, straight, DEFAULT_WORKDAY, roadKm, road ? s.driveMinutes : undefined);
+      return {
+        repId: s.repId, week: s.week, dayOfWeek: s.dayOfWeek, date: dateOf(s.week, s.dayOfWeek),
+        calls: stops.length, km: Math.round((roadKm ?? straight) * 10) / 10,
+        callMinutes: Math.round(call), driveMinutes: Math.round(t.drive), minutes: Math.round(t.total),
+        ...(withStops ? {
+          stops: stops.map((o, i) => ({
+            seq: i + 1, id: o.id, code: o.code ?? '', name: o.name, address: o.address ?? '', channel: o.channel ?? '',
+            visitFrequency: o.visitFrequency ?? 1, callMinutes: Math.round(callMinutesFor(o, 15, true)),
+            legKm: Math.round(legs[i] * 10) / 10, latitude: o.latitude, longitude: o.longitude,
+          })),
+        } : {}),
+      };
+    }).sort((a, b) => a.week - b.week || workingWeek.indexOf(a.dayOfWeek) - workingWeek.indexOf(b.dayOfWeek));
+    return {
+      days,
+      frame: {
+        shiftMinutes: DEFAULT_WORKDAY.shiftMinutes, graceMinutes: 15,
+        workingDays: workingWeek,
+        // A plan for a calendar month has real dates; a repeating cycle is week 1 to 4.
+        dated: !!planStartDate,
+        band: balanceBy === 'visits' && dayVisitsMin > 0 && dayVisitsMax > 0 ? { min: dayVisitsMin, max: dayVisitsMax } : null,
+        kmBasis: road ? 'road' : 'straight-line',
+      },
+    };
+  }
+
+  // The plan as a calendar: every rep's routes, a cell each.
+  app.get("/api/plan/calendar", async (_req, res) => {
+    try {
+      if ((await storage.getSchedules()).length === 0) return res.status(404).json({ message: "No plan yet." });
+      const { days, frame } = await planDays();
+      const reps = await storage.getReps();
+      res.json({ ...frame, reps: reps.map(r => ({ repId: r.id, name: r.name, days: days.filter(d => d.repId === r.id) })) });
+    } catch (error) {
+      console.error("Plan calendar error:", error);
+      res.status(500).json({ message: "Failed to read the plan calendar" });
+    }
+  });
+
+  // One rep's routes stop by stop, for the printed route sheets.
+  app.get("/api/plan/route-sheet", async (req, res) => {
+    try {
+      const rep = await storage.getRep(String(req.query.repId ?? ''));
+      if (!rep) return res.status(404).json({ message: "No such rep in the current plan." });
+      const { days, frame } = await planDays(rep.id, true);
+      if (days.length === 0) return res.status(404).json({ message: "This rep has no routes yet." });
+      res.json({ ...frame, rep: { id: rep.id, name: rep.name, code: rep.code ?? '', territory: rep.territory ?? '' }, days });
+    } catch (error) {
+      console.error("Route sheet error:", error);
+      res.status(500).json({ message: "Failed to read the routes" });
+    }
+  });
+
   // Optimization runs
   // --- Scenarios: compare plans before committing to one ---
   //
@@ -6311,8 +6566,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
     createdAt: string;
     params: Record<string, any>;
     kpis: Record<string, number>;
+    /** The scorecard's grade and headline figures at capture, for "this plan against the one before". */
+    score?: PlanScore;
+    /** The scenario the plan in storage came from: the last one built, or the one applied since. */
+    live?: boolean;
+    /** When the outlet file it was planned on was uploaded: plans of different files are not compared. */
+    upload?: string | null;
     snapshot: ScenarioSnapshot;
   }
+  type PlanScore = { grade: string; score: number; reps: number; kmPerDay: number; workdayHours: number; maxWorkdayHours: number; overloadedDays: number; dayRoutes: number; routeOverlapPct: number; territoryOverlapPct: number; avoidableLongHops: number; visitsPerDay: number };
+  const planScoreOf = (sc: Awaited<ReturnType<typeof currentScorecard>>): PlanScore | undefined => sc ? {
+    grade: sc.grade, score: sc.score, reps: sc.kpis.reps, kmPerDay: sc.kpis.kmPerDay,
+    workdayHours: sc.kpis.workdayHours, maxWorkdayHours: sc.kpis.maxWorkdayHours, overloadedDays: sc.kpis.overloadedDays, dayRoutes: sc.kpis.dayRoutes,
+    routeOverlapPct: sc.kpis.routeOverlapPct, territoryOverlapPct: sc.kpis.territoryOverlapPct, avoidableLongHops: sc.kpis.avoidableLongHops, visitsPerDay: sc.kpis.visitsPerDay.avg,
+  } : undefined;
   // Scenarios persist across restarts, but NOT inside the main storage
   // snapshot: that file is rewritten in full on every change, and a single
   // scenario snapshot of a 7,878-outlet plan is ~2.5MB - ten of them would
@@ -6391,12 +6658,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       createdAt: new Date().toISOString(),
       params,
       kpis: await computePlanKPIs(),
+      score: planScoreOf(await currentScorecard().catch(() => null)),
+      live: true,
+      upload: await uploadStamp(),
     };
     writeScenarioSnapshot(id, {
       outlets: allOutlets.map(o => ({ id: o.id, repId: o.repId, territory: o.territory, cluster: o.cluster })),
       reps: await storage.getReps(),
       schedules: allSchedules,
     });
+    for (const sc of scenarioIndex) delete sc.live;
     scenarioIndex.push(summary);
     while (scenarioIndex.length > 10) {
       const dropped = scenarioIndex.shift();
@@ -6405,6 +6676,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
     saveScenarioIndex();
     return id;
   }
+
+  const uploadStamp = async (): Promise<string | null> =>
+    loadBlob(UPLOAD_META_KEY).then(t => (t ? (JSON.parse(t).uploadedAt as string | undefined) ?? null : null)).catch(() => null);
+
+  // The plan before this one, as it scored when it was built: the most
+  // recent kept plan of the same outlet file other than the one in storage.
+  app.get("/api/plan/previous", async (_req, res) => {
+    const live = scenarioIndex.find(sc => sc.live) ?? scenarioIndex[scenarioIndex.length - 1];
+    const upload = await uploadStamp();
+    const others = scenarioIndex.filter(sc => sc !== live && sc.score && !!upload && sc.upload === upload);
+    const prev = others.length > 0 ? others.reduce((a, b) => (a.createdAt > b.createdAt ? a : b)) : null;
+    res.json(prev ? { id: prev.id, name: prev.name, createdAt: prev.createdAt, ...prev.score } : null);
+  });
 
   // The RTM scorecard of the plan in storage, judged against the settings it
   // was built with. Kept until the plan or its settings change: on a
@@ -6577,6 +6861,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         driveMinutes: s.driveMinutes ?? undefined,
       })));
 
+      for (const sc of scenarioIndex) delete sc.live;
+      scenario.live = true;
+      saveScenarioIndex();
       res.json({ success: true, applied: scenario.name, kpis: scenario.kpis });
     } catch (error) {
       console.error("Scenario apply error:", error);
@@ -6809,6 +7096,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // groups, then re-sequence each day's route. This handles deletions,
           // additions, and reassignments in one shot.
           totalRemovedStale += staleCount;
+
+          // A rep whose outlets are assigned to it by id is re-planned the
+          // way every other edit is: its days kept, repaired where the edit
+          // left them short or long, pinned outlets back on their routes.
+          if (allOutlets.some(o => o.repId === repId && o.territory !== 'Excluded')) {
+            await regenerateSchedulesForReps([repId]);
+            totalRegrouped++;
+            continue;
+          }
 
           // Wipe old schedules for this rep
           await storage.deleteSchedulesByRepId(repId);
@@ -7151,8 +7447,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  async function regenerateSchedulesForReps(repIds: string[]) {
-    const uniqueRepIds = Array.from(new Set(repIds.filter(Boolean)));
+  /**
+   * Re-plans these reps after an edit. By default each keeps the days of the
+   * plan it has (see replanKeepingDays): outlets that left are taken out,
+   * outlets that arrived join the day that passes them, and days the edit put
+   * outside the band or over the shift are repaired through their borders.
+   * If the repair cannot put right everything the edit broke, the month is
+   * also cut from scratch, and the fresh cut is used when its days are
+   * nearer the band and the shift (monthIssues). `recut` cuts from scratch
+   * without trying.
+   * `baselines` (monthBaselines, taken before the edit) tells the repair
+   * what each day was.
+   */
+  /** Puts back the settings the plan was built on, for anything that reads or rebuilds it. */
+  async function restorePlanState() {
     // Rebuild with the settings the plan was built on - the day band, the
     // compactness cap and the distance model included, not just the calendar.
     // Without this a rebuild after a restart silently reverted to defaults.
@@ -7166,19 +7474,46 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const existingWeek = await storedWorkingWeek();
       if (existingWeek.length > 0) workingWeek = existingWeek;
     }
+  }
+
+  /** These reps' months as they stand, to be taken before an edit is applied (see monthBaseline). */
+  async function monthBaselines(repIds: string[]): Promise<Map<string, Map<string, DayWas>>> {
+    await restorePlanState();
+    const byId = new Map((await storage.getOutlets()).map(o => [o.id, o]));
+    const out = new Map<string, Map<string, DayWas>>();
+    for (const repId of Array.from(new Set(repIds.filter(Boolean)))) {
+      const rep = await storage.getRep(repId);
+      if (rep) out.set(repId, monthBaseline(rep, await storage.getSchedulesByRepId(repId), byId));
+    }
+    return out;
+  }
+
+  async function regenerateSchedulesForReps(repIds: string[], mode: 'keep' | 'recut' = 'keep', baselines?: Map<string, Map<string, DayWas>>) {
+    const uniqueRepIds = Array.from(new Set(repIds.filter(Boolean)));
+    await restorePlanState();
     const allReps = await storage.getReps();
     const allOutlets = await storage.getOutlets();
     const allHierarchies = await storage.getRoleHierarchies();
-    const summary: { repId: string; name: string; outlets: number; monthlyVisits: number; schedules: number; overCapacity: boolean }[] = [];
+    const summary: {
+      repId: string; name: string; outlets: number; monthlyVisits: number; schedules: number; overCapacity: boolean;
+      /** kept: the rep's days were kept; recut: the month was cut from scratch; cleared: the rep has no outlets left. */
+      plan: 'kept' | 'recut' | 'cleared';
+      /** Outlets still on the days they had, outlets now on other days, outlets added to the month. */
+      keptOnDay: number; changedDay: number; placed: number;
+      /** Days the edit left short, outside the band or over the shift that could not be put right with the days kept. */
+      daysNotRepaired: number;
+    }[] = [];
 
     for (const repId of uniqueRepIds) {
       const rep = allReps.find(r => r.id === repId);
       if (!rep) continue;
 
-      await storage.deleteSchedulesByRepId(rep.id);
+      const stored = await storage.getSchedulesByRepId(rep.id);
       const repOutlets = allOutlets.filter(o => o.repId === rep.id && o.territory !== 'Excluded');
 
       let created = 0;
+      let plan: 'kept' | 'recut' | 'cleared' = 'cleared';
+      let keptOnDay = 0, changedDay = 0, placed = 0, daysNotRepaired = 0;
       if (repOutlets.length > 0) {
         const byZone = new Map<string, Outlet[]>();
         for (const o of repOutlets) {
@@ -7186,7 +7521,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
           if (!byZone.has(key)) byZone.set(key, []);
           byZone.get(key)!.push(o);
         }
-        const schedules = await buildAnchorAwareSchedulesFromZones(rep, Array.from(byZone.values()));
+        const cutAfresh = () => buildAnchorAwareSchedulesFromZones(rep, Array.from(byZone.values()));
+        const keptMonth = mode === 'keep' ? await replanKeepingDays(rep, repOutlets, stored, baselines?.get(rep.id)) : null;
+        let schedules: InsertSchedule[];
+        if (!keptMonth) {
+          schedules = await cutAfresh();
+          plan = 'recut';
+        } else {
+          schedules = keptMonth.schedules;
+          plan = 'kept';
+          if (keptMonth.unrepaired > 0) {
+            // The repair could not put right everything the edit broke. A
+            // fresh cut is taken instead only if it is the better month.
+            const keptPockets = pocketCellsByRep.get(rep.id);
+            const byId = new Map(repOutlets.map(o => [o.id, o]));
+            const fresh = await cutAfresh();
+            const freshIssues = monthIssues(fresh, byId), keptIssues = monthIssues(keptMonth.schedules, byId);
+            if (freshIssues < keptIssues - 1e-6) {
+              console.log(`[keep-days] ${rep.name}: cut from scratch instead - days out of band or over the shift weigh ${freshIssues.toFixed(1)} against ${keptIssues.toFixed(1)} with the days kept`);
+              schedules = fresh;
+              plan = 'recut';
+            } else if (keptPockets) pocketCellsByRep.set(rep.id, keptPockets);
+          }
+          if (plan === 'kept') {
+            keptOnDay = keptMonth.kept - keptMonth.changedDay; changedDay = keptMonth.changedDay; placed = keptMonth.placed;
+            daysNotRepaired = keptMonth.unrepaired;
+            console.log(`[keep-days] ${rep.name}: ${keptOnDay} outlets keep their days, ${changedDay} change day, ${placed} placed, ${keptMonth.left} left`);
+          }
+        }
+        await storage.deleteSchedulesByRepId(rep.id);
         for (const s of schedules) await storage.createSchedule(s);
         created = schedules.length;
         // Outlets the user placed on a route by hand go back onto it.
@@ -7200,6 +7563,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           await generateRoleSchedulesForRep(rep.id, repSchedules, repHierarchies);
         }
       } else {
+        await storage.deleteSchedulesByRepId(rep.id);
         await storage.deleteRoleSchedulesByRepId(rep.id);
       }
 
@@ -7211,7 +7575,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         outlets: repOutlets.length,
         monthlyVisits,
         schedules: created,
-        overCapacity: monthlyVisits > monthlyCapacity
+        overCapacity: monthlyVisits > monthlyCapacity,
+        plan, keptOnDay, changedDay, placed, daysNotRepaired,
       });
     }
     return summary;
@@ -7344,6 +7709,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const affectedBefore = await repsAffectedByOutlets(outletIds);
+      const baselines = await monthBaselines([...affectedBefore, toRepId]);
 
       let moved = 0;
       for (const id of outletIds) {
@@ -7356,7 +7722,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const affectedRepIds = Array.from(new Set([...affectedBefore, toRepId]));
-      const summary = await regenerateSchedulesForReps(affectedRepIds);
+      // `plan: "recut"` cuts the affected reps' months from scratch; by
+      // default every outlet that can keep its day keeps it.
+      const summary = await regenerateSchedulesForReps(affectedRepIds, (req.body as { plan?: string }).plan === 'recut' ? 'recut' : 'keep', baselines);
 
       const warnings: string[] = [];
       for (const s of summary) {
@@ -7449,11 +7817,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({ message: "Failed to reassign outlets" });
     }
   });
+  // Cut these reps' days again from scratch, on the plan's settings: the way
+  // out when keeping the days after an edit left some of them short.
+  app.post("/api/reps/recut-days", async (req, res) => {
+    try {
+      const repIds: string[] = Array.isArray(req.body?.repIds) ? req.body.repIds.filter((x: unknown) => typeof x === 'string') : [];
+      if (repIds.length === 0) return res.status(400).json({ message: "repIds must be a non-empty array" });
+      const repsReworked = await regenerateSchedulesForReps(repIds, 'recut');
+      await storage.flush();
+      res.json({ repsReworked });
+    } catch (error) {
+      console.error("recut-days error:", error);
+      res.status(500).json({ message: "Failed to re-cut the days" });
+    }
+  });
+
 
   app.post("/api/outlets/:id/reassign", async (req, res) => {
     try {
       const { territory, repId } = req.body;
       const affectedBefore = await repsAffectedByOutlets([req.params.id]);
+      const baselines = await monthBaselines([...affectedBefore, ...(repId ? [repId] : [])]);
       const outlet = await storage.updateOutlet(req.params.id, { territory, repId });
       if (!outlet) {
         return res.status(404).json({ message: "Outlet not found" });
@@ -7461,7 +7845,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Rework schedules for every rep touched by the move so the change is
       // reflected in actual day-routes, not just the outlet record.
       const affected = Array.from(new Set([...affectedBefore, ...(repId ? [repId] : [])]));
-      const repsReworked = await regenerateSchedulesForReps(affected);
+      const repsReworked = await regenerateSchedulesForReps(affected, 'keep', baselines);
       res.json({ ...outlet, repsReworked });
     } catch (error) {
       res.status(500).json({ message: "Failed to reassign outlet" });
@@ -7474,6 +7858,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { updates } = req.body; // Array of { id, territory, repId }
       const ids = updates.map((u: any) => u.id);
       const affectedBefore = await repsAffectedByOutlets(ids);
+      const baselines = await monthBaselines([...affectedBefore, ...updates.map((u: any) => u.repId).filter(Boolean)]);
       // A null/absent repId means "keep the current rep" - never strip
       // ownership, or the outlet would silently vanish from all schedules.
       const results = await storage.updateOutlets(updates.map((u: any) => ({
@@ -7485,7 +7870,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       })));
       const newRepIds = updates.map((u: any) => u.repId).filter(Boolean);
       const affected = Array.from(new Set([...affectedBefore, ...newRepIds]));
-      const repsReworked = await regenerateSchedulesForReps(affected);
+      const repsReworked = await regenerateSchedulesForReps(affected, 'keep', baselines);
       res.json({ success: true, updated: results.length, repsReworked });
     } catch (error) {
       res.status(500).json({ message: "Failed to bulk reassign outlets" });

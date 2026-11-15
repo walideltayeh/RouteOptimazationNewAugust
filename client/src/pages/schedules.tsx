@@ -7,7 +7,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
-import { ArrowRightLeft, AlertCircle } from "lucide-react";
+import { ArrowRightLeft, AlertCircle, Printer } from "lucide-react";
+import { Link } from "wouter";
+import MonthCalendar from "@/components/month-calendar";
 import type { Rep, Outlet, Schedule } from "@shared/schema";
 
 const DAY_NAMES = ["", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
@@ -86,6 +88,7 @@ export default function SchedulesPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/schedules"] });
       queryClient.invalidateQueries({ queryKey: ["/api/reps"] });
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard/metrics"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/plan/calendar"] });
       toast({ title: "Outlets moved", description: data.warnings.length > 0 ? data.warnings.join(" ") : `Schedules reworked for ${data.repsReworked.length} rep(s).` });
     },
     onError: (e: Error) => toast({ title: "Reassignment failed", description: e.message, variant: "destructive" }),
@@ -111,7 +114,14 @@ export default function SchedulesPage() {
   return (
     <div className="px-4 py-5 md:px-8 md:py-7">
       <div className="max-w-7xl mx-auto">
-        <p className="mb-5 max-w-3xl text-sm text-muted-foreground">Review each rep's weekly plan and move outlets between reps. Schedules rework automatically.</p>
+        <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+          <p className="max-w-3xl text-sm text-muted-foreground">Review each rep's month and move outlets between reps. The rep's days are kept wherever they can be.</p>
+          {plan.size > 0 && (
+            <Button asChild variant="outline" size="sm" className="h-9" data-testid="link-route-sheets">
+              <Link href={`/route-sheets?rep=${repId}`}><Printer className="h-4 w-4" />Route sheets</Link>
+            </Button>
+          )}
+        </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
           <Card>
@@ -197,6 +207,10 @@ export default function SchedulesPage() {
           </Alert>
         )}
 
+        {plan.size > 0 && (
+          <MonthCalendar repId={repId} onPickDay={day => document.getElementById(`schedule-day-${day}`)?.scrollIntoView({ behavior: "smooth", block: "start" })} />
+        )}
+
         {plan.size === 0 ? (
           <Card><CardContent className="p-8 text-center text-muted-foreground">No schedules for this rep yet — run an optimization first.</CardContent></Card>
         ) : (
@@ -204,7 +218,7 @@ export default function SchedulesPage() {
             {Array.from(plan.entries()).map(([day, outletWeeks]) => {
               const ids = Array.from(outletWeeks.keys());
               return (
-                <Card key={day}>
+                <Card key={day} id={`schedule-day-${day}`} className="scroll-mt-4">
                   <CardHeader className="border-b px-5 py-3.5">
                     <CardTitle className="flex items-center justify-between text-[15px]">
                       <span className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-primary" />{DAY_NAMES[day] || `Day ${day}`}</span>
