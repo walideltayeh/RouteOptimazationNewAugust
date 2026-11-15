@@ -94,8 +94,28 @@ kilometre.
 - **Weeks.** A day's outlets are shared between alternating weeks by a
   straight cut wherever that keeps both weeks in band and drives no more
   than 4% further, so the two routes never cross.
-- **Route order.** Nearest neighbour, 2-opt, Or-opt and 3-opt; on real road
-  distances from OSRM when `OSRM_URL` is set.
+- **Days over the shift.** Once the routes exist the real day is known:
+  call minutes, the driving of the stop order, commute and break. While a
+  day runs over the shift, an outlet on its border moves to a neighbouring
+  day of the same rep that has room (another weekday, or the other week of
+  the same weekday), keeping its frequency. A move is kept only if it
+  lowers the overtime, leaves every day inside the visits band, adds no leg
+  over the hop limit and puts no more stops inside another route's area; a
+  rep whose days already fit is not touched.
+- **Route order.** Nearest neighbour, 2-opt, Or-opt and 3-opt, then a pass
+  that treats the route as the open path it is: either end may move, and a
+  leg over the hop limit costs half as much again, so the order drives a
+  little further to avoid a long jump but never weaves between two villages
+  to hide one. On real road distances from OSRM when `OSRM_URL` is set.
+- **Driving time.** Straight-line plans time the drive at the average speed
+  of the workday model. With road distances the road server's own travel
+  times are used leg by leg, multiplied by 1.6 for traffic, parking and the
+  walk to the door (`roadTimeFactor` in `server/rtm.ts`); the scorecard says
+  which basis a plan was timed on.
+- **Same file, same plan.** The route-cost search used to stop after four
+  seconds a rep, so a slower machine could return a different plan; it is
+  now capped by counted work instead. A slower machine takes longer and
+  returns the identical plan.
 
 ## Workflow
 
@@ -171,6 +191,10 @@ npm run check   # typecheck (client, server, shared, tests)
 npm test        # vitest: unit tests plus an end-to-end API test on a temp data dir
 npm run build   # client bundle + server bundle into dist/
 ```
+
+The client is split by screen: signing in loads about 160 kB (gzipped) of
+script, and the map library (the larger part of the app) only when a map
+is opened.
 
 The tests cover the cycle math (`server/cycle.ts`), the day balancer, the
 accounts store, background jobs, the blob store, and the app end to end:

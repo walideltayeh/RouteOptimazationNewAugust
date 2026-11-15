@@ -8,10 +8,12 @@ import { loadBlob, saveBlob, deleteBlob } from "./persist";
 import { isAdminConfigured, verifyAdmin, adminCredentialSource } from "./admin-credentials";
 import { solveBalancedGroups } from "./balanced-solver";
 import { detectGeoOutliers, type GeoOutlier } from "./geo-outliers";
-import { classifyChannel, callMinutesFor, chooseHeadcount, kthNeighbourKm, DEFAULT_WORKDAY, guessWorkingWeek, median } from "./rtm";
+import { classifyChannel, callMinutesFor, chooseHeadcount, kthNeighbourKm, DEFAULT_WORKDAY, dayMinutes, guessWorkingWeek, median } from "./rtm";
 import { buildBlueprint } from "./blueprint";
-import { scorePlan } from "./scorecard";
+import { scorePlan, overlapShare } from "./scorecard";
+import { relieveOverloadedDays } from "./month-polish";
 import { buildPjpWorkbook } from "./pjp-export";
+import { orderStops } from "./route-order";
 import { buildUniverseWorkbook, editedBaseName, editedVersionOf, editedFileName } from "./universe-export";
 const UPLOAD_META_KEY = "upload-meta";
 
@@ -48,7 +50,7 @@ import Papa from "papaparse";
 import { exec } from "child_process";
 import { promisify } from "util";
 import { performAdvancedClustering as performAdvancedClusteringJS } from "./clustering-algorithms";
-import { geoDist, setDistanceMode, getDistanceMode, prefetchRoadMatrix, prefetchOutletMatrix, clearRoadMatrix, haversineKm, setBarriers, osrmConfigured, osrmRoute, roadMatrixSize, type Barrier, type DistanceMode } from "./road-distance";
+import { geoDist, roadMinutes, setDistanceMode, getDistanceMode, prefetchRoadMatrix, prefetchOutletMatrix, clearRoadMatrix, haversineKm, setBarriers, osrmConfigured, osrmRoute, roadMatrixSize, type Barrier, type DistanceMode } from "./road-distance";
 import { generateAdvancedSchedule, reoptimizeSchedules, validateSchedule } from "./advanced-scheduling";
 
 const execAsync = promisify(exec);
@@ -236,221 +238,23 @@ function calculateDistance(lat1: number, lng1: number, lat2: number, lng2: numbe
   return calculateHaversineDistance(lat1, lng1, lat2, lng2);
 }
 
-// Helper function to optimize route using nearest neighbor with 2-opt, Or-opt, and 3-opt improvement
+// The road server's free-flow driving minutes along a stop order, or null
+// unless it gave a time for every leg (road mode, matrix fetched).
+function routeRoadMinutes(stops: Outlet[]): number | null {
+  if (getDistanceMode() !== 'road' || stops.length < 2) return null;
+  let total = 0;
+  for (let i = 1; i < stops.length; i++) {
+    const m = roadMinutes(stops[i - 1].latitude, stops[i - 1].longitude, stops[i].latitude, stops[i].longitude);
+    if (m === undefined) return null;
+    total += m;
+  }
+  return Math.round(total * 10) / 10;
+}
+
+// The order a day's stops are driven in (server/route-order.ts), on the
+// distances in force - straight line or road - and the hop limit.
 function optimizeRoute(outlets: Outlet[]): Outlet[] {
-  if (outlets.length <= 1) return outlets;
-
-  // Step 1: Find the centroid of all outlets
-  const avgLat = outlets.reduce((sum, o) => sum + o.latitude, 0) / outlets.length;
-  const avgLng = outlets.reduce((sum, o) => sum + o.longitude, 0) / outlets.length;
-
-  // Step 2: Find the outlet farthest from centroid as starting point
-  let startIdx = 0;
-  let maxDist = 0;
-  outlets.forEach((outlet, idx) => {
-    const dist = geoDist(avgLat, avgLng, outlet.latitude, outlet.longitude);
-    if (dist > maxDist) {
-      maxDist = dist;
-      startIdx = idx;
-    }
-  });
-
-  // Step 3: Build initial route using nearest neighbor from the starting point
-  const unvisited = [...outlets];
-  const route: Outlet[] = [];
-
-  let current = unvisited[startIdx];
-  route.push(current);
-  unvisited.splice(startIdx, 1);
-
-  while (unvisited.length > 0) {
-    let nearestIdx = 0;
-    let nearestDist = Infinity;
-
-    for (let i = 0; i < unvisited.length; i++) {
-      const dist = geoDist(
-        current.latitude, current.longitude,
-        unvisited[i].latitude, unvisited[i].longitude
-      );
-      if (dist < nearestDist) {
-        nearestDist = dist;
-        nearestIdx = i;
-      }
-    }
-
-    current = unvisited[nearestIdx];
-    route.push(current);
-    unvisited.splice(nearestIdx, 1);
-  }
-
-  // Step 4: Apply 2-opt improvement
-  let improved = true;
-  let iterations = 0;
-  const maxIterations = 100;
-
-  while (improved && iterations < maxIterations) {
-    improved = false;
-    iterations++;
-
-    for (let i = 1; i < route.length - 2; i++) {
-      for (let j = i + 1; j < route.length; j++) {
-        if (j - i === 1) continue;
-
-        const currentDist = geoDist(
-          route[i - 1].latitude, route[i - 1].longitude,
-          route[i].latitude, route[i].longitude
-        ) + geoDist(
-          route[j - 1].latitude, route[j - 1].longitude,
-          route[j].latitude, route[j].longitude
-        );
-
-        const newDist = geoDist(
-          route[i - 1].latitude, route[i - 1].longitude,
-          route[j - 1].latitude, route[j - 1].longitude
-        ) + geoDist(
-          route[i].latitude, route[i].longitude,
-          route[j].latitude, route[j].longitude
-        );
-
-        if (newDist < currentDist) {
-          const reversed = route.slice(i, j).reverse();
-          route.splice(i, j - i, ...reversed);
-          improved = true;
-        }
-      }
-    }
-  }
-
-  // Step 5: Or-opt improvement - relocate segments of 1, 2, or 3 outlets
-  for (const segLen of [3, 2, 1]) {
-    let orImproved = true;
-    let orIter = 0;
-    while (orImproved && orIter < 50) {
-      orImproved = false;
-      orIter++;
-
-      for (let i = 0; i < route.length - segLen + 1; i++) {
-        const segStart = i;
-        const segEnd = i + segLen - 1;
-
-        const prevIdx = segStart - 1;
-        const nextIdx = segEnd + 1;
-
-        const removeCostBefore = (prevIdx >= 0
-          ? geoDist(route[prevIdx].latitude, route[prevIdx].longitude, route[segStart].latitude, route[segStart].longitude)
-          : 0);
-        const removeCostAfter = (nextIdx < route.length
-          ? geoDist(route[segEnd].latitude, route[segEnd].longitude, route[nextIdx].latitude, route[nextIdx].longitude)
-          : 0);
-        const removeCostBridge = (prevIdx >= 0 && nextIdx < route.length
-          ? geoDist(route[prevIdx].latitude, route[prevIdx].longitude, route[nextIdx].latitude, route[nextIdx].longitude)
-          : 0);
-
-        const removalSaving = removeCostBefore + removeCostAfter - removeCostBridge;
-
-        let bestInsertPos = -1;
-        let bestInsertCost = Infinity;
-
-        for (let j = 0; j < route.length - 1; j++) {
-          if (j >= segStart - 1 && j <= segEnd) continue;
-
-          const currentEdge = geoDist(
-            route[j].latitude, route[j].longitude,
-            route[j + 1].latitude, route[j + 1].longitude
-          );
-          const insertCost =
-            geoDist(route[j].latitude, route[j].longitude, route[segStart].latitude, route[segStart].longitude) +
-            geoDist(route[segEnd].latitude, route[segEnd].longitude, route[j + 1].latitude, route[j + 1].longitude) -
-            currentEdge;
-
-          if (insertCost < bestInsertCost) {
-            bestInsertCost = insertCost;
-            bestInsertPos = j;
-          }
-        }
-
-        if (bestInsertPos >= 0 && bestInsertCost < removalSaving - 1e-10) {
-          const segment = route.splice(segStart, segLen);
-          const insertAt = bestInsertPos >= segStart ? bestInsertPos - segLen + 1 : bestInsertPos + 1;
-          route.splice(insertAt, 0, ...segment);
-          orImproved = true;
-          break;
-        }
-      }
-    }
-  }
-
-  // Step 6: 3-opt improvement (only for routes with ≤ 50 outlets to keep it tractable)
-  if (route.length <= 50 && route.length >= 4) {
-    const n = route.length;
-
-    const segDist = (a: number, b: number): number => {
-      return geoDist(route[a].latitude, route[a].longitude, route[b].latitude, route[b].longitude);
-    };
-
-    let threeOptImproved = true;
-    let threeOptPasses = 0;
-    const maxThreeOptPasses = 5;
-
-    while (threeOptImproved && threeOptPasses < maxThreeOptPasses) {
-      threeOptImproved = false;
-      threeOptPasses++;
-
-      for (let i = 0; i < n - 4; i++) {
-        for (let j = i + 2; j < n - 2; j++) {
-          for (let kk = j + 2; kk < n; kk++) {
-            const i1 = i, i2 = i + 1;
-            const j1 = j, j2 = j + 1;
-            const k1 = kk, k2 = (kk + 1) % n;
-
-            if (k2 === 0 && kk === n - 1) {
-              continue;
-            }
-            if (k2 >= n) continue;
-
-            const d0 = segDist(i1, i2) + segDist(j1, j2) + segDist(k1, k2);
-
-            const segA = route.slice(0, i2);
-            const segB = route.slice(i2, j2);
-            const segC = route.slice(j2, k2);
-            const segD = route.slice(k2);
-
-            const reconnections: { segments: Outlet[][]; cost: number }[] = [
-              { segments: [segA, segB.slice().reverse(), segC, segD], cost: segDist(i1, j1) + segDist(i2, j2) + segDist(k1, k2) },
-              { segments: [segA, segB, segC.slice().reverse(), segD], cost: segDist(i1, i2) + segDist(j1, k1) + segDist(j2, k2) },
-              { segments: [segA, segB.slice().reverse(), segC.slice().reverse(), segD], cost: segDist(i1, j1) + segDist(i2, k1) + segDist(j2, k2) },
-              { segments: [segA, segC, segB, segD], cost: segDist(i1, j2) + segDist(k1, i2) + segDist(j1, k2) },
-              { segments: [segA, segC, segB.slice().reverse(), segD], cost: segDist(i1, j2) + segDist(k1, j1) + segDist(i2, k2) },
-              { segments: [segA, segC.slice().reverse(), segB, segD], cost: segDist(i1, k1) + segDist(j2, i2) + segDist(j1, k2) },
-              { segments: [segA, segC.slice().reverse(), segB.slice().reverse(), segD], cost: segDist(i1, k1) + segDist(j2, j1) + segDist(i2, k2) },
-            ];
-
-            let bestCost = d0;
-            let bestReconnection: Outlet[][] | null = null;
-
-            for (const r of reconnections) {
-              if (r.cost < bestCost - 1e-10) {
-                bestCost = r.cost;
-                bestReconnection = r.segments;
-              }
-            }
-
-            if (bestReconnection) {
-              const newRoute = bestReconnection.flat();
-              route.length = 0;
-              route.push(...newRoute);
-              threeOptImproved = true;
-              break;
-            }
-          }
-          if (threeOptImproved) break;
-        }
-        if (threeOptImproved) break;
-      }
-    }
-  }
-
-  return route;
+  return orderStops(outlets, geoDist, maxHopKm);
 }
 
 // Helper function to calculate total route distance
@@ -2913,6 +2717,9 @@ interface PlanSettings {
   balanceBy?: 'visits' | 'time';
   /** Average minutes per visit (call + driving) the time weights are scaled by. */
   workloadMean?: number;
+  /** The band / hop limit were the blueprint's own suggestion for that file, not the planner's numbers. */
+  bandAuto?: boolean;
+  hopAuto?: boolean;
 }
 // Kept in the blob store - Postgres on the published site - like the rest of
 // the app's state; see persist.ts.
@@ -3533,79 +3340,117 @@ function scheduleFromDailyClusters(rep: Rep, dailyClusters: Outlet[][], repOutle
 
   const schedules: InsertSchedule[] = [];
   const groupByOutlet = new Map<string, Set<number>>();
+
+  // Split each frequency band into buckets, one per week it can fall on.
+  //
+  // These must be equal-sized AND geographically tight. Dealing them along a
+  // route-order walk kept the weeks even but scattered each one across the
+  // whole day-group: where outlets are visited monthly, a day-group holds
+  // four weeks of work, so every actual day-route ended up covering four
+  // times the ground it needed to. Growing balanced sub-regions gives each
+  // week its own compact corner of the day instead - same size, quarter of
+  // the area. Every outlet counts as one visit here, so unit weight.
+  //
+  // These buckets ARE the actual day-routes the rep drives, so the tour-length
+  // polish belongs here as well as at the day-group level above: polishing the
+  // group only shapes the pool that the weeks are then drawn from.
+  const oneVisit = unitLoad(o => wOf(o));
+  const splitWeeks = (pool: Outlet[], buckets: number): Outlet[][] => {
+    // Whole villages per week where they fit: a village of 15 in a day of
+    // 39 goes to one week, not 8 and 7 across both.
+    const weekMean = pool.reduce((s, o) => s + wOf(o), 0) / Math.max(1, buckets);
+    const blocksW = collapseBlocks(pool, 0.5, o => wOf(o), weekMean * 1.1);
+    const shareW = (pool.length - blocksW.units.length + blocksW.blocks) / Math.max(1, pool.length);
+    const kmOf = (gs: Outlet[][]) => gs.reduce((s, g) => s + tourLength(g), 0);
+    // A split whose weeks all sit inside the band beats one that does not,
+    // however short: two villages of 17 and 27 split village by village
+    // drive less, but a 17-call day is the plan the user said they cannot
+    // use. Among splits equally in or out of band, the shorter one wins.
+    const wb = weekBand(weekMean);
+    const wLo = weekMean * (1 - (typeof wb === 'number' ? wb : wb.below)) - 1e-9;
+    const wHi = weekMean * (1 + (typeof wb === 'number' ? wb : wb.above)) + 1e-9;
+    const loadW = (g: Outlet[]) => g.reduce((s, o) => s + wOf(o), 0);
+    const inBand = (gs: Outlet[][]) => gs.every(g => loadW(g) >= wLo && loadW(g) <= wHi);
+    const better = (cand: Outlet[][], cur: Outlet[][], slack: number) =>
+      inBand(cand) !== inBand(cur) ? inBand(cand) : kmOf(cand) <= kmOf(cur) * slack + 0.2;
+    let best = splitWeekUnits(pool, buckets);
+    if (blocksW.blocks > 0 && blocksW.units.length >= 3 * buckets && shareW >= 0.4) {
+      const byVillage = repairLoads(blocksW.expand(splitWeekUnits(blocksW.units, buckets, 0.12)), o => wOf(o), wb, maxHopKm);
+      if (better(byVillage, best, 1.05)) best = byVillage;
+    }
+    // Weeks of the same weekday are cut by straight lines when that drives
+    // no more than four percent further: the two routes then never cross
+    // each other's streets. The region-growing split above keeps its place
+    // only where it is clearly shorter.
+    const byLine = lineSplit(pool, buckets, o => wOf(o), wb);
+    if (byLine && better(byLine, best, 1.04)) best = byLine;
+    return best;
+  };
+  // Same band and hop limit as the day-groups above: the user's floor and
+  // ceiling against this pool's own mean, not a symmetric 5% around it.
+  const weekBand = (mean: number, atLeast: number = 0.02): Band => dayVisitsMin > 0 && dayVisitsMax > 0 && mean > 0
+    ? { below: roomBelow(mean, atLeast), above: roomAbove(mean, atLeast) }
+    : Math.max(0.05, atLeast);
+  const splitWeekUnits = (pool: Outlet[], buckets: number, atLeast: number = 0.02) => {
+    const band = weekBand(pool.reduce((s, o) => s + oneVisit(o), 0) / Math.max(1, buckets), atLeast);
+    return repairLoads(
+      polishByTourLength(growBalancedRegions(pool, buckets, oneVisit), oneVisit, band, 4, maxHopKm),
+      oneVisit,
+      band,
+      maxHopKm,
+    );
+  };
+  // One bucket set per frequency band, sized so the band's visits land evenly
+  // across the cycle's repeats.
+  // Band by how many of this group's runs the outlet is due on - 1..repeats -
+  // not by its raw visit frequency, so an outlet that split across two groups
+  // is banded by the share this group owes it.
+  const bandedByGroup: { visits: number; buckets: Outlet[][] }[][] = [];
   for (let d = 0; d < dayGroups; d++) {
     const dayOutlets = groupsOf[d];
-    if (dayOutlets.length === 0) continue;
-
-    // Split each frequency band into buckets, one per week it can fall on.
-    //
-    // These must be equal-sized AND geographically tight. Dealing them along a
-    // route-order walk kept the weeks even but scattered each one across the
-    // whole day-group: where outlets are visited monthly, a day-group holds
-    // four weeks of work, so every actual day-route ended up covering four
-    // times the ground it needed to. Growing balanced sub-regions gives each
-    // week its own compact corner of the day instead - same size, quarter of
-    // the area. Every outlet counts as one visit here, so unit weight.
-    //
-    // These buckets ARE the actual day-routes the rep drives, so the tour-length
-    // polish belongs here as well as at the day-group level above: polishing the
-    // group only shapes the pool that the weeks are then drawn from.
-    const oneVisit = unitLoad(o => wOf(o));
-    const splitWeeks = (pool: Outlet[], buckets: number): Outlet[][] => {
-      // Whole villages per week where they fit: a village of 15 in a day of
-      // 39 goes to one week, not 8 and 7 across both.
-      const weekMean = pool.reduce((s, o) => s + wOf(o), 0) / Math.max(1, buckets);
-      const blocksW = collapseBlocks(pool, 0.5, o => wOf(o), weekMean * 1.1);
-      const shareW = (pool.length - blocksW.units.length + blocksW.blocks) / Math.max(1, pool.length);
-      const kmOf = (gs: Outlet[][]) => gs.reduce((s, g) => s + tourLength(g), 0);
-      // A split whose weeks all sit inside the band beats one that does not,
-      // however short: two villages of 17 and 27 split village by village
-      // drive less, but a 17-call day is the plan the user said they cannot
-      // use. Among splits equally in or out of band, the shorter one wins.
-      const wb = weekBand(weekMean);
-      const wLo = weekMean * (1 - (typeof wb === 'number' ? wb : wb.below)) - 1e-9;
-      const wHi = weekMean * (1 + (typeof wb === 'number' ? wb : wb.above)) + 1e-9;
-      const loadW = (g: Outlet[]) => g.reduce((s, o) => s + wOf(o), 0);
-      const inBand = (gs: Outlet[][]) => gs.every(g => loadW(g) >= wLo && loadW(g) <= wHi);
-      const better = (cand: Outlet[][], cur: Outlet[][], slack: number) =>
-        inBand(cand) !== inBand(cur) ? inBand(cand) : kmOf(cand) <= kmOf(cur) * slack + 0.2;
-      let best = splitWeekUnits(pool, buckets);
-      if (blocksW.blocks > 0 && blocksW.units.length >= 3 * buckets && shareW >= 0.4) {
-        const byVillage = repairLoads(blocksW.expand(splitWeekUnits(blocksW.units, buckets, 0.12)), o => wOf(o), wb, maxHopKm);
-        if (better(byVillage, best, 1.05)) best = byVillage;
-      }
-      // Weeks of the same weekday are cut by straight lines when that drives
-      // no more than four percent further: the two routes then never cross
-      // each other's streets. The region-growing split above keeps its place
-      // only where it is clearly shorter.
-      const byLine = lineSplit(pool, buckets, o => wOf(o), wb);
-      if (byLine && better(byLine, best, 1.04)) best = byLine;
-      return best;
-    };
-    // Same band and hop limit as the day-groups above: the user's floor and
-    // ceiling against this pool's own mean, not a symmetric 5% around it.
-    const weekBand = (mean: number, atLeast: number = 0.02): Band => dayVisitsMin > 0 && dayVisitsMax > 0 && mean > 0
-      ? { below: roomBelow(mean, atLeast), above: roomAbove(mean, atLeast) }
-      : Math.max(0.05, atLeast);
-    const splitWeekUnits = (pool: Outlet[], buckets: number, atLeast: number = 0.02) => {
-      const band = weekBand(pool.reduce((s, o) => s + oneVisit(o), 0) / Math.max(1, buckets), atLeast);
-      return repairLoads(
-        polishByTourLength(growBalancedRegions(pool, buckets, oneVisit), oneVisit, band, 4, maxHopKm),
-        oneVisit,
-        band,
-        maxHopKm,
-      );
-    };
-    // One bucket set per frequency band, sized so the band's visits land evenly
-    // across the cycle's repeats.
-    // Band by how many of this group's runs the outlet is due on - 1..repeats -
-    // not by its raw visit frequency, so an outlet that split across two groups
-    // is banded by the share this group owes it.
     const banded: { visits: number; buckets: Outlet[][] }[] = [];
-    for (let v = 1; v <= repeats; v++) {
-      const pool = dayOutlets.filter(o => (visitsHere.get(`${d}:${o.id}`) ?? 1) === v);
-      banded.push({ visits: v, buckets: pool.length > 0 ? splitWeeks(pool, bucketsForFrequency(v, repeats)) : [] });
+    if (dayOutlets.length > 0) {
+      for (let v = 1; v <= repeats; v++) {
+        const pool = dayOutlets.filter(o => (visitsHere.get(`${d}:${o.id}`) ?? 1) === v);
+        banded.push({ visits: v, buckets: pool.length > 0 ? splitWeeks(pool, bucketsForFrequency(v, repeats)) : [] });
+      }
     }
+    bandedByGroup.push(banded);
+  }
+
+  // The days exist now, so their real length is known: calls, the driving of
+  // the stop order, commute and break. Days over the shift hand an outlet on
+  // their border to a neighbouring day with room (server/month-polish.ts).
+  {
+    const inTwoGroups = new Set<string>();
+    for (const o of repOutlets) if (membershipsFor(o.visitFrequency ?? 1, repeats).length > 1) inTwoGroups.add(o.id);
+    const road = getDistanceMode() === 'road';
+    const relief = relieveOverloadedDays<Outlet>({
+      groups: bandedByGroup,
+      repeats,
+      dist: (a, b) => geoDist(a.latitude, a.longitude, b.latitude, b.longitude),
+      callMinutes: o => callMinutesFor(o, 15, true),
+      dayMinutes: (call, km, tour) => dayMinutes(call, km, DEFAULT_WORKDAY, road ? km : undefined, tour ? routeRoadMinutes(tour) : undefined).total,
+      order: optimizeRoute,
+      shiftMinutes: DEFAULT_WORKDAY.shiftMinutes,
+      visitsBand: balanceBy === 'visits' && dayVisitsMin > 0 && dayVisitsMax > 0 ? { min: dayVisitsMin, max: dayVisitsMax } : null,
+      maxHopKm,
+      movable: o => !o.pinnedRoute && !inTwoGroups.has(o.id),
+      intruders: routes => {
+        const areas = routes.map(r => r.map(o => [o.longitude, o.latitude, o.id] as [number, number, string]));
+        return Math.round(overlapShare(areas) * areas.reduce((n, r) => n + r.length, 0));
+      },
+    });
+    if (relief.moves > 0) {
+      console.log(`[shift] ${rep.name}: ${relief.moves} outlet${relief.moves === 1 ? '' : 's'} moved off days over the shift (${relief.overBefore} -> ${relief.overAfter} days over, longest ${(relief.longestBefore / 60).toFixed(2)}h -> ${(relief.longestAfter / 60).toFixed(2)}h)`);
+    } else if (relief.overBefore > 0) {
+      console.log(`[shift] ${rep.name}: ${relief.overBefore} day${relief.overBefore === 1 ? '' : 's'} over the shift and no neighbouring day can take an outlet (longest ${(relief.longestBefore / 60).toFixed(2)}h)`);
+    }
+  }
+
+  for (let d = 0; d < dayGroups; d++) {
+    const banded = bandedByGroup[d];
+    if (banded.every(band => band.buckets.every(bucket => bucket.length === 0))) continue;
 
     for (let repeat = 1; repeat <= repeats; repeat++) {
       const runOutlets: Outlet[] = [];
@@ -3620,6 +3465,7 @@ function scheduleFromDailyClusters(rep: Rep, dailyClusters: Outlet[][], repOutle
       const optimized = optimizeRoute(runOutlets);
       const optimizedIds = optimized.map(o => o.id);
       const dist = calculateTotalDistance(optimized);
+      const driveMinutes = routeRoadMinutes(optimized);
       const cell = calendarCell(repeat, d + 1, dayGroups, workingWeek);
 
       for (const id of optimizedIds) {
@@ -3635,6 +3481,7 @@ function scheduleFromDailyClusters(rep: Rep, dailyClusters: Outlet[][], repOutle
         routeOrder: optimizedIds,
         totalDistance: Math.round(dist * 100) / 100,
         estimatedDuration: optimized.length * 15,
+        driveMinutes,
       });
       if (pocketGroups.has(d)) pocketCells.add(`${cell.week}:${cell.dayOfWeek}`);
 
@@ -3652,6 +3499,7 @@ function scheduleFromDailyClusters(rep: Rep, dailyClusters: Outlet[][], repOutle
           routeOrder: optimizedIds,
           totalDistance: Math.round(dist * 100) / 100,
           estimatedDuration: optimized.length * 15,
+          driveMinutes,
         });
         bonusCells.add(`${bonus.week}:${bonus.dayOfWeek}`);
       }
@@ -4701,7 +4549,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         outletIds: updateData.outletIds,
         routeOrder: updateData.routeOrder,
         totalDistance: existing.totalDistance,
-        estimatedDuration: existing.estimatedDuration
+        estimatedDuration: existing.estimatedDuration,
+        // The order changed by hand; the road time of the old order no longer holds.
+        driveMinutes: null,
       };
       const newSchedule = await storage.createSchedule(updatedScheduleData);
       
@@ -5137,7 +4987,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const buffer = buildPjpWorkbook({
         outlets: await storage.getOutlets(),
         reps: await storage.getReps(),
-        schedules: schedules.map(s => ({ repId: s.repId, week: s.week, dayOfWeek: s.dayOfWeek, outletIds: (s.outletIds as string[]) || [], routeOrder: (s.routeOrder as string[]) || null, totalDistance: s.totalDistance })),
+        schedules: schedules.map(s => ({ repId: s.repId, week: s.week, dayOfWeek: s.dayOfWeek, outletIds: (s.outletIds as string[]) || [], routeOrder: (s.routeOrder as string[]) || null, totalDistance: s.totalDistance, driveMinutes: s.driveMinutes })),
         scorecard: await currentScorecard(),
         dateOf,
         workingWeek,
@@ -6250,6 +6100,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         planEnd: planEndDate,
         cycleStartSlot,
         barriers,
+        bandAuto: req.body.bandAuto === true,
+        hopAuto: req.body.hopAuto === true,
         // The market this plan was made for, so a file from another country
         // is not planned on this one's working week by the next blueprint.
         country: typeof req.body.country === 'string'
@@ -6334,11 +6186,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/optimize", asJob('optimize', runOptimize));
 
   // The blueprint for the outlets in storage: what to plan, before planning.
-  async function currentBlueprint(choice?: Parameters<typeof buildBlueprint>[0]["choice"]) {
+  async function currentBlueprint(choice?: Parameters<typeof buildBlueprint>[0]["choice"], fromDataOnly = false) {
     const meta = await loadBlob(UPLOAD_META_KEY).then(t => (t ? JSON.parse(t) : null)).catch(() => null);
     return buildBlueprint({
       outlets: await storage.getOutlets(),
-      saved: planSettings,
+      saved: fromDataOnly && planSettings ? { ...planSettings, bandAuto: true, hopAuto: true } : planSettings,
       upload: meta,
       roadServer: osrmConfigured(),
       choice,
@@ -6372,6 +6224,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const bp = await currentBlueprint();
     const overrides = (req.body && typeof req.body.overrides === 'object' && req.body.overrides) || {};
     req.body = { ...bp.body, ...overrides, progressId: req.body?.progressId, autopilot: true };
+    // Was the band the planner's, or what these outlets suggest? Remembered
+    // with the plan, so the next file gets its own suggestion.
+    const own = await currentBlueprint(undefined, true);
+    req.body.bandAuto = req.body.minVisitsPerDay === own.setup.minVisitsPerDay && req.body.maxVisitsPerDay === own.setup.maxVisitsPerDay;
+    req.body.hopAuto = req.body.maxHopKm === own.setup.maxHopKm;
     console.log(`[autopilot] ${bp.market.active} outlets, ${bp.setup.weekLabel}, ${req.body.minVisitsPerDay}-${req.body.maxVisitsPerDay} visits/day, hop ${req.body.maxHopKm} km, ${req.body.distanceMode}`);
     return runOptimize(req, res);
   }));
@@ -6566,7 +6423,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const value = scorePlan({
       outlets: outletsNow,
       reps: await storage.getReps(),
-      schedules: schedules.map(s => ({ repId: s.repId, week: s.week, dayOfWeek: s.dayOfWeek, outletIds: (s.outletIds as string[]) || [], routeOrder: (s.routeOrder as string[]) || null, totalDistance: s.totalDistance })),
+      schedules: schedules.map(s => ({ repId: s.repId, week: s.week, dayOfWeek: s.dayOfWeek, outletIds: (s.outletIds as string[]) || [], routeOrder: (s.routeOrder as string[]) || null, totalDistance: s.totalDistance, driveMinutes: s.driveMinutes })),
       band: { min: ps?.minVisitsPerDay ?? dayVisitsMin, max: ps?.maxVisitsPerDay ?? dayVisitsMax },
       maxHopKm: ps?.maxHopKm ?? 4,
       roadKm: ps?.distanceMode === 'road' && osrmConfigured(),
@@ -6717,6 +6574,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         repId: s.repId, week: s.week, dayOfWeek: s.dayOfWeek,
         outletIds: s.outletIds as string[], routeOrder: s.routeOrder as string[],
         totalDistance: s.totalDistance ?? undefined, estimatedDuration: s.estimatedDuration ?? undefined,
+        driveMinutes: s.driveMinutes ?? undefined,
       })));
 
       res.json({ success: true, applied: scenario.name, kpis: scenario.kpis });
@@ -6996,6 +6854,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 routeOrder: optimizedIds,
                 totalDistance: Math.round(dist * 100) / 100,
                 estimatedDuration: optimized.length * 15,
+                driveMinutes: routeRoadMinutes(optimized),
               });
               totalResequenced++;
             }

@@ -40,7 +40,7 @@ interface Scorecard {
     visitsPerDay: { min: number; avg: number; max: number }; daysInBandPct: number; kmPerDay: number; kmPerMonth: number;
     drivingHoursPerDay: number; callHoursPerDay: number; workdayHours: number; maxWorkdayHours: number; overloadedDays: number; shiftHours: number;
     routeOverlapPct: number; territoryOverlapPct: number; repBalancePct: number; longHops: number; longestHopKm: number;
-    kmBasis: string; evenDaysPct: number; balanceBy: "visits" | "time";
+    kmBasis: string; driveTimeBasis?: "road-time" | "average-speed"; evenDaysPct: number; balanceBy: "visits" | "time";
   };
   checks: Check[];
   perRep: RepScore[];
@@ -462,7 +462,7 @@ export default function RtmStudio({ canEdit }: { canEdit: boolean }) {
               <Tile icon={Store} label="Outlets planned" value={`${scorecard.kpis.coveragePct}%`} sub={`${fmt(scorecard.kpis.planned)}${scorecard.kpis.heldForReview ? ` · ${scorecard.kpis.heldForReview} held` : ""}`} testid="rtm-kpi-coverage" />
               <Tile icon={CalendarDays} label="Visits a day" value={`${scorecard.kpis.visitsPerDay.avg}`} sub={`${scorecard.kpis.visitsPerDay.min} to ${scorecard.kpis.visitsPerDay.max}`} />
               <Tile icon={Route} label="Km a day" value={`${scorecard.kpis.kmPerDay}`} sub={`${fmt(scorecard.kpis.kmPerMonth)} a month · ${scorecard.kpis.kmBasis === "road" ? "road" : "straight line"}`} />
-              <Tile icon={Clock} label="Workday" value={`${scorecard.kpis.workdayHours} h`} sub={`longest ${scorecard.kpis.maxWorkdayHours} h of ${scorecard.kpis.shiftHours}`} />
+              <Tile icon={Clock} label="Workday" value={`${scorecard.kpis.workdayHours} h`} sub={`longest ${scorecard.kpis.maxWorkdayHours} h of ${scorecard.kpis.shiftHours}${scorecard.kpis.driveTimeBasis === "road-time" ? " · road times" : ""}`} />
               <Tile icon={Layers} label="Overlap" value={`${scorecard.kpis.routeOverlapPct}%`} sub={`territories ${scorecard.kpis.territoryOverlapPct}%`} />
               <Tile icon={Scale} label="Balance" value={`±${(scorecard.kpis.repBalancePct / 2).toFixed(1)}%`} sub={scorecard.kpis.balanceBy === "time" ? "by working time" : "by visits"} />
             </div>

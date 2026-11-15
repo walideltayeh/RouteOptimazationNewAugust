@@ -14,7 +14,7 @@ export interface PjpOutlet {
   id: string; name: string; code?: string | null; channel?: string | null; latitude: number; longitude: number;
   visitFrequency: number; timePerVisit?: number | null; territory?: string | null; geoStatus?: string | null; repId?: string | null;
 }
-export interface PjpCell { repId: string; week: number; dayOfWeek: number; outletIds: string[]; routeOrder?: string[] | null; totalDistance?: number | null }
+export interface PjpCell { repId: string; week: number; dayOfWeek: number; outletIds: string[]; routeOrder?: string[] | null; totalDistance?: number | null; driveMinutes?: number | null }
 export interface PjpInputs {
   outlets: PjpOutlet[];
   reps: { id: string; name: string; code?: string | null }[];
@@ -88,7 +88,7 @@ export function buildPjpWorkbook(inp: PjpInputs): Buffer {
       prev = o;
     });
     const driveKm = inp.roadKm && c.totalDistance != null ? c.totalDistance : km;
-    const t = dayMinutes(callMin, km, DEFAULT_WORKDAY, inp.roadKm && c.totalDistance != null ? c.totalDistance : undefined);
+    const t = dayMinutes(callMin, km, DEFAULT_WORKDAY, inp.roadKm && c.totalDistance != null ? c.totalDistance : undefined, inp.roadKm ? c.driveMinutes : undefined);
     repDayRows.push([rep?.name ?? c.repId, c.date || "", DAY[c.dayOfWeek] ?? "", c.week, order.length, r1(driveKm), r1(callMin / 60), r1(t.drive / 60), r1(t.total / 60)]);
   }
 

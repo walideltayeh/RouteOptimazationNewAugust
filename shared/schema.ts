@@ -43,6 +43,7 @@ export const schedules = pgTable("schedules", {
   routeOrder: jsonb("route_order").notNull(), // Optimized order of visits
   totalDistance: real("total_distance"),
   estimatedDuration: integer("estimated_duration"), // in minutes
+  driveMinutes: real("drive_minutes"), // free-flow driving minutes between calls, from the road server; null when it gave none
   createdAt: timestamp("created_at").defaultNow(),
 });
 

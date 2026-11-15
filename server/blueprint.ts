@@ -22,6 +22,13 @@ export interface SavedPlanSettings {
   workingDays?: number[]; minVisitsPerDay?: number; maxVisitsPerDay?: number; maxHopKm?: number;
   cycleMode?: "fixed" | "calendarMonth"; cycleWorkingDays?: number; planMonth?: string; monthEdges?: "wholeWeeks" | "allDays";
   country?: string | null; distanceMode?: string;
+  /**
+   * The band / hop limit of the last plan were the ones the data itself
+   * suggested, not numbers the planner typed. They are worked out again for
+   * the outlets loaded now: Beirut's 26-30 a day is not a choice anyone made
+   * for the rest of the country.
+   */
+  bandAuto?: boolean; hopAuto?: boolean;
 }
 export interface UploadMeta {
   fileName?: string; sheetUsed?: string | null; otherSheets?: string[]; rowsUsingDefaultVf?: number; defaultVisitFrequency?: number;
@@ -111,7 +118,7 @@ export function buildBlueprint(inp: BlueprintInputs): Blueprint {
   const workingDays = chosenWeek ?? (saved?.workingDays?.length && sameMarket ? saved.workingDays : guess.days);
   const weekSource: Blueprint["setup"]["weekSource"] = chosenWeek ? "your choice" : saved?.workingDays?.length && sameMarket ? "your last plan" : guess.country ? "usual for the country" : "default";
   const chosenBand = choice?.minVisitsPerDay && choice?.maxVisitsPerDay ? [Math.min(choice.minVisitsPerDay, choice.maxVisitsPerDay), Math.max(choice.minVisitsPerDay, choice.maxVisitsPerDay)] : null;
-  const savedBand = saved?.minVisitsPerDay && saved?.maxVisitsPerDay && sameMarket ? [saved.minVisitsPerDay, saved.maxVisitsPerDay] : null;
+  const savedBand = saved?.minVisitsPerDay && saved?.maxVisitsPerDay && sameMarket && !saved.bandAuto ? [saved.minVisitsPerDay, saved.maxVisitsPerDay] : null;
   const band = chosenBand ?? savedBand ?? [Math.max(6, Math.round(sustainable * 0.85)), Math.max(8, Math.min(45, sustainable))];
   const bandSource: Blueprint["setup"]["bandSource"] = chosenBand ? "your choice" : savedBand ? "your last plan" : "workload";
   const cycleMode = saved?.cycleMode && sameMarket && !chosenWeek ? saved.cycleMode : "fixed";
@@ -119,7 +126,7 @@ export function buildBlueprint(inp: BlueprintInputs): Blueprint {
     ? (saved?.cycleWorkingDays && sameMarket && (!chosenWeek || chosenWeek.length === saved.workingDays?.length) ? saved.cycleWorkingDays : workingDays.length * 4)
     : (saved?.cycleWorkingDays ?? workingDays.length * 4);
   const p75 = quantile(kthNeighbourKm(pts, 3), 0.75);
-  const maxHopKm = choice?.maxHopKm && choice.maxHopKm > 0 ? choice.maxHopKm : saved?.maxHopKm && sameMarket ? saved.maxHopKm : p75 > 1.5 ? 8 : 4;
+  const maxHopKm = choice?.maxHopKm && choice.maxHopKm > 0 ? choice.maxHopKm : saved?.maxHopKm && sameMarket && !saved.hopAuto ? saved.maxHopKm : p75 > 1.5 ? 8 : 4;
   const distanceMode: "road" | "haversine" = inp.roadServer ? "road" : "haversine";
 
   // Balance by working time when the work per visit differs enough to
